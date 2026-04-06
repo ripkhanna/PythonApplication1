@@ -1,4 +1,15 @@
+# import os
+# from curl_cffi import requests as cffi_requests
+
+# # Point to your exported Palo Alto / Firewall Root CA cert (PEM/CRT)
+# cffi_requests.DEFAULT_VERIFY = r"P:\FirewallCert\cert_Firewall_Root-CA_2026.crt"
+
+import os
+os.environ['REQUESTS_CA_BUNDLE'] = r"C:\FirewallCert\cert_Firewall_Root-CA_2026.crt"
+
+
 import streamlit as st
+
 import yfinance as yf
 import pandas as pd
 import plotly.express as px
@@ -29,15 +40,29 @@ def fetch_etf_data():
         # UI Ticker logic: Mask .DE with .L
         display_ticker = ticker.replace(".DE", ".L")
         
-        hist = stock.history(period="3y")
+        hist = stock.history(period="5y")
         if not hist.empty:
             curr_price = hist['Close'].iloc[-1]
             price_1y = hist['Close'].iloc[-252] if len(hist) >= 252 else hist['Close'].iloc[0]
             price_3y = hist['Close'].iloc[0]
             
             ret_1y = ((curr_price - price_1y) / price_1y) * 100
-            ret_3y_ann = (((curr_price / price_3y) ** (1/3)) - 1) * 100
+            #ret_3y_ann = (((curr_price / price_3y) ** (1/3)) - 1) * 100
             
+            days = (hist.index[-1] - hist.index[0]).days
+            years = days / 365.25
+
+            ret_3y_ann = ((curr_price / price_3y) ** (1 / years) - 1) * 100
+
+            #--- 5Y CAGR ---
+            if len(hist) >= 252 * 5:
+                price_5y = hist["Close"].iloc[0]
+                days_5y = (hist.index[-1] - hist.index[0]).days
+                years_5y = days_5y / 365.25
+                ret_5y_ann = ((curr_price / price_5y) ** (1 / years_5y) - 1) * 100
+            else:
+                ret_5y_ann = np.nan
+
             daily_returns = hist['Close'].pct_change().dropna()
             volatility_3y = daily_returns.std() * np.sqrt(252) * 100
         else:
@@ -54,6 +79,7 @@ def fetch_etf_data():
             "Current Price (USD)": round(curr_price, 2),
             "1Y Return (%)": round(ret_1y, 2),
             "3Y Ann. Return (%)": round(ret_3y_ann, 2),
+            "5Y Ann. Return (%)": round(ret_5y_ann, 2),
             "Risk: 3Y Vol (%)": round(volatility_3y, 2),
             "Yield Post-15% Tax (%)": details["Post-Tax Yield (%)"],
             "Expense Ratio (%)": details["ER"],
@@ -88,15 +114,20 @@ col1, col2 = st.columns(2)
 
 with col1:
     fig_returns = px.bar(
-        filtered_df, x="Ticker", y=["1Y Return (%)", "3Y Ann. Return (%)"], 
+        filtered_df, x="Ticker", y=["1Y Return (%)", "3Y Ann. Return (%)","5Y Ann. Return (%)"], 
         barmode="group", title="Historical Returns Comparison"
     )
     st.plotly_chart(fig_returns, use_container_width=True)
 
 with col2:
     fig_risk = px.scatter(
-        filtered_df, x="Risk: 3Y Vol (%)", y="3Y Ann. Return (%)",
-        size="Expense Ratio (%)", color="Sector/Focus", hover_name="Ticker",
-        title="Risk vs. Return (Size = Fees)"
+    filtered_df,
+    x="Risk: 3Y Vol (%)",
+    y="5Y Ann. Return (%)",
+    size="Expense Ratio (%)",
+    color="Sector/Focus",
+    hover_name="Ticker",
+    title="Risk vs. Return (Vol = 3Y)"
     )
+
     st.plotly_chart(fig_risk, use_container_width=True)
