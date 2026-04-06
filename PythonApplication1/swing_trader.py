@@ -1,3 +1,6 @@
+import os
+os.environ['REQUESTS_CA_BUNDLE'] = r"C:\FirewallCert\cert_Firewall_Root-CA_2026.crt"
+
 import streamlit as st
 import yfinance as yf
 import pandas as pd
