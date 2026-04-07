@@ -9,7 +9,7 @@ st.set_page_config(page_title="SG Investor ETF Dashboard", layout="wide")
 st.title("📊 SG Investor ETF Dashboard: Ripin's 5-Year Alpha Strategy")
 st.markdown("Optimized for **Singapore Residents**: 15% WHT & No US Estate Tax Risk.")
 
-# ETF Universe with metadata (Validated for April 2026)
+# ETF Universe with metadata
 etf_universe = {
     "CSPX.L": {"Name": "iShares Core S&P 500 (Acc)", "Focus": "US Large Cap", "ER": 0.07, "Yield": 1.10},
     "VWRA.L": {"Name": "Vanguard FTSE All-World", "Focus": "Global (Dev + EM)", "ER": 0.22, "Yield": 1.50},
@@ -24,11 +24,10 @@ etf_universe = {
 @st.cache_data(ttl=3600)
 def fetch_etf_data():
     data = []
-    # Currency conversion for Japanese Tickers
     try:
         jpy_usd = 1 / yf.Ticker("JPY=X").fast_info['last_price']
     except:
-        jpy_usd = 0.0064 # Baseline rate for April 2026
+        jpy_usd = 0.0064 
 
     for ticker, details in etf_universe.items():
         stock = yf.Ticker(ticker)
@@ -38,19 +37,20 @@ def fetch_etf_data():
             curr_p = hist['Close'].iloc[-1]
             price_usd = curr_p * jpy_usd if ".T" in ticker else curr_p
             
-            # Growth Calculations
             def get_ann_return(years):
-                days = int(years * 365)
+                days = int(years * 252) # Trading days approx
                 if len(hist) >= days:
                     start_p = hist['Close'].iloc[-days]
                     return (((curr_p / start_p) ** (1/years)) - 1) * 100
-                return np.nan
+                else:
+                    # Fallback: Calculate Ann. Return since inception if 3y/5y not available
+                    total_years = len(hist) / 252
+                    start_p = hist['Close'].iloc[0]
+                    return (((curr_p / start_p) ** (1/total_years)) - 1) * 100 if total_years > 0.5 else np.nan
 
             ret_1y = get_ann_return(1)
             ret_3y = get_ann_return(3)
             ret_5y = get_ann_return(5)
-            
-            # Risk Calc (Standard Deviation)
             vol = hist['Close'].pct_change().std() * np.sqrt(252) * 100
         else:
             price_usd, ret_1y, ret_3y, ret_5y, vol = [np.nan]*5
@@ -60,7 +60,7 @@ def fetch_etf_data():
             "Fund Name": details["Name"],
             "Focus": details["Focus"],
             "Price (USD)": round(price_usd, 2),
-            "Exp Ratio (%)": details["ER"], # Added Expense Ratio
+            "Exp Ratio (%)": details["ER"],
             "1Y Ret (%)": round(ret_1y, 2),
             "3Y Ann (%)": round(ret_3y, 2),
             "5Y Ann (%)": round(ret_5y, 2),
@@ -69,18 +69,35 @@ def fetch_etf_data():
         })
     return pd.DataFrame(data)
 
-with st.spinner("Fetching Live Market Tapes & Expense Data..."):
+with st.spinner("Fetching Live Market Tapes..."):
     df = fetch_etf_data()
 
-# Dashboard UI Display
-st.subheader("Performance & Fee Comparison Matrix")
-# Sort by Expense Ratio by default to help you find the cheapest options
-st.dataframe(df.set_index("Ticker").sort_values("Exp Ratio (%)"), use_container_width=True)
+# Sidebar for interactive filtering
+st.sidebar.header("Filter Dash")
+selected_focus = st.sidebar.multiselect("Select Sector", df["Focus"].unique(), default=df["Focus"].unique())
+filtered_df = df[df["Focus"].isin(selected_focus)]
 
-# Visual Comparison of Efficiency
+# 1. Performance Table
+st.subheader("Performance & Fee Comparison Matrix")
+st.dataframe(filtered_df.set_index("Ticker").sort_values("Exp Ratio (%)"), use_container_width=True)
+
 st.divider()
-st.subheader("Fee Efficiency vs. Performance")
-fig = px.scatter(df, x="Exp Ratio (%)", y="5Y Ann (%)", size="Vol (%)", 
-                 color="Focus", hover_name="Ticker", text="Ticker",
-                 title="The Sweet Spot: Low Fee (Left) + High Return (Top)")
-st.plotly_chart(fig, use_container_width=True)
+
+# 2. Visual Analytics
+st.subheader("Visual Analytics")
+col1, col2 = st.columns(2)
+
+with col1:
+    fig_returns = px.bar(
+        filtered_df, x="Ticker", y=["1Y Ret (%)", "3Y Ann (%)", "5Y Ann (%)"], 
+        barmode="group", title="Return Horizons (Annualized)"
+    )
+    st.plotly_chart(fig_returns, use_container_width=True)
+
+with col2:
+    fig_risk = px.scatter(
+        filtered_df, x="Vol (%)", y="5Y Ann (%)",
+        size="Exp Ratio (%)", color="Focus", hover_name="Ticker",
+        title="Risk vs. 5Y Return (Size = Expense Ratio)"
+    )
+    st.plotly_chart(fig_risk, use_container_width=True)
