@@ -6,97 +6,81 @@ import numpy as np
 
 # Configure Dashboard Layout
 st.set_page_config(page_title="SG Investor ETF Dashboard", layout="wide")
-st.title("📊 SG Investor ETF Dashboard: Target 10-12% Return")
-st.markdown("Filtering for **Ireland-Domiciled UCITS ETFs** to cap US dividend withholding tax at 15%.")
+st.title("📊 SG Investor ETF Dashboard: Ripin's 5-Year Alpha Strategy")
+st.markdown("Optimized for **Singapore Residents**: 15% WHT & No US Estate Tax Risk.")
 
-# ETF Universe (LSE Tickers)
-# Note: Using .DE for ANAU fetch reliability, but we will rename it in the UI.
+# ETF Universe with metadata (Validated for April 2026)
 etf_universe = {
-    "CSPX.L": {"Name": "iShares Core S&P 500 (Acc)", "Sector/Focus": "US Large Cap", "ER": 0.07, "Post-Tax Yield (%)": 1.10, "Site": "ishares.com"},
-    "VWRA.L": {"Name": "Vanguard FTSE All-World", "Sector/Focus": "Global (Dev + EM)", "ER": 0.22, "Post-Tax Yield (%)": 1.50, "Site": "vanguard.co.uk"},
-    "SWRD.L": {"Name": "SPDR MSCI World", "Sector/Focus": "Developed Markets", "ER": 0.12, "Post-Tax Yield (%)": 1.41, "Site": "ssga.com"},
-    "ISAC.L": {"Name": "iShares MSCI ACWI", "Sector/Focus": "Global (Dev + EM)", "ER": 0.20, "Post-Tax Yield (%)": 1.45, "Site": "ishares.com"},
-    "VUAA.L": {"Name": "Vanguard S&P 500 (Acc)", "Sector/Focus": "US Large Cap", "ER": 0.07, "Post-Tax Yield (%)": 1.15, "Site": "vanguard.com.hk"},
-    "ANAU.DE": {"Name": "AXA Nasdaq 100 (Acc)", "Sector/Focus": "US Tech Growth", "ER": 0.14, "Post-Tax Yield (%)": 0.70, "Site": "axa-im.com"}
+    "CSPX.L": {"Name": "iShares Core S&P 500 (Acc)", "Focus": "US Large Cap", "ER": 0.07, "Yield": 1.10},
+    "VWRA.L": {"Name": "Vanguard FTSE All-World", "Focus": "Global (Dev + EM)", "ER": 0.22, "Yield": 1.50},
+    "SWRD.L": {"Name": "SPDR MSCI World", "Focus": "Developed Markets", "ER": 0.12, "Yield": 1.41},
+    "ISAC.L": {"Name": "iShares MSCI ACWI", "Focus": "Global (Dev + EM)", "ER": 0.20, "Yield": 1.45},
+    "VUAA.L": {"Name": "Vanguard S&P 500 (Acc)", "Focus": "US Large Cap", "ER": 0.07, "Yield": 1.15},
+    "ANAU.DE": {"Name": "AXA Nasdaq 100 (Acc)", "Focus": "US Tech Growth", "ER": 0.14, "Yield": 0.70},
+    "2854.T": {"Name": "Global X Japan Tech Top 20", "Focus": "Japan Tech Growth", "ER": 0.30, "Yield": 0.71},
+    "1475.T": {"Name": "iShares Core TOPIX", "Focus": "Japan Broad Market", "ER": 0.05, "Yield": 1.70}
 }
 
-@st.cache_data(ttl=3600) 
+@st.cache_data(ttl=3600)
 def fetch_etf_data():
     data = []
+    # Currency conversion for Japanese Tickers
+    try:
+        jpy_usd = 1 / yf.Ticker("JPY=X").fast_info['last_price']
+    except:
+        jpy_usd = 0.0064 # Baseline rate for April 2026
+
     for ticker, details in etf_universe.items():
         stock = yf.Ticker(ticker)
+        hist = stock.history(period="max")
         
-        # UI Ticker logic: Mask .DE with .L
-        display_ticker = ticker.replace(".DE", ".L")
-        
-        hist = stock.history(period="3y")
         if not hist.empty:
-            curr_price = hist['Close'].iloc[-1]
-            price_1y = hist['Close'].iloc[-252] if len(hist) >= 252 else hist['Close'].iloc[0]
-            price_3y = hist['Close'].iloc[0]
+            curr_p = hist['Close'].iloc[-1]
+            price_usd = curr_p * jpy_usd if ".T" in ticker else curr_p
             
-            ret_1y = ((curr_price - price_1y) / price_1y) * 100
-            ret_3y_ann = (((curr_price / price_3y) ** (1/3)) - 1) * 100
-            
-            daily_returns = hist['Close'].pct_change().dropna()
-            volatility_3y = daily_returns.std() * np.sqrt(252) * 100
-        else:
-            curr_price, ret_1y, ret_3y_ann, volatility_3y = np.nan, np.nan, np.nan, np.nan
+            # Growth Calculations
+            def get_ann_return(years):
+                days = int(years * 365)
+                if len(hist) >= days:
+                    start_p = hist['Close'].iloc[-days]
+                    return (((curr_p / start_p) ** (1/years)) - 1) * 100
+                return np.nan
 
-        aum = stock.info.get('totalAssets', 'Data Unavailable')
-        if isinstance(aum, (int, float)):
-            aum = f"${aum / 1e9:.2f}B"
+            ret_1y = get_ann_return(1)
+            ret_3y = get_ann_return(3)
+            ret_5y = get_ann_return(5)
+            
+            # Risk Calc (Standard Deviation)
+            vol = hist['Close'].pct_change().std() * np.sqrt(252) * 100
+        else:
+            price_usd, ret_1y, ret_3y, ret_5y, vol = [np.nan]*5
 
         data.append({
-            "Ticker": display_ticker,
+            "Ticker": ticker.replace(".DE", ".L"),
             "Fund Name": details["Name"],
-            "Sector/Focus": details["Sector/Focus"],
-            "Current Price (USD)": round(curr_price, 2),
-            "1Y Return (%)": round(ret_1y, 2),
-            "3Y Ann. Return (%)": round(ret_3y_ann, 2),
-            "Risk: 3Y Vol (%)": round(volatility_3y, 2),
-            "Yield Post-15% Tax (%)": details["Post-Tax Yield (%)"],
-            "Expense Ratio (%)": details["ER"],
-            "AUM": aum,
-            "Fund Site": details["Site"]
+            "Focus": details["Focus"],
+            "Price (USD)": round(price_usd, 2),
+            "Exp Ratio (%)": details["ER"], # Added Expense Ratio
+            "1Y Ret (%)": round(ret_1y, 2),
+            "3Y Ann (%)": round(ret_3y, 2),
+            "5Y Ann (%)": round(ret_5y, 2),
+            "Vol (%)": round(vol, 2),
+            "Net Yield (%)": details["Yield"]
         })
     return pd.DataFrame(data)
 
-with st.spinner("Fetching live market data..."):
+with st.spinner("Fetching Live Market Tapes & Expense Data..."):
     df = fetch_etf_data()
 
-# --- SIDEBAR FILTERS ---
-st.sidebar.header("Sort & Filter Dashboard")
-min_return = st.sidebar.slider("Min 1Y Return (%)", 0, 40, 5)
-max_expense = st.sidebar.slider("Max Expense Ratio (%)", 0.05, 0.30, 0.25)
-sector_filter = st.sidebar.multiselect("Focus", df["Sector/Focus"].unique(), default=df["Sector/Focus"].unique())
+# Dashboard UI Display
+st.subheader("Performance & Fee Comparison Matrix")
+# Sort by Expense Ratio by default to help you find the cheapest options
+st.dataframe(df.set_index("Ticker").sort_values("Exp Ratio (%)"), use_container_width=True)
 
-# Apply Filters
-filtered_df = df[
-    (df["1Y Return (%)"] >= min_return) & 
-    (df["Expense Ratio (%)"] <= max_expense) & 
-    (df["Sector/Focus"].isin(sector_filter))
-]
-
-# --- MAIN DASHBOARD AREA ---
-st.subheader("Sortable ETF Comparison Table")
-st.dataframe(filtered_df.set_index("Ticker"), use_container_width=True)
-
+# Visual Comparison of Efficiency
 st.divider()
-st.subheader("Visual Analytics")
-col1, col2 = st.columns(2)
-
-with col1:
-    fig_returns = px.bar(
-        filtered_df, x="Ticker", y=["1Y Return (%)", "3Y Ann. Return (%)"], 
-        barmode="group", title="Historical Returns Comparison"
-    )
-    st.plotly_chart(fig_returns, use_container_width=True)
-
-with col2:
-    fig_risk = px.scatter(
-        filtered_df, x="Risk: 3Y Vol (%)", y="3Y Ann. Return (%)",
-        size="Expense Ratio (%)", color="Sector/Focus", hover_name="Ticker",
-        title="Risk vs. Return (Size = Fees)"
-    )
-    st.plotly_chart(fig_risk, use_container_width=True)
+st.subheader("Fee Efficiency vs. Performance")
+fig = px.scatter(df, x="Exp Ratio (%)", y="5Y Ann (%)", size="Vol (%)", 
+                 color="Focus", hover_name="Ticker", text="Ticker",
+                 title="The Sweet Spot: Low Fee (Left) + High Return (Top)")
+st.plotly_chart(fig, use_container_width=True)
