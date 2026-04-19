@@ -69,8 +69,29 @@ def fetch_etf_data():
         })
     return pd.DataFrame(data)
 
-with st.spinner("Fetching Live Market Tapes..."):
-    df = fetch_etf_data()
+try:
+    with st.spinner("Fetching Live Market Tapes..."):
+        df = fetch_etf_data()
+    
+    if df.empty:
+        st.warning("No data fetched. Please refresh the page.")
+        st.stop()
+except Exception as e:
+    st.error(f"Error fetching data: {str(e)}")
+    st.info("The app will display sample data. Please refresh to try again.")
+    # Create sample dataframe to prevent crashes
+    df = pd.DataFrame({
+        "Ticker": ["CSPX.L", "VWRA.L", "SWRD.L"],
+        "Fund Name": ["iShares Core S&P 500", "Vanguard FTSE All-World", "SPDR MSCI World"],
+        "Focus": ["US Large Cap", "Global", "Developed Markets"],
+        "Price (USD)": [150.23, 120.45, 145.67],
+        "Exp Ratio (%)": [0.07, 0.22, 0.12],
+        "1Y Ret (%)": [25.5, 18.3, 22.1],
+        "3Y Ann (%)": [15.2, 12.1, 14.5],
+        "5Y Ann (%)": [12.8, 10.5, 11.9],
+        "Vol (%)": [18.5, 15.2, 16.8],
+        "Net Yield (%)": [1.10, 1.50, 1.41]
+    })
 
 # Sidebar for interactive filtering
 st.sidebar.header("Filter Dash")
