@@ -22,7 +22,11 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="it-etf.py" />
+    <Compile Include="swing_trader_pro.py" />
     <Compile Include="swing_trader.py" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="requirements.txt" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in

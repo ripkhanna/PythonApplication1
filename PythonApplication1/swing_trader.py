@@ -3,14 +3,12 @@ import yfinance as yf
 import pandas as pd
 import ta
 import numpy as np
-import time
 
 # --- SETUP ---
 st.set_page_config(page_title="High-Beta Swing Analyzer", layout="wide")
-st.title("🚀 High-Beta Swing Trade Analyzer")
-st.markdown("Scanning 100 high-volatility tickers for Trend, Momentum, and Volume confluence.")
+st.title("🚀 Advanced Swing Trade Confluence Scanner")
+st.markdown("Scanning high-beta tickers for MA Alignment, MACD Momentum, and Volume spikes.")
 
-# Copy and paste this block into your script
 TICKERS = [
     "NVDA", "AMD", "AVGO", "ARM", "MU", "TSM", "SMCI", "ASML", "KLAC", "LRCX", "AMAT", "TER", "ON", "MCHP", "MPWR", "MRVL", "ADI", "NXPI", "LSCC", "ALTR",
     "DELL", "HPE", "PSTG", "ANET", "VRT", "STX", "WDC", "NTAP", "SMTC", "POWI", "PLTR", "MDB", "SNOW", "DDOG", "NET", "CRWD", "ZS", "OKTA", "PANW", "WDAY",
@@ -25,7 +23,6 @@ TICKERS = [
 ]
 
 def to_float(val):
-    """Deep extraction of a float from a Series or scalar."""
     if isinstance(val, (pd.Series, np.ndarray)):
         return float(val.iloc[0] if hasattr(val, 'iloc') else val[0])
     return float(val)
@@ -39,56 +36,76 @@ def fetch_analysis(ticker_list):
     for i, ticker in enumerate(ticker_list):
         try:
             status_text.text(f"Analyzing {ticker} ({i+1}/{len(ticker_list)})...")
-            # We use auto_adjust=True to get a clean price column
-            df = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
+            # YF changed how multi-level indexing works, explicit column names are safer if squeezed
+            df = yf.download(ticker, period="6mo", interval="1d", progress=False)
             
-            if df.empty or len(df) < 50:
+            if df.empty or len(df) < 60:
                 continue
 
-            # CRITICAL FIX: Extract columns by position to avoid name errors
-            # Close is usually index 0 or 3 depending on the yf version.
-            # We ensure we have a 1D Series using .iloc and .squeeze()
-            close_1d = df.iloc[:, 0].squeeze().ffill() # Takes the first column (Price)
-            vol_1d = df.iloc[:, -1].squeeze().ffill()  # Takes the last column (Volume)
+            # Handle robust column extraction for YF's latest updates
+            close_1d = df['Close'].squeeze().ffill()
+            high_1d = df['High'].squeeze().ffill()
+            low_1d = df['Low'].squeeze().ffill()
+            vol_1d = df['Volume'].squeeze().ffill()
 
-            # Indicators
-            ema50_series = ta.trend.ema_indicator(close_1d, window=50)
-            rsi_series = ta.momentum.rsi(close_1d, window=14)
-            vol_avg_series = vol_1d.rolling(window=20).mean()
+            # --- INDICATORS ---
+            ema20 = ta.trend.ema_indicator(close_1d, window=20)
+            ema50 = ta.trend.ema_indicator(close_1d, window=50)
+            rsi = ta.momentum.rsi(close_1d, window=14)
+            macd = ta.trend.MACD(close_1d)
+            atr = ta.volatility.average_true_range(high_1d, low_1d, close_1d, window=14)
+            vol_avg = vol_1d.rolling(window=20).mean()
 
-            # Latest Values
+            # --- CURRENT VALUES ---
             curr_price = to_float(close_1d.iloc[-1])
-            curr_rsi = to_float(rsi_series.iloc[-1])
-            curr_ema = to_float(ema50_series.iloc[-1])
+            curr_ema20 = to_float(ema20.iloc[-1])
+            curr_ema50 = to_float(ema50.iloc[-1])
+            curr_rsi = to_float(rsi.iloc[-1])
+            curr_macd_diff = to_float(macd.macd_diff().iloc[-1]) # MACD Histogram
+            curr_atr = to_float(atr.iloc[-1])
+            
             curr_vol = to_float(vol_1d.iloc[-1])
-            curr_vol_avg = to_float(vol_avg_series.iloc[-1])
-            prev_rsi = to_float(rsi_series.iloc[-2])
+            curr_vol_avg = to_float(vol_avg.iloc[-1])
+            vol_ratio = curr_vol / curr_vol_avg if curr_vol_avg > 0 else 0
 
-            vol_ratio = curr_vol / curr_vol_avg
+            # --- SWING LOGIC ---
+            # 1. Trend Alignment: Price > 20 EMA, and 20 EMA > 50 EMA
+            is_trend_aligned = (curr_price > curr_ema20) and (curr_ema20 > curr_ema50)
+            
+            # 2. Momentum: MACD histogram is positive (bullish momentum) and RSI is healthy (not overbought)
+            is_momentum = (curr_macd_diff > 0) and (50 < curr_rsi < 70)
+            
+            # 3. Volume: Above average volume on the recent move
+            is_vol_spike = vol_ratio > 1.2
 
-            # Logic
-            is_bullish = curr_price > curr_ema
-            is_momentum = 45 < curr_rsi < 65 and curr_rsi > prev_rsi
-            is_vol_spike = vol_ratio > 1.15 # Slightly lower threshold to be more inclusive
-
-            score = sum([is_bullish, is_momentum, is_vol_spike])
+            score = sum([is_trend_aligned, is_momentum, is_vol_spike])
             
             if score == 3:
                 action = "🔥 STRONG BUY"
-            elif score == 2:
-                action = "👀 WATCHLIST"
+            elif score == 2 and is_trend_aligned:
+                action = "👀 PULLBACK WATCH"
             else:
                 action = "HOLD/WAIT"
 
+            # Skip junk to keep the dashboard clean
+            if action == "HOLD/WAIT": continue 
+
+            # --- RISK MANAGEMENT ---
+            stop_loss = curr_price - (1.5 * curr_atr)
+            target = curr_price + (3.0 * curr_atr) # 1:2 Risk Reward Ratio
+
             results.append({
                 "Ticker": ticker,
-                "Price": round(curr_price, 2),
+                "Price": f"${curr_price:.2f}",
+                "Action": action,
                 "RSI": round(curr_rsi, 1),
                 "Vol Ratio": round(vol_ratio, 2),
-                "Action": action
+                "Stop Loss": f"${stop_loss:.2f}",
+                "Target (1:2)": f"${target:.2f}",
+                "ATR": round(curr_atr, 2)
             })
+            
         except Exception as e:
-            # st.write(f"Error on {ticker}: {e}") # Uncomment for deep debugging
             continue
         
         progress_bar.progress((i + 1) / len(ticker_list))
@@ -102,28 +119,24 @@ if st.button("🔄 Run Full Market Scan"):
     df_results = fetch_analysis(TICKERS)
     
     if not df_results.empty:
-        # Summary Metrics
         strong_buys = df_results[df_results["Action"] == "🔥 STRONG BUY"]
-        watchlists = df_results[df_results["Action"] == "👀 WATCHLIST"]
+        watchlists = df_results[df_results["Action"] == "👀 PULLBACK WATCH"]
         
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Strong Buys", len(strong_buys))
-        col2.metric("Watchlist", len(watchlists))
-        col3.metric("Total Scanned", len(df_results))
+        col1, col2 = st.columns(2)
+        col1.metric("Strong Confluence Setups", len(strong_buys))
+        col2.metric("Watchlist (Waiting for Trigger)", len(watchlists))
 
-        tab1, tab2 = st.tabs(["🎯 Top Recommendations", "📋 All Tickers"])
+        st.markdown("### 🎯 Top Trade Setups")
+        if not strong_buys.empty:
+            st.dataframe(strong_buys.sort_values(by="Vol Ratio", ascending=False), use_container_width=True)
+        else:
+            st.info("No 'Strong Buy' setups found today.")
 
-        with tab1:
-            if not strong_buys.empty:
-                st.success(f"Found {len(strong_buys)} setups with Trend, Momentum, and Volume confluence.")
-                st.dataframe(strong_buys.sort_values(by="Vol Ratio", ascending=False), use_container_width=True)
-            else:
-                st.info("No 'Strong Buy' setups found. Showing Watchlist (2/3 criteria) instead:")
-                st.dataframe(watchlists, use_container_width=True)
+        st.markdown("### 📋 Watchlist (Trend aligned, waiting on Volume/Momentum)")
+        if not watchlists.empty:
+            st.dataframe(watchlists, use_container_width=True)
 
-        with tab2:
-            st.dataframe(df_results, use_container_width=True)
     else:
-        st.error("No data fetched. Please check your internet connection or ticker list.")
+        st.error("No actionable setups found today, or there was an error fetching data.")
 else:
-    st.info("Click the button above to start the scan.")
+    st.info("Click 'Run Full Market Scan' to begin analyzing the market.")
