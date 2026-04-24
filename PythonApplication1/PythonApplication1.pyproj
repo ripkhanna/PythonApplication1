@@ -22,6 +22,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Etf.py" />
+    <Compile Include="etf1.py" />
     <Compile Include="swing_trader_breakout.py" />
     <Compile Include="swing_trader_pro.py" />
     <Compile Include="swing_trader.py" />
