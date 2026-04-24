@@ -21,9 +21,11 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="it-etf.py" />
+    <Compile Include="Etf.py" />
+    <Compile Include="swing_trader_breakout.py" />
     <Compile Include="swing_trader_pro.py" />
     <Compile Include="swing_trader.py" />
+    <Compile Include="test.py" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="requirements.txt" />
