@@ -796,15 +796,15 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "Today %":      f"{today_chg:+.2f}%",
                     "Signals":      " | ".join(l_tags) if l_tags else "–",
                     "Price":        f"${p:.2f}",
+                    "Best Stop":    f"${l_stop:.2f}",
+                    "Target 1:1":   f"${l_t1:.2f}",
+                    "Target 1:2":   f"${l_t2:.2f}",
+                    "Pos/$1k risk": int(1000 / l_risk) if l_risk > 0 else 0,
                     "RSI":          round(raw["rsi0"], 1),
                     "Stoch K":      round(raw["k0"],   1),
                     "ADX":          round(raw["adx"],  1),
                     "Vol Ratio":    round(vr, 2),
                     "BB Squeeze":   "YES" if long_sig["bb_bull_squeeze"] else "–",
-                    "Best Stop":    f"${l_stop:.2f}",
-                    "Target 1:1":   f"${l_t1:.2f}",
-                    "Target 1:2":   f"${l_t2:.2f}",
-                    "Pos/$1k risk": int(1000 / l_risk) if l_risk > 0 else 0,
                 })
 
             # ── SHORT — v4 exact logic (no sector gate) ──────────────────────
@@ -852,14 +852,15 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "Today %":      f"{today_chg:+.2f}%",
                     "Signals":      " | ".join(s_tags) if s_tags else "–",
                     "Price":        f"${p:.2f}",
+                    "Target 1:1":   f"${s_t1:.2f}",
+                    "Target 1:2":   f"${s_t2:.2f}",
+                    "Regime bonus": "YES" if regime in ("BEAR","CAUTION") else "–",
                     "RSI":          round(raw["rsi0"], 1),
                     "Stoch K":      round(raw["k0"],   1),
                     "ADX":          round(raw["adx"],  1),
                     "Vol Ratio":    round(vr, 2),
                     "Cover Stop":   f"${s_cover:.2f}",
-                    "Target 1:1":   f"${s_t1:.2f}",
-                    "Target 1:2":   f"${s_t2:.2f}",
-                    "Regime bonus": "YES" if regime in ("BEAR","CAUTION") else "–",
+                    
                 })
 
         except Exception:
