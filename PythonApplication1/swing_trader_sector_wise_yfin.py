@@ -258,15 +258,47 @@ def style_short_prob(val):
         return "background-color:#EBF5FB;color:#1A5276"
     except: return ""
 
+# ─────────────────────────────────────────────────────────────
+# GRID SEARCH FILTER (NEW)
+# Adds search to ALL tables automatically
+# ─────────────────────────────────────────────────────────────
+def grid_search_filter(df, label):
+    if df.empty:
+        return df
+
+    search = st.text_input(
+        f"🔎 Search {label}",
+        key=f"search_{label}"
+    )
+
+    if search:
+        search = search.lower()
+
+        mask = df.astype(str).apply(
+            lambda col: col.str.lower().str.contains(search, na=False)
+        )
+
+        df = df[mask.any(axis=1)]
+
+    return df
 
 def show_table(df, label, prob_col="Rise Prob"):
+
     if df.empty:
         st.info(f"No {label} setups.")
         return
+
+    # ✅ SEARCH ENABLED FOR ALL GRIDS
+    df = grid_search_filter(df, label)
+
     styler   = df.style
     style_fn = styler.map if hasattr(styler, "map") else styler.applymap
     fn = style_short_prob if prob_col == "Fall Prob" else style_prob
-    st.dataframe(style_fn(fn, subset=[prob_col]), use_container_width=True)
+
+    st.dataframe(
+        style_fn(fn, subset=[prob_col]),
+        use_container_width=True
+    )
 
 
 def _extract_closes(raw, ticker, n_tickers):
