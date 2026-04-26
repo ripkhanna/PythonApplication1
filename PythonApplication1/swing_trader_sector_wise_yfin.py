@@ -1051,7 +1051,6 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 long_results.append({
                     "Ticker":       ticker,
                     "Sector":       sector_label(ticker),
-                    "Action":       l_action,
                     "Rise Prob":    f"{l_prob * 100:.1f}%",
                     "Prob Tier":    prob_label(l_prob),
                     "Score":        f"{l_score}/20",
@@ -1065,12 +1064,13 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "Pos/$1k risk": int(1000 / l_risk) if l_risk > 0 else 0,
                     "Float":        float_str,
                     "Short %":      short_str,
-                    "Signals":      " | ".join(l_tags) if l_tags else "–",
                     "RSI":          round(raw["rsi0"], 1),
                     "Stoch K":      round(raw["k0"],   1),
                     "ADX":          round(raw["adx"],  1),
                     "Vol Ratio":    round(vr, 2),
                     "BB Squeeze":   "YES" if long_sig["bb_bull_squeeze"] else "–",
+                    "Action":       l_action,
+                    "Signals":      " | ".join(l_tags) if l_tags else "–",
                     
                 })
 
@@ -1115,7 +1115,6 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 short_results.append({
                     "Ticker":       ticker,
                     "Sector":       sector_label(ticker),
-                    "Action":       s_action,
                     "Fall Prob":    f"{s_prob * 100:.1f}%",
                     "Prob Tier":    prob_label(s_prob),
                     "Score":        f"{s_score}/10",
@@ -1133,6 +1132,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "Cover Stop":   f"${s_cover:.2f}",
                     "Trail Stop":   f"${s_trail:.2f}",
                     "Time Stop":    "Day 4 if > Cover",
+                    "Action":       s_action,
                     "Signals":      " | ".join(s_tags) if s_tags else "–",
                 })
 
