@@ -1,5 +1,5 @@
 """
-Swing Scanner v8 — Sector-Driven Long & Short
+Swing Scanner v9 — Sector-Driven Long & Short
 ================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (exact compute_all_signals, bayesian_prob, action tiers)
@@ -19,12 +19,12 @@ from datetime import datetime
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Swing Scanner v8", layout="wide")
-st.title("5–7 Day Swing Scanner v8 — Sector-Driven Long & Short")
+st.set_page_config(page_title="Swing Scanner v9", layout="wide")
+st.title("5–7 Day Swing Scanner v9 — Sector-Driven Long & Short")
 st.markdown(
     "🟢 Green sectors → best **long** candidates · "
     "🔴 Red sectors → best **short** candidates · "
-    "v8 signal accuracy"
+    "v9 signal accuracy"
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -32,102 +32,154 @@ st.markdown(
 # Sector stocks from live ETF holdings are ADDED on top of this baseline
 # Neither list gates the other — every ticker is scanned for both long & short
 # ─────────────────────────────────────────────────────────────────────────────
-BASE_TICKERS = [
+US_TICKERS = [
     # Semiconductors
     "NVDA","AMD","AVGO","ARM","MU","TSM","SMCI","ASML","KLAC","LRCX",
     "AMAT","TER","ON","MCHP","MPWR","MRVL","ADI","NXPI","LSCC",
     "WOLF","INTC","QCOM","ALAB","AMBA","CEVA",
-
     # Hardware / Cloud infra
     "DELL","HPE","PSTG","ANET","VRT","STX","WDC","NTAP",
-
     # Software / Cloud
     "PLTR","MDB","SNOW","DDOG","NET","CRWD","ZS","OKTA","PANW","WDAY",
-    "TEAM","SHOP","TTD","U","PATH","CFLT",
-    "S","TENB","QLYS","GTLB","ESTC","SAIL","DT",
-
-    # AI / Data / Analytics
+    "TEAM","SHOP","TTD","U","PATH","CFLT","S","TENB","QLYS","GTLB","ESTC","SAIL","DT",
+    # AI / Data
     "SOUN","BBAI","IREN","VSCO","GFAI","CXAI",
-
     # Crypto / Fintech
     "COIN","MSTR","MARA","RIOT","CLSK","WULF","HUT","BITF",
-    "HOOD","PYPL","SOFI","AFRM","UPST","NU","MELI",
-    "BILL","TOST","FLYW","FUTU","TIGR",
-
+    "HOOD","PYPL","SOFI","AFRM","UPST","NU","MELI","BILL","TOST","FLYW","FUTU","TIGR",
     # China Tech
     "BABA","PDD","JD","SE","LI","XPEV","BIDU","TCOM","VIPS","HUYA",
-
     # Mega Cap
     "MA","V","AMZN","NFLX","META","GOOGL","MSFT","AAPL",
-
     # Consumer / Travel / Gaming
     "DASH","ABNB","BKNG","CVNA","APP","UBER","LYFT","RCL","CCL","NCLH",
-    "RBLX","TTWO","EA","DKNG","PENN","MGAM","LVS","WYNN","MGM",
-    "W","OPEN",
-
+    "RBLX","TTWO","EA","DKNG","PENN","MGAM","LVS","WYNN","MGM","W","OPEN",
     # EV / Auto
-    "TSLA","RIVN","LCID","NIO","XPEV","F","GM","STLA",
-    "CHPT","BLNK","EVGO",
-
-    # Defense / Space / Next-Gen
-    "PLTR","AXON","KTOS","RKLB","ASTS","LUNR","SPCE",
-    "LMT","NOC","RTX","BAC","GD",
-
+    "TSLA","RIVN","LCID","NIO","XPEV","F","GM","STLA","CHPT","BLNK","EVGO",
+    # Defense / Space
+    "PLTR","AXON","KTOS","RKLB","ASTS","LUNR","SPCE","LMT","NOC","RTX","BAC","GD",
     # Nuclear / Clean Energy
-    "OKLO","SMR","NNE","CEG","ENPH","SEDG","FSLR","RUN","BE","PLUG",
-    "ARRY","FLNC","SHLS",
-
-    # Energy / Materials / Commodities
+    "OKLO","SMR","NNE","CEG","ENPH","SEDG","FSLR","RUN","BE","PLUG","ARRY","FLNC","SHLS",
+    # Energy / Materials
     "FCX","AA","NUE","LAC","ALB","MP","VALE","OXY","DVN","HAL","SLB",
     "GOLD","KGC","AG","PAAS","WPM","NEM",
-
-    # Biotech / Genomics
+    # Biotech
     "MRNA","BNTX","VRTX","REGN","GILD","AMGN","BIIB",
-    "BEAM","CRSP","NTLA","EDIT","RXRX","PACB","ILMN","EXAS",
-    "TWST","SDGR","ALNY","BMRN",
-
+    "BEAM","CRSP","NTLA","EDIT","RXRX","PACB","ILMN","EXAS","TWST","SDGR","ALNY","BMRN",
     # Healthcare Tech / GLP-1
     "HIMS","LLY","NVO","VEEV","DOCS","DXCM","TDOC",
-
-    # Quantum Computing
+    # Quantum
     "IONQ","QUBT","RGTI","ARQQ","QBTS",
+    # High-beta / Meme
+    "NVTS","ACHR","JOBY","GME","AMC","BBWI","BIRD","CLOV","MVIS","CPSH","SKIN","XPOF","PRCT",
+    # SE Asia (US-listed, high US-market correlation)
+    "GRAB","SEA",
+]
 
-    # High-beta / Small-cap / Meme
-    "NVTS","ACHR","JOBY","GME","AMC","BBWI","BIRD","CLOV",
-    "MVIS","CPSH","SKIN","XPOF","PRCT",
-
-    # ── SINGAPORE SGX (yfinance suffix: .SI) ─────────────────────────────────
+SG_TICKERS = [
     # Blue chips / STI 30
-    "D05.SI",   # DBS Group — largest bank, high liquidity
+    "D05.SI",   # DBS Group
     "O39.SI",   # OCBC Bank
     "U11.SI",   # UOB
-    "Z74.SI",   # Singtel — telecom + digital
-    "S68.SI",   # Singapore Exchange (SGX)
-    "BN4.SI",   # Keppel Corp — infrastructure + offshore
-    "BS6.SI",   # Yangzijiang Shipbuilding — high beta, shipping
-    "S58.SI",   # SATS — aviation + food solutions
+    "Z74.SI",   # Singtel
+    "S68.SI",   # Singapore Exchange
+    "BN4.SI",   # Keppel Corp
+    "BS6.SI",   # Yangzijiang Shipbuilding — high beta
+    "S58.SI",   # SATS
     "C6L.SI",   # Singapore Airlines
-    "U96.SI",   # Sembcorp Industries — energy/utilities
-    "F34.SI",   # Wilmar International — agribusiness
-    "V03.SI",   # Venture Corporation — electronics
-    "C52.SI",   # ComfortDelGro — transport
-    "H78.SI",   # Hongkong Land (SGX-listed)
-    "U14.SI",   # UOL Group — property
-    "C38U.SI",  # CapitaLand Integrated Commercial Trust (CICT)
+    "U96.SI",   # Sembcorp Industries
+    "F34.SI",   # Wilmar International
+    "V03.SI",   # Venture Corporation
+    "C52.SI",   # ComfortDelGro
+    "H78.SI",   # Hongkong Land
+    "U14.SI",   # UOL Group
+    "S51.SI",   # Seatrium — high beta offshore
+    # REITs
+    "C38U.SI",  # CapitaLand CICT
     "A17U.SI",  # CapitaLand Ascendas REIT
     "M44U.SI",  # Mapletree Logistics Trust
-    "N2IU.SI",  # Mapletree Pan Asia Commercial Trust
-    # Growth / Next-50 / Higher beta
-    "AIY.SI",   # iFAST Corporation — fintech wealth platform
-    "558.SI",   # UMS Holdings — semiconductor equipment
-    "OYY.SI",   # PropNex — property agency, high retail beta
-    "MZH.SI",   # Nanofilm Technologies — nanocoating, growth
-    "8AZ.SI",   # Aztech Global — IoT / smart home, volatile
-    "40B.SI",   # HRnetGroup — recruitment, cyclical
-    "1D0.SI",   # Nanofilm spin-off / tech
-    "GRAB",     # Grab Holdings — SE Asia super-app (US-listed, SG origin)
-    "SEA",      # Sea Limited — Garena/Shopee (US-listed, SG origin)
+    "N2IU.SI",  # Mapletree Pan Asia Commercial
+    # Growth / Higher beta
+    "AIY.SI",   # iFAST — fintech
+    "558.SI",   # UMS Holdings — semicon equipment
+    "OYY.SI",   # PropNex
+    "MZH.SI",   # Nanofilm Technologies
+    "8AZ.SI",   # Aztech Global — volatile
+    "40B.SI",   # HRnetGroup
+    "1D0.SI",   # Nanofilm spin-off
 ]
+
+INDIA_TICKERS = [
+    # ── INDIA NSE (yfinance suffix: .NS) ─────────────────────────────────────
+    # Nifty 50 Blue Chips — Large-cap, high liquidity
+    "RELIANCE.NS",    # Reliance Industries — conglomerate, energy + retail + Jio
+    "TCS.NS",         # Tata Consultancy Services — IT services
+    "INFY.NS",        # Infosys — IT services
+    "HDFCBANK.NS",    # HDFC Bank — largest private bank
+    "ICICIBANK.NS",   # ICICI Bank — private bank, high beta
+    "SBIN.NS",        # State Bank of India — largest PSU bank
+    "AXISBANK.NS",    # Axis Bank — private bank
+    "WIPRO.NS",       # Wipro — IT services
+    "BAJFINANCE.NS",  # Bajaj Finance — NBFC, high beta financial
+    "MARUTI.NS",      # Maruti Suzuki — auto, cyclical
+    "HCLTECH.NS",     # HCL Technologies — IT services
+    "TECHM.NS",       # Tech Mahindra — IT services
+    "LTIM.NS",        # LTIMindtree — IT services mid-cap
+    "SUNPHARMA.NS",   # Sun Pharma — pharma large-cap
+    "DRREDDY.NS",     # Dr Reddy's — pharma
+    "CIPLA.NS",       # Cipla — pharma
+    "TATAMOTORS.NS",  # Tata Motors — auto + JLR + EV high beta
+    "TATASTEEL.NS",   # Tata Steel — metal cyclical
+    # High-beta / Adani group
+    "ADANIENT.NS",    # Adani Enterprises — beta ~1.95, infrastructure
+    "ADANIPORTS.NS",  # Adani Ports — logistics
+    "ADANIGREEN.NS",  # Adani Green Energy — renewable, very high beta
+    "ADANIPOWER.NS",  # Adani Power — energy
+    # Metals / Commodities
+    "VEDL.NS",        # Vedanta — diversified metals, beta ~1.82
+    "HINDALCO.NS",    # Hindalco — aluminium + Novelis
+    "JSWSTEEL.NS",    # JSW Steel — steel, global beta
+    "NMDC.NS",        # NMDC — iron ore mining
+    "HINDZINC.NS",    # Hindustan Zinc — zinc/silver
+    "COALINDIA.NS",   # Coal India — energy commodity
+    # New-age Tech / Fintech
+    "ZOMATO.NS",      # Zomato (Eternal) — food delivery, high beta growth
+    "PAYTM.NS",       # Paytm (One97) — fintech, volatile
+    "NYKAA.NS",       # Nykaa (FSN) — beauty commerce
+    "DELHIVERY.NS",   # Delhivery — logistics tech
+    "POLICYBZR.NS",   # PB Fintech (PolicyBazaar) — insurtech
+    # Defence / PSU
+    "HAL.NS",         # Hindustan Aeronautics — defence, strong momentum
+    "BEL.NS",         # Bharat Electronics — defence electronics
+    "COCHINSHIP.NS",  # Cochin Shipyard — defence shipbuilding
+    "RVNL.NS",        # Rail Vikas Nigam — railway infra, high beta
+    "IRFC.NS",        # Indian Railway Finance Corp — PSU
+    "HUDCO.NS",       # Housing & Urban Dev Corp — PSU infra
+    "NBCC.NS",        # NBCC India — govt construction
+    # Renewable Energy
+    "TATAPOWER.NS",   # Tata Power — renewable energy transition
+    "SUZLON.NS",      # Suzlon Energy — wind, very high beta
+    "INOXWIND.NS",    # Inox Wind — wind energy, beta ~2.2
+    # Banking / Finance
+    "INDUSINDBK.NS",  # IndusInd Bank — private bank, high beta
+    "KOTAKBANK.NS",   # Kotak Mahindra Bank
+    "PNB.NS",         # Punjab National Bank — PSU bank
+    "BANKBARODA.NS",  # Bank of Baroda — PSU bank
+    "HDFCAMC.NS",     # HDFC AMC — asset manager, market beta play
+    # Mid / Small-cap high beta
+    "IRCTC.NS",       # IRCTC — railway monopoly, retail favourite
+    "BSESMD.NS",      # BSE Ltd — stock exchange, high beta
+    "DIXON.NS",       # Dixon Technologies — electronics manufacturing (PLI)
+    "AMBER.NS",       # Amber Enterprises — AC components
+    "KAYNES.NS",      # Kaynes Technology — EMS / IoT
+    "GRAVITA.NS",     # Gravita India — recycling, beta ~2.2
+    "PGEL.NS",        # PG Electroplast — EMS, beta ~2.2
+    # Indices for regime reference
+    # "^NSEI",        # Nifty 50 index (comment out — not tradeable)
+]
+
+# Keep BASE_TICKERS as combined list for backward compatibility
+BASE_TICKERS = US_TICKERS + SG_TICKERS + INDIA_TICKERS
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SECTOR ETF MAP
@@ -148,6 +200,38 @@ SECTOR_ETFS = {
     "China Tech":        "KWEB",
     "EV / Autos":        "DRIV",
     "Cloud / SaaS":      "WCLD",
+}
+
+# ── India NSE sector indices ──────────────────────────────────────────────────
+INDIA_SECTOR_ETFS = {
+    "Nifty 50":       "^NSEI",
+    "Banking":        "^NSEBANK",
+    "IT":             "^CNXIT",
+    "Pharma":         "^CNXPHARMA",
+    "Auto":           "^CNXAUTO",
+    "FMCG":           "^CNXFMCG",
+    "PSU Bank":       "^CNXPSUBANK",
+    "Energy":         "^CNXENERGY",
+    "Metal":          "^CNXMETAL",
+    "Realty":         "^CNXREALTY",
+    "Infrastructure": "^CNXINFRA",
+    "Financial Svc":  "^CNXFINSERVICE",
+    "Midcap":         "^CNXMIDCAP",
+    "Smallcap":       "^CNXSMALLCAP",
+}
+
+# ── SGX sector groups (avg of stocks — no liquid sector ETFs on SGX) ──────────
+SG_SECTOR_GROUPS = {
+    "Banks":       ["D05.SI","O39.SI","U11.SI"],
+    "REITs":       ["C38U.SI","A17U.SI","M44U.SI","N2IU.SI"],
+    "Industrials": ["BN4.SI","S58.SI","V03.SI"],
+    "Telecoms":    ["Z74.SI"],
+    "Transport":   ["C6L.SI","C52.SI"],
+    "Property":    ["U14.SI","H78.SI"],
+    "Energy":      ["U96.SI"],
+    "Shipping":    ["BS6.SI","S51.SI"],
+    "Finance":     ["S68.SI","AIY.SI"],
+    "Tech":        ["558.SI","8AZ.SI","MZH.SI","1D0.SI"],
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -323,24 +407,46 @@ def _extract_closes(raw, ticker, n_tickers):
 @st.cache_data(ttl=1800)
 def get_market_regime():
     try:
-        spy = yf.download("SPY", period="3mo", interval="1d", progress=False)
-        vix = yf.download("^VIX", period="5d",  interval="1d", progress=False)
-        spy_close = spy["Close"].squeeze().ffill()
+        spy_raw = yf.download("SPY", period="3mo", interval="1d",
+                              progress=False, auto_adjust=True)
+        vix_raw = yf.download("^VIX", period="5d", interval="1d",
+                              progress=False, auto_adjust=True)
+
+        # Flatten MultiIndex (yfinance ≥0.2.x returns MultiIndex columns)
+        for df in (spy_raw, vix_raw):
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+
+        if spy_raw.empty or "Close" not in spy_raw.columns:
+            raise ValueError("SPY data empty or missing Close column")
+        if vix_raw.empty or "Close" not in vix_raw.columns:
+            raise ValueError("VIX data empty or missing Close column")
+
+        spy_close = spy_raw["Close"].ffill().dropna()
+        vix_close = vix_raw["Close"].ffill().dropna()
+
+        if len(spy_close) < 50:
+            raise ValueError(f"Insufficient SPY history: {len(spy_close)} bars")
+
         spy_ema20 = float(ta.trend.ema_indicator(spy_close, window=20).iloc[-1])
         spy_ema50 = float(ta.trend.ema_indicator(spy_close, window=50).iloc[-1])
         spy_now   = float(spy_close.iloc[-1])
-        vix_now   = float(vix["Close"].squeeze().ffill().iloc[-1])
+        vix_now   = float(vix_close.iloc[-1])
+
         if spy_now > spy_ema20 and vix_now < 20:
             regime = "BULL"
         elif spy_now < spy_ema50 or vix_now > 25:
             regime = "BEAR"
         else:
             regime = "CAUTION"
+
         return {"regime": regime, "spy": round(spy_now, 2),
                 "spy_ema20": round(spy_ema20, 2),
                 "spy_ema50": round(spy_ema50, 2),
                 "vix": round(vix_now, 2)}
-    except Exception:
+
+    except Exception as e:
+        st.warning(f"⚠️ Market regime fetch failed: {e}. Try: pip install --upgrade yfinance")
         return {"regime": "UNKNOWN", "spy": 0,
                 "spy_ema20": 0, "spy_ema50": 0, "vix": 0}
 
@@ -385,9 +491,75 @@ def get_sector_performance() -> pd.DataFrame:
     return pd.DataFrame(results).sort_values("Today %", ascending=False).reset_index(drop=True)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# EARNINGS GUARD  — v5 exact
-# ─────────────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=900)
+def get_india_sector_performance() -> pd.DataFrame:
+    """Fetch India NSE sector indices performance."""
+    etf_list     = list(INDIA_SECTOR_ETFS.values())
+    sector_names = list(INDIA_SECTOR_ETFS.keys())
+    results      = []
+    try:
+        raw = yf.download(etf_list, period="5d", interval="1d",
+                          progress=False, auto_adjust=True, group_by="ticker")
+        if raw.empty:
+            raise ValueError("Empty")
+        for name, etf in zip(sector_names, etf_list):
+            try:
+                closes = _extract_closes(raw, etf, len(etf_list))
+                if len(closes) < 2:
+                    continue
+                pct  = float((closes.iloc[-1] - closes.iloc[-2]) / closes.iloc[-2] * 100)
+                pct5 = float((closes.iloc[-1] - closes.iloc[0])  / closes.iloc[0]  * 100)
+                results.append({
+                    "Sector":  name, "ETF": etf,
+                    "Today %": round(pct,  2),
+                    "5d %":    round(pct5, 2),
+                    "Price":   round(float(closes.iloc[-1]), 2),
+                    "Status":  "🟢 GREEN" if pct > 0.1 else ("🔴 RED" if pct < -0.1 else "⚪ FLAT"),
+                })
+            except Exception:
+                continue
+    except Exception as e:
+        st.warning(f"India sector fetch failed: {e}")
+    if not results:
+        return pd.DataFrame(columns=["Sector","ETF","Today %","5d %","Price","Status"])
+    return pd.DataFrame(results).sort_values("Today %", ascending=False).reset_index(drop=True)
+
+
+@st.cache_data(ttl=900)
+def get_sg_sector_performance() -> pd.DataFrame:
+    """Compute SGX sector heatmap by averaging stock returns within each sector group."""
+    all_tickers = list({t for tickers in SG_SECTOR_GROUPS.values() for t in tickers})
+    results     = []
+    try:
+        raw = yf.download(all_tickers, period="5d", interval="1d",
+                          progress=False, auto_adjust=True, group_by="ticker")
+        for sector_name, members in SG_SECTOR_GROUPS.items():
+            pcts, pcts5, prices = [], [], []
+            for t in members:
+                try:
+                    closes = _extract_closes(raw, t, len(all_tickers))
+                    if len(closes) < 2:
+                        continue
+                    pcts.append(float((closes.iloc[-1]-closes.iloc[-2])/closes.iloc[-2]*100))
+                    pcts5.append(float((closes.iloc[-1]-closes.iloc[0])/closes.iloc[0]*100))
+                    prices.append(float(closes.iloc[-1]))
+                except Exception:
+                    continue
+            if pcts:
+                pct  = round(float(np.mean(pcts)),  2)
+                pct5 = round(float(np.mean(pcts5)), 2)
+                results.append({
+                    "Sector":  sector_name,
+                    "ETF":     "/".join(members[:2]),
+                    "Today %": pct, "5d %": pct5,
+                    "Price":   round(float(np.mean(prices)), 2),
+                    "Status":  "🟢 GREEN" if pct > 0.1 else ("🔴 RED" if pct < -0.1 else "⚪ FLAT"),
+                })
+    except Exception as e:
+        st.warning(f"SGX sector fetch failed: {e}")
+    if not results:
+        return pd.DataFrame(columns=["Sector","ETF","Today %","5d %","Price","Status"])
+    return pd.DataFrame(results).sort_values("Today %", ascending=False).reset_index(drop=True)
 @st.cache_data(ttl=3600)
 def get_earnings_flag(ticker):
     try:
@@ -803,7 +975,8 @@ def fetch_sector_constituents(target_per_sector: int = 25) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600)
 def fetch_analysis(green_sectors, red_sectors, regime,
-                   skip_earnings, top_n_sectors, live_sectors=None):
+                   skip_earnings, top_n_sectors, live_sectors=None,
+                   market_tickers=None):
     sectors_data = live_sectors or {}
     sector_membership = {}
     for sec_name, sec_data in sectors_data.items():
@@ -811,7 +984,8 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             if t not in sector_membership:
                 sector_membership[t] = sec_name
 
-    all_tickers = list(BASE_TICKERS)
+    # Use market-specific tickers if provided, else fall back to full BASE_TICKERS
+    all_tickers = list(market_tickers) if market_tickers else list(BASE_TICKERS)
     for sec_name, sec_data in sectors_data.items():
         for t in sec_data.get("stocks", []):
             if t not in all_tickers:
@@ -1292,6 +1466,34 @@ elif regime == "CAUTION":
 st.markdown("---")
 
 # ─────────────────────────────────────────────────────────────────────────────
+# MARKET SELECTOR  — controls heatmap + scan scope
+# ─────────────────────────────────────────────────────────────────────────────
+st.markdown("#### 🌍 Select Market to Scan")
+market_sel = st.radio(
+    "Market", ["🇺🇸 US", "🇸🇬 Singapore (SGX)", "🇮🇳 India (NSE)"],
+    horizontal=True, key="market_selector"
+)
+
+# Map selection → ticker list, sector map, currency symbol
+if market_sel == "🇺🇸 US":
+    _active_tickers = US_TICKERS
+    _active_sectors = SECTOR_ETFS
+    _currency_sym   = "$"
+    _price_fmt      = lambda p: f"${p:,.2f}"
+elif market_sel == "🇸🇬 Singapore (SGX)":
+    _active_tickers = SG_TICKERS
+    _active_sectors = {}       # SGX uses stock-group heatmap, not ETF sectors
+    _currency_sym   = "S$"
+    _price_fmt      = lambda p: f"S${p:,.3f}"
+else:
+    _active_tickers = INDIA_TICKERS
+    _active_sectors = INDIA_SECTOR_ETFS
+    _currency_sym   = "₹"
+    _price_fmt      = lambda p: f"₹{p:,.2f}"
+
+st.markdown("---")
+
+# ─────────────────────────────────────────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────────────────────────────────────────
 tab_sectors, tab_long, tab_short, tab_both, tab_etf, tab_stock, tab_diag, tab_help = st.tabs([
@@ -1306,12 +1508,30 @@ tab_sectors, tab_long, tab_short, tab_both, tab_etf, tab_stock, tab_diag, tab_he
 ])
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 1 — SECTOR HEATMAP
+# TAB 1 — SECTOR HEATMAP  (market-aware)
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_sectors:
     st.markdown("### Live Sector Heatmap")
-    st.caption("Refreshes every 15 min")
-    sector_df = get_sector_performance()
+
+    if market_sel == "🇺🇸 US":
+        st.caption("US Sector ETFs · Refreshes every 15 min")
+        sector_df = get_sector_performance()
+    elif market_sel == "🇸🇬 Singapore (SGX)":
+        st.caption("SGX sector groups (avg return) · Prices in S$ · Refreshes every 15 min")
+        sector_df = get_sg_sector_performance()
+        st.info("ℹ️ SGX has no liquid sector ETFs — sectors are computed as the average return of constituent stocks.")
+    else:
+        st.caption("NSE Sector Indices · Prices in ₹ · Refreshes every 15 min")
+        sector_df = get_india_sector_performance()
+        # Show Nifty 50 banner
+        nifty = sector_df[sector_df["ETF"] == "^NSEI"]
+        if not nifty.empty:
+            n50p = nifty.iloc[0]["Today %"]
+            n50v = nifty.iloc[0]["Price"]
+            cc1, cc2 = st.columns(2)
+            cc1.metric("🇮🇳 Nifty 50", f"₹{n50v:,.0f}", f"{n50p:+.2f}%")
+            cc2.metric("Session", "NSE 09:15–15:30 IST")
+        sector_df = sector_df[sector_df["ETF"] != "^NSEI"]
 
     if sector_df.empty or "Today %" not in sector_df.columns:
         st.warning(
@@ -1329,6 +1549,7 @@ with tab_sectors:
             elif pct < -0.1: return "#f5b7b1","#7b241c"
             else:            return "#e8e8e8","#555555"
 
+        p_sym = "₹" if market_sel == "🇮🇳 India (NSE)" else ("S$" if market_sel == "🇸🇬 Singapore (SGX)" else "$")
         html = "<div style='display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:16px'>"
         for _, row in sector_df.iterrows():
             bg, fg = tile_color(row["Today %"])
@@ -1339,7 +1560,7 @@ with tab_sectors:
                 f"<div style='font-size:10px;font-weight:700;opacity:.8'>{row['ETF']}</div>"
                 f"<div style='font-size:13px;font-weight:700;margin:2px 0'>{row['Sector']}</div>"
                 f"<div style='font-size:22px;font-weight:800'>{arrow} {row['Today %']:+.2f}%</div>"
-                f"<div style='font-size:11px;opacity:.85'>5d: {fived:+.2f}%  ·  ${row['Price']}</div>"
+                f"<div style='font-size:11px;opacity:.85'>5d: {fived:+.2f}%  ·  {p_sym}{row['Price']:,.0f}</div>"
                 f"</div>"
             )
         html += "</div>"
@@ -1368,24 +1589,43 @@ with tab_sectors:
             st.info(f"⚪ **Flat — skip**\n\n" + "\n\n".join(flat_list) if flat_list else "⚪ None flat")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SCAN BUTTON
+# SCAN BUTTON  (market-aware)
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
 col_btn, col_info = st.columns([1, 3])
 with col_btn:
-    run = st.button("🚀 Run Sector-Driven Scan", type="primary")
+    run = st.button(f"🚀 Scan {market_sel} Stocks", type="primary")
 with col_info:
-    sdf = get_sector_performance()
-    if not sdf.empty and "Today %" in sdf.columns:
-        gn = sdf[sdf["Today %"] >  0.1]["Sector"].tolist()
-        rn = sdf[sdf["Today %"] < -0.1]["Sector"].tolist()
+    # Show sector preview for the active market
+    if market_sel == "🇺🇸 US":
+        sdf_preview = get_sector_performance()
+    elif market_sel == "🇸🇬 Singapore (SGX)":
+        sdf_preview = get_sg_sector_performance()
+    else:
+        sdf_preview = get_india_sector_performance()
+        sdf_preview = sdf_preview[sdf_preview["ETF"] != "^NSEI"]
+
+    if not sdf_preview.empty and "Today %" in sdf_preview.columns:
+        gn = sdf_preview[sdf_preview["Today %"] >  0.1]["Sector"].tolist()
+        rn = sdf_preview[sdf_preview["Today %"] < -0.1]["Sector"].tolist()
         st.info(
+            f"**{market_sel}** · {len(_active_tickers)} stocks · "
             f"Top **{top_n_sectors} green** → longs: {', '.join(gn[:top_n_sectors]) or 'none'} · "
             f"Top **{top_n_sectors} red** → shorts: {', '.join(rn[:top_n_sectors]) or 'none'}"
         )
 
 if run:
-    sdf = get_sector_performance()
+    # Get sector data for the selected market
+    if market_sel == "🇺🇸 US":
+        sdf = get_sector_performance()
+        active_sector_etfs = SECTOR_ETFS
+    elif market_sel == "🇸🇬 Singapore (SGX)":
+        sdf = get_sg_sector_performance()
+        active_sector_etfs = {}   # no ETF-based holdings for SGX
+    else:
+        sdf = get_india_sector_performance()
+        sdf = sdf[sdf["ETF"] != "^NSEI"]   # exclude benchmark
+        active_sector_etfs = INDIA_SECTOR_ETFS
 
     if sdf.empty or "Today %" not in sdf.columns:
         st.error("Cannot fetch sector data. Check connection or upgrade yfinance.")
@@ -1394,37 +1634,46 @@ if run:
     green_sectors = sdf[sdf["Today %"] >  0.1]["Sector"].tolist()
     red_sectors   = sdf[sdf["Today %"] < -0.1]["Sector"].tolist()
 
-    # Add custom tickers to the top green sector
     extra_tickers = [t.strip().upper() for t in extra_input.split(",") if t.strip()]
-    if extra_tickers and green_sectors:
-        pass  # injected via live_sectors below
 
     if not green_sectors and not red_sectors:
-        st.warning("All sectors flat. Try again when markets are open.")
+        st.warning("All sectors flat — market may be closed or data unavailable.")
     else:
-        st.info("📡 Fetching live ETF holdings...")
-        live_sectors = fetch_sector_constituents(target_per_sector=25)
+        # Fetch live ETF holdings only for US (India/SGX use static ticker lists)
+        live_sectors = {}
+        if market_sel == "🇺🇸 US":
+            st.info("📡 Fetching live US ETF holdings...")
+            live_sectors = fetch_sector_constituents(target_per_sector=25)
+            if extra_tickers and green_sectors:
+                first_green = green_sectors[0]
+                existing    = live_sectors.get(first_green, {}).get("stocks", [])
+                merged      = list(dict.fromkeys(extra_tickers + existing))
+                if first_green in live_sectors:
+                    live_sectors[first_green]["stocks"] = merged
 
-        # Inject custom tickers into whichever green sector they belong to
-        if extra_tickers and green_sectors:
-            first_green = green_sectors[0]
-            existing    = live_sectors.get(first_green, {}).get("stocks", [])
-            merged      = list(dict.fromkeys(extra_tickers + existing))
-            if first_green in live_sectors:
-                live_sectors[first_green]["stocks"] = merged
+            with st.expander("📋 Holdings per sector", expanded=False):
+                rows = [{"Sector": sn, "ETF": sd.get("etf",""),
+                         "Source": sd.get("source","–"),
+                         "# Stocks": sd.get("count", len(sd.get("stocks",[]))),
+                         "Top 8": ", ".join(sd.get("stocks",[])[:8])}
+                        for sn, sd in live_sectors.items()]
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-        with st.expander("📋 Holdings per sector", expanded=False):
-            rows = [{"Sector": sn, "ETF": sd.get("etf",""),
-                     "Source": sd.get("source","–"),
-                     "# Stocks": sd.get("count", len(sd.get("stocks",[]))),
-                     "Top 8": ", ".join(sd.get("stocks",[])[:8])}
-                    for sn, sd in live_sectors.items()]
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        # Build active ticker list (market-specific + custom)
+        active_tickers = list(_active_tickers)
+        if extra_tickers:
+            for t in extra_tickers:
+                if t not in active_tickers:
+                    active_tickers.insert(0, t)
 
-        with st.spinner("Scanning stocks for signals..."):
+        st.info(f"📊 Scanning **{len(active_tickers)} {market_sel} stocks** for signals...")
+
+        with st.spinner(f"Scanning {len(active_tickers)} stocks..."):
             df_long, df_short = fetch_analysis(
                 tuple(green_sectors), tuple(red_sectors),
-                regime, skip_earnings, top_n_sectors, live_sectors
+                regime, skip_earnings, top_n_sectors,
+                live_sectors if live_sectors else None,
+                market_tickers=tuple(active_tickers),
             )
 
         # Apply sidebar filters
@@ -1444,17 +1693,21 @@ if run:
             if req_s_decel: df_short = df_short[df_short["Signals"].str.contains("MACD DECEL")]
             df_short = df_short.drop(columns="_p")
 
-        st.session_state["df_long"]           = df_long
-        st.session_state["df_short"]          = df_short
+        st.session_state["df_long"]            = df_long
+        st.session_state["df_short"]           = df_short
         st.session_state["live_sectors_cache"] = live_sectors
+        st.session_state["last_market"]        = market_sel
 
 df_long  = st.session_state.get("df_long",  pd.DataFrame())
 df_short = st.session_state.get("df_short", pd.DataFrame())
+last_market = st.session_state.get("last_market", market_sel)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 2 — LONG
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_long:
+    if not df_long.empty:
+        st.caption(f"Results for **{last_market}** · {len(df_long)} setups found")
     if df_long.empty:
         st.info("Run the scan to see long setups.")
     else:
@@ -1484,6 +1737,8 @@ with tab_long:
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_short:
     st.warning("⚠️ Short selling has unlimited loss potential. Always use a hard cover-stop.")
+    if not df_short.empty:
+        st.caption(f"Results for **{last_market}** · {len(df_short)} setups found")
     if df_short.empty:
         st.info("Run the scan to see short setups.")
     else:
@@ -2165,156 +2420,183 @@ with tab_diag:
 # TAB 8 — HELP
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_help:
-    st.markdown("## ❓ How to Use the Swing Scanner v8")
-    st.caption("Complete guide — read this before running your first scan")
+    st.markdown("## ❓ How to Use the Swing Scanner v9")
+    st.caption("Complete guide — updated for v9 multi-market logic")
 
     # ── QUICK START ───────────────────────────────────────────────────────────
     with st.expander("🚀 Quick Start — 5 steps to your first scan", expanded=True):
         st.markdown("""
-**Step 1 — Check the Sector Heatmap tab**
-Open the 🗂️ Sector Heatmap tab. Green tiles = sectors with upward momentum today.
-Red tiles = sectors falling today. This is your market context before scanning.
+**Step 1 — Pick your market**
+Use the **🌍 Market Selector** radio button above the tabs:
+- 🇺🇸 **US** — ~220 US stocks (Nasdaq, NYSE). Sector heatmap uses 15 US ETFs (XLK, SOXX, XLF…)
+- 🇸🇬 **Singapore (SGX)** — 27 SGX stocks (.SI suffix). Heatmap uses 10 sector groups (Banks, REITs, Transport…)
+- 🇮🇳 **India (NSE)** — 55 NSE stocks (.NS suffix). Heatmap uses 14 NSE indices (^NSEBANK, ^CNXIT…)
 
-**Step 2 — Set your filters (sidebar)**
-- **Top N sectors**: Start with 3. This scans the top 3 green sectors for longs and top 3 red for shorts.
-- **Min LONG rise prob**: Default 62%. Raise to 72%+ for higher conviction only.
-- **Skip earnings within 7 days**: Keep this ON — earnings destroy swing trades.
+**Step 2 — Check the Sector Heatmap tab**
+Green tiles = sectors gaining today → scan for **longs**.
+Red tiles = sectors falling today → scan for **shorts**.
+The heatmap automatically shows the correct market based on your selection.
 
-**Step 3 — Click 🚀 Run Sector-Driven Scan**
-The scanner will:
-1. Download all 252+ tickers in one batch (fast)
-2. Compute 20 long signals + 10 short signals per stock
-3. Apply Bayesian probability scoring
-4. Show results sorted by probability
+**Step 3 — Set sidebar filters**
+- **Top N sectors**: Start with 3.
+- **Min LONG rise prob**: Default 62%. Raise to 72%+ for high conviction only.
+- **Skip earnings**: Keep ON — earnings gaps destroy swing trades (14-day guard).
 
-**Step 4 — Review results in Long Setups / Short Setups tabs**
-Focus on **STRONG BUY** first. Check the Signals column — more tags = more confirmation.
-Look for `COMBO+` tags — these indicate high-probability signal clusters.
+**Step 4 — Click 🚀 Scan [Market] Stocks**
+The button label changes to match your market. The scanner:
+1. Downloads only that market's stocks in one batch
+2. Computes 20 long + 10 short signals per stock
+3. Applies Bayesian probability + regime + Monday penalty
+4. Shows results sorted by probability
 
-**Step 5 — Verify with Stock Analysis tab**
-Before entering, type the ticker in 🔬 Stock Analysis to see the full chart and trade plan.
-Check the stop loss and confirm the risk/reward is at least 1:2 before entering.
+**Step 5 — Verify with 🔬 Stock Analysis tab**
+Type any ticker (NVDA, D05.SI, RELIANCE.NS) to see full chart + trade plan.
+Confirm risk:reward ≥ 1:2 and stop loss is within your tolerance before entering.
+        """)
+
+    # ── MARKET SELECTOR ───────────────────────────────────────────────────────
+    with st.expander("🌍 Market Selector — what changes per market"):
+        st.markdown("""
+| | 🇺🇸 US | 🇸🇬 Singapore (SGX) | 🇮🇳 India (NSE) |
+|---|---|---|---|
+| **Ticker count** | ~220 stocks | 27 stocks (.SI) | 55 stocks (.NS) |
+| **Sector heatmap** | 15 US ETFs (XLK, SOXX, etc.) | 10 stock-group averages | 14 NSE indices (^NSEBANK, etc.) |
+| **Currency** | USD ($) | SGD (S$) | INR (₹) |
+| **Trading hours** | NYSE/Nasdaq 09:30–16:00 EST | SGX 09:00–17:00 SGT | NSE 09:15–15:30 IST |
+| **Live ETF holdings** | ✅ Fetched via FinanceDatabase/yfinance | ❌ Not available (uses fixed list) | ❌ Not available (uses fixed list) |
+| **Short selling** | ✅ Available (IBKR, etc.) | ⚠️ Limited on SGX | ❌ Not available for retail in India |
+| **Liquidity note** | High — tight spreads | Low — use limit orders | Medium — NSE is liquid for large-caps |
+
+**SGX heatmap note:** SGX has no liquid sector ETFs so the heatmap is computed as the average % change of constituent stocks within each sector group. It is directionally accurate but may differ slightly from an official sector index.
         """)
 
     # ── SIGNAL GUIDE ─────────────────────────────────────────────────────────
-    with st.expander("📊 Signal Guide — what every signal means"):
-        st.markdown("### Long Signals (20 total)")
-
+    with st.expander("📊 Signal Guide — all 20 long + 10 short signals"):
+        st.markdown("### Long Signals (20 total → Score /20)")
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("""
-**Original v5 signals (10)**
+**Original 10 signals**
 
-| Signal | What it means |
-|--------|---------------|
-| `STOCH BOUNCE` | Stochastic RSI was oversold (K<20 for 2 bars), now rising above D-line |
-| `BB BULL SQ` | Bollinger Band squeeze with price above midline — compression before upward explosion |
-| `MACD ACCEL` | MACD histogram rising for 3 consecutive bars — momentum building |
-| `VOL BREAKOUT` | Price at 10-day high + volume 1.8× average — institutional buying |
-| `RSI>50` | RSI crossed above 50 confirming trend shift from bearish to bullish |
-| `HIGHER LOWS` | Two consecutive swing lows each higher than the last — uptrend structure |
-| `MACD CROSS` | MACD line crossed above signal line with positive histogram |
-| `ADX>20` | Average Directional Index above 20 — trend has strength |
-| `VOL>1.5×` | Today's volume 1.5× the 20-day average — above average participation |
-| `TREND` | Price > EMA8 > EMA21 — basic daily uptrend aligned |
+| Tag | What it detects |
+|-----|----------------|
+| `TREND` | Price > EMA8 > EMA21 — short-term uptrend |
+| `STOCH BOUNCE` | Stoch K was <20 for 2 bars, now crossing above D-line |
+| `BB BULL SQ` | BB squeeze + price above midline — coil before explosion |
+| `MACD ACCEL` | MACD histogram rising 3 bars — momentum accelerating |
+| `MACD CROSS` | MACD line crossed above signal with +ve histogram |
+| `RSI>50` | RSI crossed above 50 — bullish shift confirmed |
+| `ADX>20` | Trend strength confirmed |
+| `VOL>1.5×` | Volume 1.5× 20-day average |
+| `VOL BREAKOUT` | Price at 10-day high + vol ≥1.8× |
+| `HIGHER LOWS` | Two consecutive higher swing lows |
             """)
         with col2:
             st.markdown("""
 **New accuracy signals (10)**
 
-| Signal | What it means |
-|--------|---------------|
-| `WKLY TREND` | EMA20 > EMA50 — weekly trend is up, prevents buying in macro downtrends |
-| `🟡GC / 🔥FRESH GC` | Golden Cross (EMA50 > EMA200). Fresh = crossed in last 10 days |
-| `RS>SPY` | Stock outperforming S&P 500 over last 5 days — market leader |
-| `52W HIGH` | Price within 10% of 52-week high — momentum continuation |
-| `OBV↑` | On-Balance Volume rising 5 days — institutional accumulation |
-| `BULL CANDLE` | Hammer or bullish engulfing pattern on last candle |
-| `ATR EXP` | Today's range > 1.2× ATR — breakout energy present |
-| `COIL` | 3–8 days of tight range before today — compression before expansion |
-| `RSI DIV` | Price made lower low but RSI made higher low — bullish divergence |
+| Tag | What it detects |
+|-----|----------------|
+| `WKLY TREND` | EMA20 > EMA50 — macro uptrend on weekly timeframe |
+| `🟡GC` / `🔥FRESH GC` | EMA50 > EMA200 golden cross. Fresh = last 10 bars |
+| `RS>SPY` | Stock beat SPY over last 5 days |
+| `52W HIGH` | Price within 10% of 52-week high — momentum |
+| `OBV↑` | On-Balance Volume rising 5 consecutive days |
+| `BULL CANDLE` | Hammer or bullish engulfing on last candle |
+| `ATR EXP` | Today's range > 1.2× ATR — breakout energy |
+| `COIL` | 3–8 tight-range days before today |
+| `RSI DIV` | Price lower low but RSI higher low — divergence |
 | `SEC LEAD` | Stock outperforming its sector ETF last 5 days |
-| `⚡SQUEEZE` | Short interest > 15% + bullish signals = short squeeze potential |
-| `COMBO+%` | High-probability signal cluster detected (BB+VOL+STOCH, MACD+RSI+HIGHERLOW, etc.) |
+| `⚡SQUEEZE` | Short interest >15% + bullish — squeeze potential |
+| `COMBO+%` | High-win signal cluster bonus (up to +8% probability) |
+| `⚠️MON` | Monday flag — probability reduced 6% (gap risk) |
             """)
 
-        st.markdown("### Short Signals (10)")
+        st.markdown("### Short Signals (10 total → Score /10)")
         st.markdown("""
-| Signal | What it means |
-|--------|---------------|
-| `STOCH ROLLOVER` | Stochastic was overbought (K>80), now crossing below D-line |
-| `BB BEAR SQ` | BB squeeze with price below midline — compression before downward move |
-| `MACD DECEL` | MACD histogram declining 3 bars — momentum fading |
-| `VOL BREAKDOWN` | Price at 10-day low + high volume — distribution selling |
-| `LOWER HIGHS` | Two consecutive swing highs each lower — downtrend structure |
-| `RSI<50` | RSI crossed below 50 confirming bearish shift |
-| `ADX BEAR` | ADX > 20 with price below EMA21 — strong downtrend |
-| `DIST DAY` | Large red candle on 2× average volume — institutional selling |
-| `MACD BEAR` | MACD line below signal line with negative histogram |
-| `TREND BEAR` | Price < EMA8 < EMA21 — basic daily downtrend |
+| Tag | What it detects |
+|-----|----------------|
+| `TREND BEAR` | Price < EMA8 < EMA21 — short-term downtrend |
+| `STOCH ROLLOVER` | Stoch K was >80 for 2 bars, now crossing below D-line |
+| `BB BEAR SQ` | BB squeeze + price below midline |
+| `MACD DECEL` | MACD histogram declining 3 consecutive bars |
+| `MACD BEAR` | MACD line below signal with –ve histogram |
+| `RSI<50` | RSI crossed below 50 — bearish shift confirmed |
+| `ADX BEAR` | ADX >20 with price below EMA21 |
+| `DIST DAY` | Large red candle on 2× average volume |
+| `VOL BREAKDOWN` | Price at 10-day low + high volume |
+| `LOWER HIGHS` | Two consecutive lower swing highs |
         """)
 
     # ── ACTION TIERS ─────────────────────────────────────────────────────────
-    with st.expander("🎯 Action tiers — STRONG BUY vs WATCH"):
+    with st.expander("🎯 Action tiers — how STRONG BUY is determined"):
         st.markdown("""
-### Long action tiers
+### Long tiers (score out of 20)
 
-| Action | Requirements | What to do |
-|--------|-------------|------------|
-| 🔥 **STRONG BUY** | Score ≥6/20 (BULL) or ≥7 (BEAR/CAUTION) + Rise Prob ≥72% + one of: Stoch/BB/MACD | Enter next day at market open. Set stop immediately. |
-| 👀 **WATCH – HIGH QUALITY** | Score ≥4 + Prob ≥62% + daily trend | Put on watchlist. Enter if it opens strong next day. |
-| 📋 **WATCH – DEVELOPING** | Score ≥3 + daily trend | Monitor only. Setup not confirmed yet. |
+| Action | Score | Rise Prob | Also needs | What to do |
+|--------|-------|-----------|------------|------------|
+| 🔥 **STRONG BUY** | ≥6 (BULL) / ≥7 (BEAR/CAUTION) | ≥72% (BULL) / ≥78% | One of: Stoch/BB/MACD | Enter next day at open. Set stop immediately. |
+| 👀 **WATCH – HIGH QUALITY** | ≥4 | ≥62% | Daily trend | Watchlist. Enter if opens strong. |
+| 📋 **WATCH – DEVELOPING** | ≥3 | any | Daily trend | Monitor only. Setup not confirmed. |
 
-### Short action tiers
+### Short tiers (score out of 10)
 
-| Action | Requirements | What to do |
-|--------|-------------|------------|
-| 🔥 **STRONG SHORT** | Score ≥5 (BEAR) or ≥6 (BULL) + Fall Prob ≥68% + one of: Stoch/BB/MACD | Enter short next day. Place cover stop immediately. |
-| 👀 **WATCH SHORT – HIGH QUALITY** | Score ≥4 + Prob ≥60% + bearish trend | Watchlist. Short if it continues lower at open. |
-| 📋 **WATCH SHORT – DEVELOPING** | Score ≥3 + bearish trend | Monitor only. |
+| Action | Score | Fall Prob | Also needs | What to do |
+|--------|-------|-----------|------------|------------|
+| 🔥 **STRONG SHORT** | ≥5 (BEAR/CAUTION) / ≥6 (BULL) | ≥68% (BEAR) / ≥72% | One of: Stoch/BB/MACD | Enter short. Place cover stop immediately. |
+| 👀 **WATCH SHORT – HQ** | ≥4 | ≥60% | Bearish trend | Watchlist. Short if continues lower. |
+| 📋 **WATCH SHORT – DEV** | ≥3 | any | Bearish trend | Monitor only. |
 
 ### Market regime effect
 
-| Regime | Long threshold | Short threshold |
-|--------|---------------|-----------------|
-| 🟢 BULL | Score ≥6, Prob ≥72% | Score ≥6, Prob ≥72% |
-| 🟡 CAUTION | Score ≥7, Prob ≥78% (long prob reduced 12%) | Score ≥5, Prob ≥68% (+3% boost) |
-| 🔴 BEAR | Score ≥7, Prob ≥78% (long prob reduced 25%) | Score ≥5, Prob ≥68% (+8% boost) |
+| Regime | Detected when | Long adjustment | Short adjustment |
+|--------|--------------|-----------------|------------------|
+| 🟢 **BULL** | SPY > EMA20 and VIX < 20 | Normal thresholds | Normal |
+| 🟡 **CAUTION** | Between BULL and BEAR | Prob × 0.88 (–12%) | Bonus +3% |
+| 🔴 **BEAR** | SPY < EMA50 or VIX > 25 | Prob × 0.75 (–25%), score ≥7 | Bonus +8% |
+
+### Signal combo bonuses (added to probability)
+
+| Combo | Bonus |
+|-------|-------|
+| BB squeeze + Vol breakout + Stoch bounce | +7% |
+| MACD accel + RSI>50 + Higher lows | +6% |
+| Daily trend + Weekly trend + RS>SPY | +5% |
+| Fresh golden cross + Vol breakout | +8% |
         """)
 
     # ── TRADE PLAN ───────────────────────────────────────────────────────────
-    with st.expander("💼 Reading the trade plan — stops, targets, sizing"):
+    with st.expander("💼 Trade plan — stops, targets, sizing"):
         st.markdown("""
 ### Stop loss
 
-**Best Stop** = the tighter of:
-- **ATR Stop**: Entry price – 1.5 × 14-day ATR
-- **Swing Stop**: Last swing low × 0.995 (0.5% below swing low)
+**Best Stop** = higher of:
+- **ATR Stop**: Entry − 1.5 × 14-day ATR
+- **Swing Stop**: Last swing low × 0.995
 
-Always use the higher of the two (closer to price) as your hard stop.
+**Trail Stop** — move stop to Entry + 0.5× risk once Target 1:1 is hit. Locks in profit.
 
-**Trail Stop** = Entry + 0.5× risk. Once Target 1:1 is hit, move stop here to lock in partial profit.
-
-**Time Stop** = Exit on Day 4 if price has not reached Target 1:1. Don't let a non-performing trade turn into a loss.
+**Time Stop** — exit on Day 4 if price hasn't reached Target 1:1. Prevents dead money.
 
 ### Targets
 
-- **Target 1:1** = Entry + (Entry – Stop). Same distance above entry as stop is below. Take 50% off here.
-- **Target 1:2** = Entry + 2× risk. Hold remainder for full swing target.
+| Target | Formula | Action |
+|--------|---------|--------|
+| **1:1** | Entry + (Entry − Stop) | Take 50% off position here |
+| **1:2** | Entry + 2× risk | Exit remainder here |
 
-### Position sizing (Pos/$1k risk)
+### Position sizing
 
-This number tells you how many shares to buy per $1,000 of risk you're willing to take.
+`Pos/$1k risk` = 1000 ÷ risk per share
 
-Example: NVDA at $150, stop at $145 → risk = $5/share → Pos/$1k = 200 shares per $1,000 risked.
+**Example:** NVDA at ₹150, stop ₹145 → risk = ₹5 → buy 200 shares per ₹1,000 risked.
+Risk max 1–2% of portfolio per trade.
 
-If you risk $500 per trade: buy 100 shares. Never risk more than 1–2% of your portfolio per trade.
+### Short trade plan (reversed)
 
-### Short trade plan
-
-All the same logic but reversed:
-- **Cover Stop** = price at which you BUY BACK to exit if wrong. Place as hard stop-limit immediately on entry.
-- Targets are BELOW entry price.
+- **Cover Stop** = Entry + 1.5× ATR or last swing high × 1.005 (whichever is closer)
+- **Targets** are BELOW entry price
+- **Time Stop**: exit Day 4 if price hasn't reached Target 1:1
         """)
 
     # ── RISK WARNINGS ────────────────────────────────────────────────────────
@@ -2322,34 +2604,21 @@ All the same logic but reversed:
         st.warning("""
 **This tool does not provide financial advice. All signals are for informational purposes only.**
 
-Key risks to understand:
+**1. Signal accuracy is not 100%** — even 78% probability means 22 in 100 trades lose. Always use stops.
 
-**1. Signal accuracy is not 100%**
-Even a 78% probability means 22 out of 100 trades will lose. Always use stop losses.
+**2. Short selling — US only** — Short selling has unlimited loss potential. SGX is limited; India retail cannot short individual stocks. Never short without a hard cover-stop placed immediately.
 
-**2. Short selling has unlimited loss potential**
-When you short a stock, losses are theoretically unlimited. A $50 stock can go to $500.
-Never short without a hard cover-stop order placed immediately.
+**3. Earnings risk** — 14-day guard is active, but surprise earnings/guidance can still gap stocks 20–30% overnight.
 
-**3. Earnings risk**
-Even with the 14-day earnings guard, surprise earnings or guidance changes can gap
-a stock 20–30% overnight. The scanner cannot protect against this completely.
+**4. Concentration risk** — Side-by-Side tab warns when ≥3 STRONG BUY setups are in the same sector. Stocks in the same sector are 0.80+ correlated — a sector sell-off wipes all positions simultaneously.
 
-**4. Concentration risk**
-The Side-by-Side tab will warn you when too many STRONG BUY setups are in the same sector.
-Stocks in the same sector are 0.80+ correlated — a sector sell-off wipes all positions.
+**5. Monday penalty** — Probability is reduced 6% on Mondays. Setups tagged ⚠️MON have lower reliability. Consider waiting for Tuesday entry.
 
-**5. Monday penalty**
-The scanner reduces all probabilities by 6% on Mondays due to weekend gap risk.
-Setups tagged ⚠️MON have lower reliability — consider waiting for Tuesday.
+**6. SGX liquidity** — SGX stocks have much lower daily volume. Use limit orders and expect wider spreads. Position size accordingly.
 
-**6. Liquidity**
-SGX stocks (.SI) have much lower daily volume than US stocks. Use limit orders and
-expect wider spreads. Position size accordingly.
+**7. India FX risk** — India NSE prices are in INR. If you are investing from Singapore, add INR/SGD currency risk to your position sizing.
 
-**7. Past performance**
-Signal weights are based on historical win rates. Past performance does not guarantee
-future results. Market regimes change.
+**8. Market hours** — Data is only live during respective market hours. Outside hours, sector heatmap shows previous close data.
         """)
 
     # ── SIDEBAR SETTINGS ─────────────────────────────────────────────────────
@@ -2357,57 +2626,62 @@ future results. Market regimes change.
         st.markdown("""
 | Setting | What it does | Recommended |
 |---------|-------------|-------------|
-| **Top N green/red sectors** | How many sectors to pull candidates from. Higher = more stocks scanned but slower. | 3 |
-| **Min LONG rise prob** | Minimum Bayesian probability to show in results. | 62% (conservative: 72%) |
-| **Min SHORT fall prob** | Minimum probability for short setups. | 60% (conservative: 70%) |
-| **Skip earnings within 7 days** | Removes stocks with earnings in the next 14 days. | ON always |
-| **Must have Stoch bounce** | Only show longs where Stoch RSI confirmed an oversold bounce. | OFF (use if too many results) |
-| **Must have BB bull squeeze** | Only show longs with BB compression + price above midline. | OFF |
-| **Must have MACD acceleration** | Only show longs where MACD histogram accelerating upward. | OFF |
-| **Custom tickers** | Add any ticker not in the base list. Comma-separated. | e.g. HIMS, NVTS |
+| **Top N green/red sectors** | How many sectors to pull candidates from. Higher = more stocks, slower scan. | 3 |
+| **Min LONG rise prob** | Minimum Bayesian probability to show in results. | 62% (strict: 72%) |
+| **Min SHORT fall prob** | Minimum probability for short setups. | 60% (strict: 70%) |
+| **Skip earnings within 7 days** | Skips stocks with earnings in the next 14 days (guard is extended to 14). | ON always |
+| **Must have Stoch bounce** | Only show longs with confirmed Stoch RSI oversold bounce. | OFF normally |
+| **Must have BB bull squeeze** | Only show longs with BB squeeze + price above midline. | OFF normally |
+| **Must have MACD acceleration** | Only show longs with MACD histogram accelerating up. | OFF normally |
+| **Custom tickers** | Add tickers not in the base list. Works for any market suffix (.SI, .NS, etc.). | e.g. HIMS, RVNL.NS |
+
+**Market Selector (above tabs)** — controls which ticker list is scanned AND which heatmap is shown. Changing the market does NOT automatically re-run the scan — click the scan button again.
         """)
 
     # ── GLOSSARY ─────────────────────────────────────────────────────────────
-    with st.expander("📖 Glossary — technical terms explained"):
+    with st.expander("📖 Glossary"):
         st.markdown("""
 | Term | Meaning |
 |------|---------|
-| **EMA** | Exponential Moving Average — weighted average giving more weight to recent prices |
-| **EMA8 / EMA21** | Short-term trend indicators. Price > EMA8 > EMA21 = bullish alignment |
+| **EMA8 / EMA21** | Exponential Moving Averages. Price > EMA8 > EMA21 = short-term uptrend |
 | **EMA50 / EMA200** | Long-term trend. Golden Cross = EMA50 crosses above EMA200 |
-| **RSI** | Relative Strength Index (0–100). >70 = overbought, <30 = oversold, 50 = neutral |
-| **Stochastic RSI** | K line: current RSI position vs recent range. D line: 3-day average of K |
-| **MACD** | Moving Average Convergence Divergence. Histogram = MACD line minus signal line |
-| **Bollinger Bands** | Price envelope ±2 standard deviations from 20-day MA. Squeeze = bands narrowing |
+| **RSI** | Relative Strength Index (0–100). >70 overbought, <30 oversold, 50 = neutral |
+| **Stochastic RSI** | K line = RSI position vs recent range. D line = 3-day avg of K |
+| **MACD** | Moving Average Convergence Divergence. Histogram = MACD line minus signal |
+| **Bollinger Bands** | ±2 std dev envelope around 20-day MA. Squeeze = bands narrowing before a move |
 | **ADX** | Average Directional Index. >20 = trending, >40 = strongly trending |
-| **ATR** | Average True Range. Measures daily volatility in price terms |
-| **OBV** | On-Balance Volume. Rising OBV = more volume on up days = accumulation |
-| **Bayesian probability** | Probability updated by each signal's historical win rate. More signals = higher confidence |
-| **Swing low / Swing high** | Local price extremes used to identify support/resistance levels |
-| **VCP** | Volatility Contraction Pattern. ATR shrinking = stock coiling before a move |
-| **RS Line** | Relative Strength vs SPY. Rising RS = stock outperforming the market |
-| **Short interest** | % of float sold short. >15% + bullish signals = short squeeze potential |
-| **Float** | Number of shares available to trade publicly. Lower float = more volatile |
-| **Dollar volume** | Price × daily shares traded. Must be >$5M for liquid swing trades |
+| **ATR** | Average True Range. Daily volatility measure used for stop placement |
+| **OBV** | On-Balance Volume. Rising = buying pressure / accumulation |
+| **Bayesian probability** | Sequential update: each signal adjusts probability based on its historical win rate |
+| **Combo bonus** | Extra probability boost when specific high-win signal combinations fire together |
+| **Monday penalty** | –6% probability adjustment on Mondays to account for weekend gap risk |
+| **VCP** | Volatility Contraction Pattern. ATR5/ATR20 < 0.85 = stock coiling before a move |
+| **RS>SPY** | Stock's 5-day return greater than SPY's 5-day return = market outperformer |
+| **Short interest** | % of float sold short. >15% with bullish signals = squeeze candidate |
+| **Float** | Number of shares available to trade publicly |
+| **Dollar volume** | Price × average daily volume. >$5M filter ensures liquid swing trades |
+| **Trail Stop** | Stop moved to breakeven + 0.5× risk after Target 1:1 is hit |
+| **Time Stop** | Exit on Day 4 if Target 1:1 not reached regardless of P&L |
         """)
 
     # ── INSTALL ──────────────────────────────────────────────────────────────
-    with st.expander("🔧 Installation & troubleshooting"):
+    with st.expander("🔧 Install & run"):
         st.markdown("""
+```bash
+pip install streamlit yfinance pandas numpy ta financedatabase plotly
+python -m streamlit run swing_trader_v9.py
+```
 
-### Data refresh schedule
+| Data | Cache | Notes |
+|------|-------|-------|
+| Sector heatmaps | 15 min | All 3 markets cached separately |
+| Market regime (SPY/VIX) | 30 min | Shows warning if fetch fails |
+| Scan results | 60 min | Re-run scan to refresh |
+| US ETF holdings | 6 hours | Only fetched for US market scans |
+| ETF performance table | 60 min | Click 🔄 Refresh to force update |
 
-| Data | Cache duration |
-|------|---------------|
-| Sector heatmap | 15 minutes |
-| Market regime (SPY/VIX) | 30 minutes |
-| Scan results (OHLCV) | 60 minutes |
-| ETF holdings | 6 hours |
-| SG ETF performance table | 60 minutes |
-
-Click **🔄 Refresh ETF Holdings** in the ETF tab to force a refresh.
+**Market regime shows UNKNOWN?** Run `pip install --upgrade yfinance` — this is the most common cause. The regime banner now shows the exact error message to help diagnose.
         """)
 
     st.markdown("---")
-    st.markdown("Created by Ripin")
-        
+    st.caption("Swing Scanner v9 · US + SGX + India · Not financial advice · Created by Ripin")
