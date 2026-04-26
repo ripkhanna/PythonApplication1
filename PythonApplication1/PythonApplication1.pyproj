@@ -25,6 +25,7 @@
     <Compile Include="Etf.py" />
     <Compile Include="etf1.py" />
     <Compile Include="old.py" />
+    <Compile Include="swing_trader_sector_wise_yfin_simple.py" />
     <Compile Include="swing_trader_sector_wise_yfin_inr.py" />
     <Compile Include="swing_trader_sector_wise_yfin.py" />
     <Compile Include="swing_trader_sector_wise_poly.py" />
