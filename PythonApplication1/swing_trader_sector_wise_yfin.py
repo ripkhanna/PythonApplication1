@@ -44,14 +44,14 @@ BASE_TICKERS = [
     # Software / Cloud
     "PLTR","MDB","SNOW","DDOG","NET","CRWD","ZS","OKTA","PANW","WDAY",
     "TEAM","SHOP","TTD","U","PATH","CFLT",
-    "S","TENB","QLYS","GTLB","ESTC","SAIL","DT","ZI",
+    "S","TENB","QLYS","GTLB","ESTC","SAIL","DT",
 
     # AI / Data / Analytics
     "SOUN","BBAI","IREN","VSCO","GFAI","CXAI",
 
     # Crypto / Fintech
     "COIN","MSTR","MARA","RIOT","CLSK","WULF","HUT","BITF",
-    "HOOD","PYPL","SQ","SOFI","AFRM","UPST","NU","MELI",
+    "HOOD","PYPL","SOFI","AFRM","UPST","NU","MELI",
     "BILL","TOST","FLYW","FUTU","TIGR",
 
     # China Tech
@@ -63,7 +63,7 @@ BASE_TICKERS = [
     # Consumer / Travel / Gaming
     "DASH","ABNB","BKNG","CVNA","APP","UBER","LYFT","RCL","CCL","NCLH",
     "RBLX","TTWO","EA","DKNG","PENN","MGAM","LVS","WYNN","MGM",
-    "W","OPEN","RDFN",
+    "W","OPEN",
 
     # EV / Auto
     "TSLA","RIVN","LCID","NIO","XPEV","F","GM","STLA",
@@ -87,13 +87,13 @@ BASE_TICKERS = [
     "TWST","SDGR","ALNY","BMRN",
 
     # Healthcare Tech / GLP-1
-    "HIMS","LLY","NVO","VEEV","DOCS","ACCD","DXCM","TDOC",
+    "HIMS","LLY","NVO","VEEV","DOCS","DXCM","TDOC",
 
     # Quantum Computing
     "IONQ","QUBT","RGTI","ARQQ","QBTS",
 
     # High-beta / Small-cap / Meme
-    "NVTS","ACHR","JOBY","GME","AMC","BBWI","BIRD","NKLA","CLOV",
+    "NVTS","ACHR","JOBY","GME","AMC","BBWI","BIRD","CLOV",
     "MVIS","CPSH","SKIN","XPOF","PRCT",
 
     # ── SINGAPORE SGX (yfinance suffix: .SI) ─────────────────────────────────
@@ -111,7 +111,6 @@ BASE_TICKERS = [
     "F34.SI",   # Wilmar International — agribusiness
     "V03.SI",   # Venture Corporation — electronics
     "C52.SI",   # ComfortDelGro — transport
-    "S51.SI",   # Seatrium (formerly SembMarine) — high beta offshore
     "H78.SI",   # Hongkong Land (SGX-listed)
     "U14.SI",   # UOL Group — property
     "C38U.SI",  # CapitaLand Integrated Commercial Trust (CICT)
@@ -377,6 +376,12 @@ def get_earnings_flag(ticker):
 # SIGNAL COMPUTATION  — exact v5 compute_all_signals
 # accepts close/high/low/vol Series (not DataFrame)
 # ─────────────────────────────────────────────────────────────────────────────
+LONG_WEIGHTS.update({
+    "vcp_tightness":   0.68,   # [NEW] ATR 5/20 < 0.85 — breakout ready
+    "strong_close":    0.65,   # [NEW] Close in top 25% of daily range
+    "rs_momentum":     0.67,   # [NEW] Relative Strength line is trending up (20d)
+    "weekly_trend":    0.72,   # [WEIGHT INCREASED]
+})
 def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None):
     """
     Computes all long and short signals.
@@ -520,6 +525,26 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
     last_swing_low  = swing_lows[-1][1]  if swing_lows  else p * 0.95
     last_swing_high = swing_highs[-1][1] if swing_highs else p * 1.05
 
+    # ── [NEW] VCP TIGHTNESS (Volatility Contraction) ──────────────────────────
+    # High-probability setups often happen when volatility "shrinks" before a move
+    atr5 = ta.volatility.average_true_range(high, low, close, window=5).iloc[-1]
+    atr20 = ta.volatility.average_true_range(high, low, close, window=20).iloc[-1]
+    vcp_tightness = (atr5 / atr20) < 0.85 if atr20 > 0 else False
+
+    # ── [NEW] STRONG CLOSE (Institutional Support) ────────────────────────────
+    # A strong finish implies buyers held control into the close
+    day_range = float(high.iloc[-1]) - float(low.iloc[-1])
+    closing_pos = (float(close.iloc[-1]) - float(low.iloc[-1])) / day_range if day_range > 0 else 0
+    strong_close = closing_pos >= 0.75
+
+    # ── [NEW] RS MOMENTUM (Relative Strength Line) ────────────────────────────
+    # Does the stock continue to gain ground vs SPY?
+    rs_momentum = False
+    if spy_close is not None and len(close) >= 20:
+        rs_line = close / spy_close.reindex(close.index).ffill()
+        rs_ema = rs_line.rolling(20).mean()
+        rs_momentum = rs_line.iloc[-1] > rs_ema.iloc[-1]
+
     # ── LONG signals ─────────────────────────────────────────────────────────
     long_signals = {
         # Original v5
@@ -544,6 +569,10 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
         "consolidation":   consolidation,
         "rsi_divergence":  rsi_div,
         "sector_leader":   sector_leader,
+        "vcp_tightness":   vcp_tightness,
+        "strong_close":    strong_close,
+        "rs_momentum":     rs_momentum,
+        "weekly_trend":    weekly_trend_ok,
     }
 
     # ── SHORT signals ─────────────────────────────────────────────────────────
@@ -587,7 +616,7 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
 # ─────────────────────────────────────────────────────────────────────────────
 def _score_stocks_batch(symbols: list) -> dict:
     """
-    ONE yfinance batch download → swing score for every symbol.
+    ONE batch download → swing score for every symbol.
     Returns {sym: swing_score}
     """
     scored = {}
@@ -689,7 +718,7 @@ def fetch_sector_constituents(target_per_sector: int = 25) -> dict:
     for sector_name, etf_ticker in etf_items:
         if sectors.get(sector_name, {}).get("stocks"):
             continue
-        status.text(f"📡 Fetching {etf_ticker} holdings via yfinance...")
+        status.text(f"📡 Fetching {etf_ticker} holdings ...")
         try:
             tkr    = yf.Ticker(etf_ticker)
             stocks = []
@@ -713,7 +742,7 @@ def fetch_sector_constituents(target_per_sector: int = 25) -> dict:
             sectors[sector_name] = {
                 "etf": etf_ticker,
                 "stocks": stocks[: target_per_sector * 2],
-                "source": "yfinance",
+                "source": "",
             }
         except Exception:
             sectors[sector_name] = {"etf": etf_ticker, "stocks": [], "source": "none"}
@@ -1204,7 +1233,7 @@ extra_input = st.sidebar.text_input("Add tickers (comma-separated)", placeholder
 st.sidebar.markdown("---")
 st.sidebar.markdown(
     f"**Data sources**\n\n"
-    f"✅ yfinance\n\n"
+    f"✅\n\n"
     f"{'✅' if _fd_available else '⚠️'} FinanceDatabase "
     f"({'installed' if _fd_available else 'pip install financedatabase'})"
 )
@@ -1233,7 +1262,7 @@ st.markdown("---")
 # ─────────────────────────────────────────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────────────────────────────────────────
-tab_sectors, tab_long, tab_short, tab_both, tab_etf, tab_stock, tab_diag = st.tabs([
+tab_sectors, tab_long, tab_short, tab_both, tab_etf, tab_stock, tab_diag, tab_help = st.tabs([
     "🗂️ Sector Heatmap",
     "📈 Long Setups",
     "📉 Short Setups",
@@ -1241,6 +1270,7 @@ tab_sectors, tab_long, tab_short, tab_both, tab_etf, tab_stock, tab_diag = st.ta
     "📊 ETF Holdings",
     "🔬 Stock Analysis",
     "🔍 Diagnostics",
+    "❓ Help",
 ])
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1248,7 +1278,7 @@ tab_sectors, tab_long, tab_short, tab_both, tab_etf, tab_stock, tab_diag = st.ta
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_sectors:
     st.markdown("### Live Sector Heatmap")
-    st.caption("yfinance · Refreshes every 15 min")
+    st.caption("Refreshes every 15 min")
     sector_df = get_sector_performance()
 
     if sector_df.empty or "Today %" not in sector_df.columns:
@@ -1511,7 +1541,7 @@ with tab_both:
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_etf:
     st.markdown("### ETF Holdings — Live Constituents per Sector")
-    st.caption("Fetched via yfinance · Cached 6 hours · Click a sector to expand")
+    st.caption("Fetched · Cached 6 hours · Click a sector to expand")
 
     # ── SG INVESTOR ETF DASHBOARD ─────────────────────────────────────────────
     st.markdown("#### 🇸🇬 SG Investor ETF Dashboard — Performance & Fee Matrix")
@@ -1689,7 +1719,7 @@ with tab_etf:
     styled   = (styled.map if hasattr(styled,"map") else styled.applymap)(colour_vol, subset=["Vol %"])
     st.dataframe(styled, use_container_width=True)
 
-    st.caption("✅ = fetched live from yfinance  ·  〰️ = using fallback value")
+    st.caption("✅ = fetched live ·  〰️ = using fallback value")
     st.markdown("---")
     # ── END SG ETF DASHBOARD ──────────────────────────────────────────────────
 
@@ -1703,7 +1733,7 @@ with tab_etf:
         c1, c2, c3 = st.columns(3)
         c1.metric("Sectors tracked", len(live_holdings))
         c2.metric("Total unique stocks", total_stocks)
-        c3.metric("Source", "yfinance")
+        c3.metric("Source", "")
 
         st.markdown("---")
 
@@ -2098,3 +2128,254 @@ with tab_diag:
                 if vs.startswith("PASS"):   cb.success(vs)
                 elif vs.startswith("FAIL"): cb.error(vs)
                 else:                       cb.write(vs)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 8 — HELP
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_help:
+    st.markdown("## ❓ How to Use the Swing Scanner v8")
+    st.caption("Complete guide — read this before running your first scan")
+
+    # ── QUICK START ───────────────────────────────────────────────────────────
+    with st.expander("🚀 Quick Start — 5 steps to your first scan", expanded=True):
+        st.markdown("""
+**Step 1 — Check the Sector Heatmap tab**
+Open the 🗂️ Sector Heatmap tab. Green tiles = sectors with upward momentum today.
+Red tiles = sectors falling today. This is your market context before scanning.
+
+**Step 2 — Set your filters (sidebar)**
+- **Top N sectors**: Start with 3. This scans the top 3 green sectors for longs and top 3 red for shorts.
+- **Min LONG rise prob**: Default 62%. Raise to 72%+ for higher conviction only.
+- **Skip earnings within 7 days**: Keep this ON — earnings destroy swing trades.
+
+**Step 3 — Click 🚀 Run Sector-Driven Scan**
+The scanner will:
+1. Download all 252+ tickers in one batch (fast)
+2. Compute 20 long signals + 10 short signals per stock
+3. Apply Bayesian probability scoring
+4. Show results sorted by probability
+
+**Step 4 — Review results in Long Setups / Short Setups tabs**
+Focus on **STRONG BUY** first. Check the Signals column — more tags = more confirmation.
+Look for `COMBO+` tags — these indicate high-probability signal clusters.
+
+**Step 5 — Verify with Stock Analysis tab**
+Before entering, type the ticker in 🔬 Stock Analysis to see the full chart and trade plan.
+Check the stop loss and confirm the risk/reward is at least 1:2 before entering.
+        """)
+
+    # ── SIGNAL GUIDE ─────────────────────────────────────────────────────────
+    with st.expander("📊 Signal Guide — what every signal means"):
+        st.markdown("### Long Signals (20 total)")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("""
+**Original v5 signals (10)**
+
+| Signal | What it means |
+|--------|---------------|
+| `STOCH BOUNCE` | Stochastic RSI was oversold (K<20 for 2 bars), now rising above D-line |
+| `BB BULL SQ` | Bollinger Band squeeze with price above midline — compression before upward explosion |
+| `MACD ACCEL` | MACD histogram rising for 3 consecutive bars — momentum building |
+| `VOL BREAKOUT` | Price at 10-day high + volume 1.8× average — institutional buying |
+| `RSI>50` | RSI crossed above 50 confirming trend shift from bearish to bullish |
+| `HIGHER LOWS` | Two consecutive swing lows each higher than the last — uptrend structure |
+| `MACD CROSS` | MACD line crossed above signal line with positive histogram |
+| `ADX>20` | Average Directional Index above 20 — trend has strength |
+| `VOL>1.5×` | Today's volume 1.5× the 20-day average — above average participation |
+| `TREND` | Price > EMA8 > EMA21 — basic daily uptrend aligned |
+            """)
+        with col2:
+            st.markdown("""
+**New accuracy signals (10)**
+
+| Signal | What it means |
+|--------|---------------|
+| `WKLY TREND` | EMA20 > EMA50 — weekly trend is up, prevents buying in macro downtrends |
+| `🟡GC / 🔥FRESH GC` | Golden Cross (EMA50 > EMA200). Fresh = crossed in last 10 days |
+| `RS>SPY` | Stock outperforming S&P 500 over last 5 days — market leader |
+| `52W HIGH` | Price within 10% of 52-week high — momentum continuation |
+| `OBV↑` | On-Balance Volume rising 5 days — institutional accumulation |
+| `BULL CANDLE` | Hammer or bullish engulfing pattern on last candle |
+| `ATR EXP` | Today's range > 1.2× ATR — breakout energy present |
+| `COIL` | 3–8 days of tight range before today — compression before expansion |
+| `RSI DIV` | Price made lower low but RSI made higher low — bullish divergence |
+| `SEC LEAD` | Stock outperforming its sector ETF last 5 days |
+| `⚡SQUEEZE` | Short interest > 15% + bullish signals = short squeeze potential |
+| `COMBO+%` | High-probability signal cluster detected (BB+VOL+STOCH, MACD+RSI+HIGHERLOW, etc.) |
+            """)
+
+        st.markdown("### Short Signals (10)")
+        st.markdown("""
+| Signal | What it means |
+|--------|---------------|
+| `STOCH ROLLOVER` | Stochastic was overbought (K>80), now crossing below D-line |
+| `BB BEAR SQ` | BB squeeze with price below midline — compression before downward move |
+| `MACD DECEL` | MACD histogram declining 3 bars — momentum fading |
+| `VOL BREAKDOWN` | Price at 10-day low + high volume — distribution selling |
+| `LOWER HIGHS` | Two consecutive swing highs each lower — downtrend structure |
+| `RSI<50` | RSI crossed below 50 confirming bearish shift |
+| `ADX BEAR` | ADX > 20 with price below EMA21 — strong downtrend |
+| `DIST DAY` | Large red candle on 2× average volume — institutional selling |
+| `MACD BEAR` | MACD line below signal line with negative histogram |
+| `TREND BEAR` | Price < EMA8 < EMA21 — basic daily downtrend |
+        """)
+
+    # ── ACTION TIERS ─────────────────────────────────────────────────────────
+    with st.expander("🎯 Action tiers — STRONG BUY vs WATCH"):
+        st.markdown("""
+### Long action tiers
+
+| Action | Requirements | What to do |
+|--------|-------------|------------|
+| 🔥 **STRONG BUY** | Score ≥6/20 (BULL) or ≥7 (BEAR/CAUTION) + Rise Prob ≥72% + one of: Stoch/BB/MACD | Enter next day at market open. Set stop immediately. |
+| 👀 **WATCH – HIGH QUALITY** | Score ≥4 + Prob ≥62% + daily trend | Put on watchlist. Enter if it opens strong next day. |
+| 📋 **WATCH – DEVELOPING** | Score ≥3 + daily trend | Monitor only. Setup not confirmed yet. |
+
+### Short action tiers
+
+| Action | Requirements | What to do |
+|--------|-------------|------------|
+| 🔥 **STRONG SHORT** | Score ≥5 (BEAR) or ≥6 (BULL) + Fall Prob ≥68% + one of: Stoch/BB/MACD | Enter short next day. Place cover stop immediately. |
+| 👀 **WATCH SHORT – HIGH QUALITY** | Score ≥4 + Prob ≥60% + bearish trend | Watchlist. Short if it continues lower at open. |
+| 📋 **WATCH SHORT – DEVELOPING** | Score ≥3 + bearish trend | Monitor only. |
+
+### Market regime effect
+
+| Regime | Long threshold | Short threshold |
+|--------|---------------|-----------------|
+| 🟢 BULL | Score ≥6, Prob ≥72% | Score ≥6, Prob ≥72% |
+| 🟡 CAUTION | Score ≥7, Prob ≥78% (long prob reduced 12%) | Score ≥5, Prob ≥68% (+3% boost) |
+| 🔴 BEAR | Score ≥7, Prob ≥78% (long prob reduced 25%) | Score ≥5, Prob ≥68% (+8% boost) |
+        """)
+
+    # ── TRADE PLAN ───────────────────────────────────────────────────────────
+    with st.expander("💼 Reading the trade plan — stops, targets, sizing"):
+        st.markdown("""
+### Stop loss
+
+**Best Stop** = the tighter of:
+- **ATR Stop**: Entry price – 1.5 × 14-day ATR
+- **Swing Stop**: Last swing low × 0.995 (0.5% below swing low)
+
+Always use the higher of the two (closer to price) as your hard stop.
+
+**Trail Stop** = Entry + 0.5× risk. Once Target 1:1 is hit, move stop here to lock in partial profit.
+
+**Time Stop** = Exit on Day 4 if price has not reached Target 1:1. Don't let a non-performing trade turn into a loss.
+
+### Targets
+
+- **Target 1:1** = Entry + (Entry – Stop). Same distance above entry as stop is below. Take 50% off here.
+- **Target 1:2** = Entry + 2× risk. Hold remainder for full swing target.
+
+### Position sizing (Pos/$1k risk)
+
+This number tells you how many shares to buy per $1,000 of risk you're willing to take.
+
+Example: NVDA at $150, stop at $145 → risk = $5/share → Pos/$1k = 200 shares per $1,000 risked.
+
+If you risk $500 per trade: buy 100 shares. Never risk more than 1–2% of your portfolio per trade.
+
+### Short trade plan
+
+All the same logic but reversed:
+- **Cover Stop** = price at which you BUY BACK to exit if wrong. Place as hard stop-limit immediately on entry.
+- Targets are BELOW entry price.
+        """)
+
+    # ── RISK WARNINGS ────────────────────────────────────────────────────────
+    with st.expander("⚠️ Risk warnings — read before trading"):
+        st.warning("""
+**This tool does not provide financial advice. All signals are for informational purposes only.**
+
+Key risks to understand:
+
+**1. Signal accuracy is not 100%**
+Even a 78% probability means 22 out of 100 trades will lose. Always use stop losses.
+
+**2. Short selling has unlimited loss potential**
+When you short a stock, losses are theoretically unlimited. A $50 stock can go to $500.
+Never short without a hard cover-stop order placed immediately.
+
+**3. Earnings risk**
+Even with the 14-day earnings guard, surprise earnings or guidance changes can gap
+a stock 20–30% overnight. The scanner cannot protect against this completely.
+
+**4. Concentration risk**
+The Side-by-Side tab will warn you when too many STRONG BUY setups are in the same sector.
+Stocks in the same sector are 0.80+ correlated — a sector sell-off wipes all positions.
+
+**5. Monday penalty**
+The scanner reduces all probabilities by 6% on Mondays due to weekend gap risk.
+Setups tagged ⚠️MON have lower reliability — consider waiting for Tuesday.
+
+**6. Liquidity**
+SGX stocks (.SI) have much lower daily volume than US stocks. Use limit orders and
+expect wider spreads. Position size accordingly.
+
+**7. Past performance**
+Signal weights are based on historical win rates. Past performance does not guarantee
+future results. Market regimes change.
+        """)
+
+    # ── SIDEBAR SETTINGS ─────────────────────────────────────────────────────
+    with st.expander("⚙️ Sidebar settings explained"):
+        st.markdown("""
+| Setting | What it does | Recommended |
+|---------|-------------|-------------|
+| **Top N green/red sectors** | How many sectors to pull candidates from. Higher = more stocks scanned but slower. | 3 |
+| **Min LONG rise prob** | Minimum Bayesian probability to show in results. | 62% (conservative: 72%) |
+| **Min SHORT fall prob** | Minimum probability for short setups. | 60% (conservative: 70%) |
+| **Skip earnings within 7 days** | Removes stocks with earnings in the next 14 days. | ON always |
+| **Must have Stoch bounce** | Only show longs where Stoch RSI confirmed an oversold bounce. | OFF (use if too many results) |
+| **Must have BB bull squeeze** | Only show longs with BB compression + price above midline. | OFF |
+| **Must have MACD acceleration** | Only show longs where MACD histogram accelerating upward. | OFF |
+| **Custom tickers** | Add any ticker not in the base list. Comma-separated. | e.g. HIMS, NVTS |
+        """)
+
+    # ── GLOSSARY ─────────────────────────────────────────────────────────────
+    with st.expander("📖 Glossary — technical terms explained"):
+        st.markdown("""
+| Term | Meaning |
+|------|---------|
+| **EMA** | Exponential Moving Average — weighted average giving more weight to recent prices |
+| **EMA8 / EMA21** | Short-term trend indicators. Price > EMA8 > EMA21 = bullish alignment |
+| **EMA50 / EMA200** | Long-term trend. Golden Cross = EMA50 crosses above EMA200 |
+| **RSI** | Relative Strength Index (0–100). >70 = overbought, <30 = oversold, 50 = neutral |
+| **Stochastic RSI** | K line: current RSI position vs recent range. D line: 3-day average of K |
+| **MACD** | Moving Average Convergence Divergence. Histogram = MACD line minus signal line |
+| **Bollinger Bands** | Price envelope ±2 standard deviations from 20-day MA. Squeeze = bands narrowing |
+| **ADX** | Average Directional Index. >20 = trending, >40 = strongly trending |
+| **ATR** | Average True Range. Measures daily volatility in price terms |
+| **OBV** | On-Balance Volume. Rising OBV = more volume on up days = accumulation |
+| **Bayesian probability** | Probability updated by each signal's historical win rate. More signals = higher confidence |
+| **Swing low / Swing high** | Local price extremes used to identify support/resistance levels |
+| **VCP** | Volatility Contraction Pattern. ATR shrinking = stock coiling before a move |
+| **RS Line** | Relative Strength vs SPY. Rising RS = stock outperforming the market |
+| **Short interest** | % of float sold short. >15% + bullish signals = short squeeze potential |
+| **Float** | Number of shares available to trade publicly. Lower float = more volatile |
+| **Dollar volume** | Price × daily shares traded. Must be >$5M for liquid swing trades |
+        """)
+
+    # ── INSTALL ──────────────────────────────────────────────────────────────
+    with st.expander("🔧 Installation & troubleshooting"):
+        st.markdown("""
+
+### Data refresh schedule
+
+| Data | Cache duration |
+|------|---------------|
+| Sector heatmap | 15 minutes |
+| Market regime (SPY/VIX) | 30 minutes |
+| Scan results (OHLCV) | 60 minutes |
+| ETF holdings | 6 hours |
+| SG ETF performance table | 60 minutes |
+
+Click **🔄 Refresh ETF Holdings** in the ETF tab to force a refresh.
+        """)
+
+    st.markdown("---")
+    st.markdown("Created by Ripin")
+        
