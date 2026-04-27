@@ -28,25 +28,122 @@ st.set_page_config(
 # ── Mobile-responsive CSS ─────────────────────────────────────────────────────
 st.markdown("""
 <style>
-@media (max-width: 768px) {
-    .block-container { padding: 0.5rem 0.6rem 1rem !important; }
-    h1 { font-size: 1.05rem !important; }
-    h2,h3 { font-size: 0.95rem !important; }
-    .stRadio > div { flex-direction: column !important; gap: 4px !important; }
-    .stTabs [data-baseweb="tab-list"] { flex-wrap: wrap !important; gap: 2px !important; }
-    .stTabs [data-baseweb="tab"] { font-size: 10px !important; padding: 3px 7px !important; min-width: 0 !important; }
-    [data-testid="metric-container"] label { font-size: 9px !important; }
-    [data-testid="metric-container"] [data-testid="stMetricValue"] { font-size: 14px !important; }
-    .stDataFrame { font-size: 11px !important; overflow-x: auto !important; }
-    .stButton button { width: 100% !important; }
-    .stSelectbox, .stMultiSelect, .stTextInput { font-size: 12px !important; }
+/* ── Global font size reduction ───────────────────────────────── */
+.stMarkdown, .stDataFrame, .stAlert, .stCaption,
+.stRadio, .stCheckbox, .stSlider, .stSelectbox,
+.stTextInput, .stButton, .stExpander { font-size: 12px !important; }
+
+/* ── Top padding: give room for title ─────────────────────────── */
+.block-container {
+    padding-top: 2.5rem !important;
+    padding-bottom: 0.5rem !important;
+    padding-left: 1rem !important;
+    padding-right: 1rem !important;
+    max-width: 100% !important;
 }
-[data-testid="metric-container"] { padding: 5px 7px !important; }
-.stDataFrame { overflow-x: auto !important; }
+
+/* ── Title / headers smaller ──────────────────────────────────── */
+h1 { font-size: 1.4rem !important; font-weight: 700 !important; margin: 0 0 4px !important; text-align: center !important; }
+h2 { font-size: 0.9rem !important; margin: 0 0 2px !important; }
+h3 { font-size: 0.85rem !important;margin: 2px 0 !important; }
+p, .stMarkdown p { font-size: 11px !important; margin: 2px 0 !important; }
+
+/* ── Metrics compact ──────────────────────────────────────────── */
+[data-testid="metric-container"] {
+    padding: 3px 6px !important;
+    border-radius: 4px !important;
+}
+[data-testid="metric-container"] label {
+    font-size: 9px !important;
+    line-height: 1.1 !important;
+}
+[data-testid="metric-container"] [data-testid="stMetricValue"] {
+    font-size: 13px !important;
+    line-height: 1.2 !important;
+}
+[data-testid="metric-container"] [data-testid="stMetricDelta"] {
+    font-size: 9px !important;
+}
+
+/* ── Tabs compact ─────────────────────────────────────────────── */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 1px !important;
+    flex-wrap: wrap !important;
+}
+.stTabs [data-baseweb="tab"] {
+    font-size: 10px !important;
+    padding: 3px 8px !important;
+    min-width: 0 !important;
+    height: auto !important;
+}
+
+/* ── Dataframe smaller text ───────────────────────────────────── */
+.stDataFrame {
+    font-size: 11px !important;
+    overflow-x: auto !important;
+}
+.stDataFrame th { font-size: 10px !important; padding: 2px 6px !important; }
+.stDataFrame td { font-size: 11px !important; padding: 2px 6px !important; }
+
+/* ── Buttons compact ──────────────────────────────────────────── */
+.stButton button {
+    font-size: 11px !important;
+    padding: 4px 10px !important;
+    height: auto !important;
+}
+
+/* ── Inputs compact ───────────────────────────────────────────── */
+.stTextInput input, .stSelectbox select,
+.stMultiSelect div[data-baseweb] {
+    font-size: 11px !important;
+    min-height: 28px !important;
+}
+
+/* ── Radio horizontal tight ───────────────────────────────────── */
+.stRadio > div {
+    gap: 6px !important;
+    flex-wrap: wrap !important;
+}
+.stRadio label { font-size: 11px !important; }
+
+/* ── Caption / info / warning smaller ────────────────────────── */
+.stAlert { padding: 4px 8px !important; font-size: 11px !important; }
+.stAlert p { font-size: 11px !important; margin: 0 !important; }
+[data-testid="stCaptionContainer"] { font-size: 10px !important; }
+
+/* ── Sidebar compact ──────────────────────────────────────────── */
+[data-testid="stSidebar"] .block-container {
+    padding-top: 0.5rem !important;
+}
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] .stCheckbox label,
+[data-testid="stSidebar"] .stSlider label {
+    font-size: 11px !important;
+}
+
+/* ── Expander compact ─────────────────────────────────────────── */
+.streamlit-expanderHeader {
+    font-size: 11px !important;
+    padding: 4px 8px !important;
+}
+.streamlit-expanderContent { padding: 4px 8px !important; }
+
+/* ── Remove default element spacing ──────────────────────────── */
+div[data-testid="stVerticalBlock"] > div {
+    gap: 0.2rem !important;
+}
+
+/* ── Mobile ───────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+    .block-container { padding: 0.3rem 0.4rem !important; }
+    .stTabs [data-baseweb="tab"] { font-size: 9px !important; padding: 2px 5px !important; }
+    .stButton button { width: 100% !important; }
+    [data-testid="metric-container"] [data-testid="stMetricValue"] { font-size: 12px !important; }
+}
 </style>
 """, unsafe_allow_html=True)
 
-st.caption("📈 **Swing Scanner v10** · 🟢 Green sectors → longs · 🔴 Red → shorts")
+st.title("📈 5–7 Day Swing Scanner v10 — Sector-Driven Long & Short")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TICKER UNIVERSE  — v4 curated high-quality list (always scanned)
@@ -345,10 +442,9 @@ def show_table(df, label, prob_col="Rise Prob"):
         st.info(f"No {label} setups.")
         return
 
-    # ✅ SEARCH ENABLED FOR ALL GRIDS
     df = grid_search_filter(df, label)
 
-    # ── Sort by Entry Quality: BUY → WATCH → WAIT → AVOID ────────────────────
+    # ── Sort by Entry Quality ─────────────────────────────────────────────────
     _quality_order = {"✅ BUY": 0, "👀 WATCH": 1, "⏳ WAIT": 2, "🚫 AVOID": 3}
     if "Entry Quality" in df.columns:
         df = df.copy()
@@ -359,30 +455,68 @@ def show_table(df, label, prob_col="Rise Prob"):
                                           else s.str.rstrip("%").astype(float))
         df = df.drop(columns="_eq_sort")
 
-    # ── Column selection — hide Signals, show only key columns ───────────────
+    # ── Column selection ──────────────────────────────────────────────────────
     if prob_col == "Rise Prob":
         display_cols = [c for c in [
-            "Ticker", "Entry Quality", "Rise Prob", "Score",
+            "Ticker", "Entry Quality", "Today %", "Rise Prob", "Score",
             "Price", "MA60 Stop", "TP1 +10%", "TP2 +15%", "TP3 +20%",
             "Sector", "Action",
         ] if c in df.columns]
     else:
-        # Short/Sell grid — mirror same structure
         display_cols = [c for c in [
-            "Ticker", "Entry Quality", "Fall Prob", "Score",
+            "Ticker", "Entry Quality", "Today %", "Fall Prob", "Score",
             "Price", "Cover Stop", "Target 1:1", "Target 1:2",
             "Sector", "Action",
         ] if c in df.columns]
 
     df_disp = df[display_cols] if display_cols else df
 
+    # ── Narrow column_config — makes grid appear smaller ─────────────────────
+    col_cfg = {
+        "Ticker":        st.column_config.TextColumn("Ticker",        width=60),
+        "Entry Quality": st.column_config.TextColumn("Entry",         width=70),
+        "Today %":       st.column_config.TextColumn("Today%",        width=58),
+        "Rise Prob":     st.column_config.TextColumn("Rise%",         width=55),
+        "Fall Prob":     st.column_config.TextColumn("Fall%",         width=55),
+        "Score":         st.column_config.TextColumn("Score",         width=50),
+        "Price":         st.column_config.TextColumn("Price",         width=60),
+        "MA60 Stop":     st.column_config.TextColumn("MA60Stop",      width=65),
+        "Cover Stop":    st.column_config.TextColumn("CoverStop",     width=65),
+        "TP1 +10%":      st.column_config.TextColumn("TP1+10%",       width=62),
+        "TP2 +15%":      st.column_config.TextColumn("TP2+15%",       width=62),
+        "TP3 +20%":      st.column_config.TextColumn("TP3+20%",       width=62),
+        "Target 1:1":    st.column_config.TextColumn("T1",            width=62),
+        "Target 1:2":    st.column_config.TextColumn("T2",            width=62),
+        "Sector":        st.column_config.TextColumn("Sector",        width=90),
+        "Action":        st.column_config.TextColumn("Action",        width=80),
+    }
+    # keep only configs for columns that exist
+    cfg = {k: v for k, v in col_cfg.items() if k in df_disp.columns}
+
+    n_rows = len(df_disp)
+    row_h  = 35   # px per row
+    height = min(35 + n_rows * row_h, 400)   # cap at 400px
+
     styler   = df_disp.style
     style_fn = styler.map if hasattr(styler, "map") else styler.applymap
     fn = style_short_prob if prob_col == "Fall Prob" else style_prob
+
     if prob_col in df_disp.columns:
-        st.dataframe(style_fn(fn, subset=[prob_col]), use_container_width=True, hide_index=True)
+        st.dataframe(
+            style_fn(fn, subset=[prob_col]),
+            use_container_width=True,
+            hide_index=True,
+            column_config=cfg,
+            height=height,
+        )
     else:
-        st.dataframe(df_disp, use_container_width=True, hide_index=True)
+        st.dataframe(
+            df_disp,
+            use_container_width=True,
+            hide_index=True,
+            column_config=cfg,
+            height=height,
+        )
 
 
 def _extract_closes(raw, ticker, n_tickers):
@@ -1552,35 +1686,21 @@ if regime == "BEAR":
 elif regime == "CAUTION":
     st.warning("🟡 Caution zone — Long probabilities reduced 12% · Short boosted +3%")
 
-st.markdown("---")
-
-# ─────────────────────────────────────────────────────────────────────────────
-# MARKET SELECTOR  — controls heatmap + scan scope
-# ─────────────────────────────────────────────────────────────────────────────
-st.markdown("#### 🌍 Select Market to Scan")
 market_sel = st.radio(
-    "Market", ["🇺🇸 US", "🇸🇬 Singapore (SGX)", "🇮🇳 India (NSE)"],
-    horizontal=True, key="market_selector"
+    "🌍 Market", ["🇺🇸 US", "🇸🇬 SGX", "🇮🇳 India"],
+    horizontal=True, key="market_selector", label_visibility="collapsed"
 )
 
 # Map selection → ticker list, sector map, currency symbol
 if market_sel == "🇺🇸 US":
-    _active_tickers = US_TICKERS
-    _active_sectors = SECTOR_ETFS
-    _currency_sym   = "$"
-    _price_fmt      = lambda p: f"${p:,.2f}"
-elif market_sel == "🇸🇬 Singapore (SGX)":
-    _active_tickers = SG_TICKERS
-    _active_sectors = {}       # SGX uses stock-group heatmap, not ETF sectors
-    _currency_sym   = "S$"
-    _price_fmt      = lambda p: f"S${p:,.3f}"
+    _active_tickers = US_TICKERS;  _active_sectors = SECTOR_ETFS
+    _currency_sym = "$";           _price_fmt = lambda p: f"${p:,.2f}"
+elif market_sel == "🇸🇬 SGX":
+    _active_tickers = SG_TICKERS;  _active_sectors = {}
+    _currency_sym = "S$";          _price_fmt = lambda p: f"S${p:,.3f}"
 else:
-    _active_tickers = INDIA_TICKERS
-    _active_sectors = INDIA_SECTOR_ETFS
-    _currency_sym   = "₹"
-    _price_fmt      = lambda p: f"₹{p:,.2f}"
-
-st.markdown("---")
+    _active_tickers = INDIA_TICKERS; _active_sectors = INDIA_SECTOR_ETFS
+    _currency_sym = "₹";            _price_fmt = lambda p: f"₹{p:,.2f}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TABS
@@ -1600,12 +1720,12 @@ tab_sectors, tab_long, tab_short, tab_both, tab_etf, tab_stock, tab_diag, tab_he
 # TAB 1 — SECTOR HEATMAP  (market-aware)
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_sectors:
-    st.markdown("### Live Sector Heatmap")
+    st.caption("🗺️ Sector Heatmap")
 
     if market_sel == "🇺🇸 US":
         st.caption("US Sector ETFs · Refreshes every 15 min")
         sector_df = get_sector_performance()
-    elif market_sel == "🇸🇬 Singapore (SGX)":
+    elif market_sel == "🇸🇬 SGX":
         st.caption("SGX sector groups (avg return) · Prices in S$ · Refreshes every 15 min")
         sector_df = get_sg_sector_performance()
         st.info("ℹ️ SGX has no liquid sector ETFs — sectors are computed as the average return of constituent stocks.")
@@ -1638,7 +1758,7 @@ with tab_sectors:
             elif pct < -0.1: return "#f5b7b1","#7b241c"
             else:            return "#e8e8e8","#555555"
 
-        p_sym = "₹" if market_sel == "🇮🇳 India (NSE)" else ("S$" if market_sel == "🇸🇬 Singapore (SGX)" else "$")
+        p_sym = "₹" if market_sel == "🇮🇳 India" else ("S$" if market_sel == "🇸🇬 SGX" else "$")
         html = "<div style='display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:16px'>"
         for _, row in sector_df.iterrows():
             bg, fg = tile_color(row["Today %"])
@@ -1674,7 +1794,6 @@ with tab_sectors:
 # ─────────────────────────────────────────────────────────────────────────────
 # SCAN BUTTON  (market-aware)
 # ─────────────────────────────────────────────────────────────────────────────
-st.markdown("---")
 col_btn, col_info = st.columns([1, 3])
 with col_btn:
     run = st.button(f"🚀 Scan {market_sel} Stocks", type="primary")
@@ -1682,7 +1801,7 @@ with col_info:
     # Show sector preview for the active market
     if market_sel == "🇺🇸 US":
         sdf_preview = get_sector_performance()
-    elif market_sel == "🇸🇬 Singapore (SGX)":
+    elif market_sel == "🇸🇬 SGX":
         sdf_preview = get_sg_sector_performance()
     else:
         sdf_preview = get_india_sector_performance()
@@ -1702,7 +1821,7 @@ if run:
     if market_sel == "🇺🇸 US":
         sdf = get_sector_performance()
         active_sector_etfs = SECTOR_ETFS
-    elif market_sel == "🇸🇬 Singapore (SGX)":
+    elif market_sel == "🇸🇬 SGX":
         sdf = get_sg_sector_performance()
         active_sector_etfs = {}   # no ETF-based holdings for SGX
     else:
@@ -1816,11 +1935,11 @@ with tab_long:
         # sec_cnt = df_long.groupby("Sector").size().reset_index(name="Setups")
         # st.dataframe(sec_cnt, use_container_width=True, hide_index=True)
 
-        st.markdown("### 🔥 Strong Buy")
+        st.caption("🔥 Strong Buy")
         show_table(strong_l, "strong buy", "Rise Prob")
-        st.markdown("### 👀 High Quality Watch")
+        st.caption("👀 High Quality")
         show_table(watch_hql, "high quality", "Rise Prob")
-        st.markdown("### 📋 Developing")
+        st.caption("📋 Developing")
         show_table(watch_dvl, "developing", "Rise Prob")
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1855,11 +1974,11 @@ with tab_short:
         # sec_cnt = df_short.groupby("Sector").size().reset_index(name="Setups")
         # st.dataframe(sec_cnt, use_container_width=True, hide_index=True)
 
-        st.markdown("### 🔥 Strong Short")
+        st.caption("🔥 Strong Short")
         show_table(strong_s, "strong short", "Fall Prob")
-        st.markdown("### 👀 High Quality Short Watch")
+        st.caption("👀 High Quality")
         show_table(watch_hqs, "hq short", "Fall Prob")
-        st.markdown("### 📋 Developing Short Setups")
+        st.caption("📋 Developing")
         show_table(watch_dvs, "developing short", "Fall Prob")
 
         with st.expander("📖 How to read the short table"):
@@ -1886,13 +2005,13 @@ with tab_both:
     else:
         col_l, col_r = st.columns(2)
         with col_l:
-            st.markdown("### 📈 Top Long Setups")
+            st.caption("📈 Top Longs")
             top_l = df_long[df_long["Action"] == "STRONG BUY"][
                 ["Ticker","Sector","Entry Quality","Rise Prob","Score","Price","MA60 Stop","TP1 +10%","TP3 +20%"]
             ] if not df_long.empty else pd.DataFrame()
             show_table(top_l, "long", "Rise Prob")
         with col_r:
-            st.markdown("### 📉 Top Short Setups")
+            st.caption("📉 Top Shorts")
             top_s = df_short[df_short["Action"] == "STRONG SHORT"][
                 ["Ticker","Sector","Fall Prob","Score","Price","Cover Stop","Target 1:2"]
             ] if not df_short.empty else pd.DataFrame()
@@ -1926,7 +2045,7 @@ with tab_both:
 # TAB 5 — ETF HOLDINGS
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_etf:
-    st.markdown("### ETF Holdings — Live Constituents per Sector")
+    st.caption("📊 ETF Holdings")
     st.caption("Fetched · Cached 6 hours · Click a sector to expand")
 
     # ── SG INVESTOR ETF DASHBOARD ─────────────────────────────────────────────
@@ -2181,7 +2300,7 @@ with tab_etf:
 # Full chart + all indicators + signal scorecard + risk levels
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_stock:
-    st.markdown("### 🔬 Individual Stock Analysis")
+    st.caption("🔬 Stock Analysis")
     st.caption("Enter any ticker to get a full signal breakdown, chart, and trade plan")
 
     col_inp, col_per = st.columns([2, 1])
@@ -2501,7 +2620,7 @@ with tab_stock:
 # TAB 7 — DIAGNOSTICS
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_diag:
-    st.markdown("### Ticker diagnostics")
+    st.caption("🔍 Diagnostics")
     diag_input = st.text_input("Enter ticker(s)", placeholder="NVDA, TSLA, AMD")
     for t in [x.strip().upper() for x in diag_input.split(",") if x.strip()]:
         with st.expander(f"{t} — full condition breakdown", expanded=True):
@@ -2558,7 +2677,7 @@ Confirm risk:reward ≥ 1:2 and stop loss is within your tolerance before enteri
     # ── MARKET SELECTOR ───────────────────────────────────────────────────────
     with st.expander("🌍 Market Selector — what changes per market"):
         st.markdown("""
-| | 🇺🇸 US | 🇸🇬 Singapore (SGX) | 🇮🇳 India (NSE) |
+| | 🇺🇸 US | 🇸🇬 SGX | 🇮🇳 India |
 |---|---|---|---|
 | **Ticker count** | ~220 stocks | 27 stocks (.SI) | 55 stocks (.NS) |
 | **Sector heatmap** | 15 US ETFs (XLK, SOXX, etc.) | 10 stock-group averages | 14 NSE indices (^NSEBANK, etc.) |
