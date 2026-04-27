@@ -46,12 +46,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing Scanner v10")
-st.markdown(
-    "🟢 Green sectors → best **long** candidates · "
-    "🔴 Red sectors → best **short** candidates · "
-    "v10 signal accuracy"
-)
+st.caption("📈 **Swing Scanner v10** · 🟢 Green sectors → longs · 🔴 Red → shorts")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TICKER UNIVERSE  — v4 curated high-quality list (always scanned)
