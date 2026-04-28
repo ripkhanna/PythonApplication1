@@ -192,6 +192,10 @@ US_TICKERS = [
     "NVTS","ACHR","JOBY","GME","AMC","BBWI","BIRD","CLOV","MVIS","CPSH","SKIN","XPOF","PRCT",
     # SE Asia (US-listed, high US-market correlation)
     "GRAB","SEA",
+    "CEG","VST","GEV","BWXT","DNN","URG","NNE","SMR","URA","NLR","URNM","UUUU",
+    "CCJ","UEC","PALAF","LEU","NNE","XE",
+    #ETF
+    "URA","NLR","URNM",
 ]
 
 SG_TICKERS = [
@@ -902,11 +906,14 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
     dip_to_ma60 = (p >= ma60_val * 0.985) and (p <= ma60_val * 1.015) and vol_declining
 
     # No-chase filter: price NOT running away from MA20 (not >5% above MA20 = avoid chasing highs)
-    not_chasing = p <= ma20_val * 1.05
+    #not_chasing = p <= ma20_val * 1.05
+    not_chasing  = p <= ma20_val * 1.10
 
     # Limit-up filter: today's move not >8% (avoid limit-up/gap-up chasing)
     today_chg_pct = float((close.iloc[-1] - close.iloc[-2]) / close.iloc[-2] * 100) if len(close) >= 2 else 0
-    not_limit_up = today_chg_pct < 8.0
+    #not_limit_up = today_chg_pct < 8.0
+    not_limit_up = today_chg_pct < 12.0
+
 
     # Stop-loss trigger: price broke below MA60 with significant volume (>1.5× avg)
     ma60_stop_triggered = (p < ma60_val * 0.995) and (vr >= 1.5)
@@ -1642,7 +1649,7 @@ st.sidebar.header("Scan settings")
 top_n_sectors  = st.sidebar.slider("Top N green/red sectors to scan", 1, 6, 3)
 min_prob_long  = st.sidebar.slider("Min LONG rise prob (%)",  40, 95, 62)
 min_prob_short = st.sidebar.slider("Min SHORT fall prob (%)", 40, 95, 60)
-skip_earnings  = st.sidebar.checkbox("Skip earnings within 7 days", True)
+skip_earnings  = st.sidebar.checkbox("Skip earnings within 7 days", False)
 
 st.sidebar.markdown("---")
 st.sidebar.header("Long signal filters")
