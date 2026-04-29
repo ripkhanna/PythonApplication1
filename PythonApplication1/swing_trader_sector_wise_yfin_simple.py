@@ -229,6 +229,21 @@ SG_TICKERS = [
     "8AZ.SI",   # Aztech Global — volatile
     "40B.SI",   # HRnetGroup
     "1D0.SI",   # Nanofilm spin-off
+    # ── New high-beta additions ───────────────────────────────────────────────
+    "E28.SI",   # Frencken — semicon EMS, high swing amplitude
+    "5AB.SI",   # AEM Holdings — semicon test equipment
+    "BN2.SI",   # Valuetronics — electronics, institutional buying
+    "5JS.SI",   # Dyna-Mac — offshore modules
+    "5E2.SI",   # Rex International — oil E&P, pure commodity beta
+    "P9D.SI",   # Civmec — industrial construction, large 52W range
+    "NLC.SI",   # Nam Cheong — offshore vessels
+    "Z25.SI",   # YZJ Financial — Yangzijiang spin-off
+    "9CI.SI",   # CapitaLand Investment — China real estate exposure
+    "J91U.SI",  # AIMS APAC REIT — high yield + reversions
+    "SK6U.SI",  # Frasers Centrepoint Trust — retail REIT
+    "BUOU.SI",  # Frasers Logistics REIT — industrial
+    "J37.SI",   # Thai Beverage — regional consumer
+
 ]
 
 INDIA_TICKERS = [
@@ -2665,34 +2680,54 @@ with tab_stock:
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600)
 def fetch_earnings_calendar(tickers: tuple, days_ahead: int = 15) -> pd.DataFrame:
-    """
-    Fast earnings scan — uses yf.download for OHLCV in one batch,
-    then calls tkr.info only for tickers with a valid upcoming earnings date.
-    """
+    import time
     today  = datetime.today().date()
     cutoff = today + pd.Timedelta(days=days_ahead)
     rows   = []
 
-    # ── Step 1: quick date scan (info only, no OHLCV) ──────────────────────
-    prog = st.progress(0, text="Scanning earnings dates…")
-    candidates = []   # (ticker, earn_date, info)
+    prog     = st.progress(0, text="Scanning earnings dates…")
+    status   = st.empty()
+    total    = len(tickers)
+    found    = 0
+    skipped  = 0   # rate-limited / empty responses
+
+    def _get_info_with_retry(ticker, retries=2, delay=1.5):
+        """Fetch tkr.info with retry on empty response (rate limit)."""
+        for attempt in range(retries + 1):
+            try:
+                info = yf.Ticker(ticker).info or {}
+                # If info is suspiciously empty (rate limited), retry
+                if not info.get("regularMarketPrice") and not info.get("currentPrice") \
+                   and not info.get("earningsTimestamp") and attempt < retries:
+                    time.sleep(delay)
+                    continue
+                return info
+            except Exception:
+                if attempt < retries:
+                    time.sleep(delay)
+        return {}
+
+    candidates = []
 
     for i, ticker in enumerate(tickers):
+        status.caption(f"Checking {ticker} ({i+1}/{total}) · {found} with earnings found · {skipped} skipped")
         try:
-            info = yf.Ticker(ticker).info or {}
-            earn_date = None
+            info = _get_info_with_retry(ticker)
 
-            # Try every timestamp field yfinance exposes
+            if not info:
+                skipped += 1
+                prog.progress((i + 1) / total)
+                continue
+
+            earn_date = None
             for key in ("earningsTimestamp", "earningsTimestampStart",
                         "earningsTimestampEnd", "earningsDate"):
                 val = info.get(key)
                 if val:
                     try:
-                        # Numeric unix timestamp
-                        if isinstance(val, (int, float)) and val > 0:
-                            d = pd.Timestamp(val, unit="s").date()
-                        else:
-                            d = pd.Timestamp(val).date()
+                        d = pd.Timestamp(val, unit="s").date() \
+                            if isinstance(val, (int, float)) and val > 0 \
+                            else pd.Timestamp(val).date()
                         if d >= today:
                             earn_date = d
                             break
@@ -2701,28 +2736,34 @@ def fetch_earnings_calendar(tickers: tuple, days_ahead: int = 15) -> pd.DataFram
 
             if earn_date and earn_date <= cutoff:
                 candidates.append((ticker, earn_date, info))
+                found += 1
+
+            # Small delay every 10 tickers to avoid rate limiting
+            if (i + 1) % 10 == 0:
+                time.sleep(0.3)
+
         except Exception:
-            pass
-        prog.progress((i + 1) / len(tickers))
+            skipped += 1
+        prog.progress((i + 1) / total)
 
     prog.empty()
+    status.empty()
 
     if not candidates:
         return pd.DataFrame()
 
-    # ── Step 2: build rows for matched tickers ──────────────────────────────
     for ticker, earn_date, info in candidates:
         try:
-            days_out   = (earn_date - today).days
-            eps_est    = info.get("forwardEps") or info.get("epsForward")
-            eps_last   = info.get("trailingEps")
-            price      = info.get("currentPrice") or info.get("regularMarketPrice") or 0
-            ma50       = info.get("fiftyDayAverage") or 0
-            ma200      = info.get("twoHundredDayAverage") or 0
-            w52lo      = info.get("fiftyTwoWeekLow") or 0
-            fwd_pe     = info.get("forwardPE")
-            tgt        = info.get("targetMeanPrice")
-            rec        = info.get("recommendationKey", "").upper().replace("_", " ")
+            days_out    = (earn_date - today).days
+            eps_est     = info.get("forwardEps") or info.get("epsForward")
+            eps_last    = info.get("trailingEps")
+            price       = info.get("currentPrice") or info.get("regularMarketPrice") or 0
+            ma50        = info.get("fiftyDayAverage") or 0
+            ma200       = info.get("twoHundredDayAverage") or 0
+            w52lo       = info.get("fiftyTwoWeekLow") or 0
+            fwd_pe      = info.get("forwardPE")
+            tgt         = info.get("targetMeanPrice")
+            rec         = info.get("recommendationKey", "").upper().replace("_", " ")
 
             if eps_est and eps_last and eps_last != 0:
                 eps_chg   = (eps_est - eps_last) / abs(eps_last) * 100
