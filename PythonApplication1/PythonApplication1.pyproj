@@ -4,7 +4,7 @@
     <SchemaVersion>2.0</SchemaVersion>
     <ProjectGuid>18993465-48b1-4b62-bf8f-a1f9e506ceed</ProjectGuid>
     <ProjectHome>.</ProjectHome>
-    <StartupFile>swing_trader_sector_wise_yfin.py</StartupFile>
+    <StartupFile>swing_trader_sector_wise_yfin_simple.py</StartupFile>
     <SearchPath>swing_trader_sector_wise.py</SearchPath>
     <WorkingDirectory>.</WorkingDirectory>
     <OutputPath>.</OutputPath>

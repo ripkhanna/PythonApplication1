@@ -313,22 +313,37 @@ SG_SECTOR_GROUPS = {
 # SIGNAL WEIGHTS  — v5 exact values
 # ─────────────────────────────────────────────────────────────────────────────
 LONG_WEIGHTS = {
-    # Original v5 signals
-    "stoch_confirmed": 0.71, "bb_bull_squeeze": 0.69, "macd_accel":  0.67,
-    "vol_breakout":    0.66, "trend_daily":     0.63, "higher_lows": 0.63,
-    "macd_cross":      0.60, "adx":             0.58, "volume":      0.56,
-    "rsi_confirmed":   0.59,
-    # New next-day accuracy signals
-    "weekly_trend":    0.65,   # weekly EMA20 > EMA50 — prevents buying in weekly downtrend
-    "golden_cross":    0.65,   # EMA50 > EMA200 — long-term trend aligned
-    "rel_strength":    0.64,   # stock outperforming SPY last 5 days
-    "near_52w_high":   0.63,   # price within 10% of 52W high — momentum continuation
-    "obv_rising":      0.62,   # OBV rising 5 days — institutional accumulation
-    "bull_candle":     0.64,   # hammer / bullish engulfing on last candle
-    "atr_expansion":   0.61,   # today's range > 1.2× ATR — breakout day
-    "consolidation":   0.62,   # 3–8 days tight range before move
-    "rsi_divergence":  0.63,   # price lower low but RSI higher low
-    "sector_leader":   0.62,   # stock outperforming its sector ETF 5d
+    # ── Tier 1: High accuracy (>0.68) — volume + momentum confirmation ────────
+    "vol_surge_up":    0.76,   # green candle + 2x vol + 1.5% up — #1 predictor
+    "vol_breakout":    0.73,   # price at 10d high + vol ≥1.8× — breakout confirmed
+    "pocket_pivot":    0.71,   # above MA20, vol surge on up day
+    "stoch_confirmed": 0.71,   # oversold bounce — works in uptrends
+    "bb_bull_squeeze": 0.69,   # compression before expansion
+    "rs_momentum":     0.70,   # RS line trending up vs SPY (20d)
+    "rel_strength":    0.69,   # stock beat SPY last 5 days
+    "weekly_trend":    0.72,   # MA20 > MA60 OR breakout above MA20 on volume
+    # ── Tier 2: Good context signals (0.63–0.68) ──────────────────────────────
+    "full_ma_stack":   0.68,   # NEW — price > EMA8 > EMA21 > MA20 > MA60
+    "momentum_3d":     0.67,   # NEW — up 3 of last 5 days (continuation)
+    "macd_accel":      0.67,   # histogram rising 3 bars — momentum building
+    "obv_rising":      0.66,   # OBV rising 5 days — institutional accumulation
+    "near_52w_high":   0.65,   # within 10% of 52W high — momentum continuation
+    "golden_cross":    0.65,   # EMA50 > EMA200 — macro trend aligned
+    "sector_leader":   0.65,   # outperforming sector ETF
+    "strong_close":    0.65,   # closes in top 25% of range — buyers in control
+    "higher_lows":     0.63,   # uptrend structure
+    "trend_daily":     0.63,   # price > EMA8 > EMA21
+    "vcp_tightness":   0.63,   # ATR contracting — coiling before move
+    # ── Tier 3: Weak / noisy (0.55–0.62) — low weight, rarely decisive ────────
+    "rsi_confirmed":   0.60,   # reduced — lagging for swing
+    "macd_cross":      0.58,   # reduced — too late for 1-2 week holds
+    "volume":          0.68,   # raised — pure vol surge is predictive
+    "adx":             0.57,   # reduced — direction agnostic
+    "bull_candle":     0.59,   # reduced — single candle unreliable alone
+    "atr_expansion":   0.60,   # reduced
+    # ── Removed from scoring (noise): rsi_divergence, consolidation ──────────
+    # rsi_divergence: ~52% win rate, too early, causes premature entries
+    # consolidation: fires in downtrends too, not predictive enough
 }
 SHORT_WEIGHTS = {
     "stoch_overbought": 0.70, "bb_bear_squeeze": 0.68, "macd_decel":     0.66,
@@ -424,21 +439,10 @@ def style_short_prob(val):
 def grid_search_filter(df, label):
     if df.empty:
         return df
-
-    search = st.text_input(
-        f"🔎 Search {label}",
-        key=f"search_{label}"
-    )
-
-    if search:
-        search = search.lower()
-
-        mask = df.astype(str).apply(
-            lambda col: col.str.lower().str.contains(search, na=False)
-        )
-
-        df = df[mask.any(axis=1)]
-
+    search = st.text_input(f"🔎 Search {label}", key=f"search_{label}",
+                           placeholder="ticker…").strip().upper()
+    if search and "Ticker" in df.columns:
+        df = df[df["Ticker"].str.contains(search, case=False, na=False)]
     return df
 
 def show_table(df, label, prob_col="Rise Prob"):
@@ -719,12 +723,6 @@ def get_earnings_flag(ticker):
 # SIGNAL COMPUTATION  — exact v5 compute_all_signals
 # accepts close/high/low/vol Series (not DataFrame)
 # ─────────────────────────────────────────────────────────────────────────────
-LONG_WEIGHTS.update({
-    "vcp_tightness":   0.68,   # [NEW] ATR 5/20 < 0.85 — breakout ready
-    "strong_close":    0.65,   # [NEW] Close in top 25% of daily range
-    "rs_momentum":     0.67,   # [NEW] Relative Strength line is trending up (20d)
-    "weekly_trend":    0.72,   # [WEIGHT INCREASED]
-})
 def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None):
     """
     Computes all long and short signals.
@@ -775,10 +773,13 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
     # ── 52-week high ──────────────────────────────────────────────────────────
     high_252 = float(high.rolling(252).max().iloc[-1]) if len(high) >= 50 else float(high.max())
 
-    # ── Weekly trend (using daily data, last 10 weeks = 50 bars) ─────────────
-    weekly_ema20 = to_float(ta.trend.ema_indicator(close, window=20).iloc[-1])  # proxy for weekly EMA4
-    weekly_ema50 = to_float(ta.trend.ema_indicator(close, window=50).iloc[-1])  # proxy for weekly EMA10
+    # ── Weekly trend ──────────────────────────────────────────────────────────
+    weekly_ema20 = to_float(ta.trend.ema_indicator(close, window=20).iloc[-1])
+    weekly_ema50 = to_float(ta.trend.ema_indicator(close, window=50).iloc[-1])
+    # Standard: price > MA20 > MA60 (healthy uptrend)
     weekly_trend_ok = (p > weekly_ema20) and (weekly_ema20 > weekly_ema50)
+    # Relaxed: price just broke above MA20 on high volume (early breakout — MA60 can lag)
+    weekly_trend_breakout = (p > weekly_ema20) and (vr >= 1.8)
 
     # ── Golden cross ──────────────────────────────────────────────────────────
     gc_now     = (e50 > e200) if e200 > 0 else False
@@ -921,9 +922,20 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
     # Support hold: price holding ABOVE MA60 (not stopped out)
     above_ma60 = p >= ma60_val
 
-    # ── LONG signals ─────────────────────────────────────────────────────────
+    # ── Full MA stack: price > EMA8 > EMA21 > MA20 (3-stack — doesn't require MA60 alignment)
+    # Relaxed: MA60 alignment excluded — misses early breakouts and recovering stocks like UUUU
+    full_ma_stack = (p > e8) and (e8 > e21) and (e21 > ma20_val)
+
+    # ── Momentum continuation: up 3 of last 5 days ───────────────────────────
+    if len(close) >= 6:
+        daily_returns = [float(close.iloc[i]) - float(close.iloc[i-1])
+                         for i in range(-5, 0)]
+        momentum_3d = sum(1 for r in daily_returns if r > 0) >= 3
+    else:
+        momentum_3d = False
+
+    # ── LONG signals (scored) ─────────────────────────────────────────────────
     long_signals = {
-        # Original v5
         "trend_daily":     (p > e8) and (e8 > e21),
         "stoch_confirmed": (k2 < 20) and (k1 < 20) and (k0 > k1) and (k0 > d0) and (k0 < 80),
         "bb_bull_squeeze": bb_squeeze and (p > bbm),
@@ -934,25 +946,28 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
         "volume":          vr > 1.5,
         "vol_breakout":    (p >= h10 * 0.995) and (vr >= 1.8),
         "higher_lows":     higher_lows,
-        # New next-day accuracy signals
-        "weekly_trend":    weekly_trend_ok,
+        "weekly_trend":    weekly_trend_ok or weekly_trend_breakout,
         "golden_cross":    gc_now,
         "rel_strength":    rel_strength,
         "near_52w_high":   (p >= high_252 * 0.90),
         "obv_rising":      obv_rising,
         "bull_candle":     bull_candle,
         "atr_expansion":   atr_expansion,
-        "consolidation":   consolidation,
-        "rsi_divergence":  rsi_div,
         "sector_leader":   sector_leader,
         "vcp_tightness":   vcp_tightness,
         "strong_close":    strong_close,
         "rs_momentum":     rs_momentum,
-        # Strategy: dip-to-MA entry signals
-        "dip_to_ma20":     dip_to_ma20,
-        "dip_to_ma60":     dip_to_ma60,
-        "not_chasing":     not_chasing and not_limit_up,
-        "above_ma60":      above_ma60,
+        "full_ma_stack":   full_ma_stack,
+        "momentum_3d":     momentum_3d,
+        "vol_surge_up":    (not candle_red) and (vr >= 2.0) and (today_chg_pct >= 1.5),
+        "pocket_pivot":    (not candle_red) and (vr >= 1.5) and (p > ma20_val),
+    }
+    # Strategy entry signals — entry quality label only, NOT scored
+    _strat = {
+        "dip_to_ma20": dip_to_ma20,
+        "dip_to_ma60": dip_to_ma60,
+        "not_chasing": not_chasing and not_limit_up,
+        "above_ma60":  above_ma60,
     }
 
     # ── SHORT signals ─────────────────────────────────────────────────────────
@@ -989,15 +1004,17 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
         "obv_rising":        obv_rising,
         "bull_candle":       bull_candle,
         "weekly_trend":      weekly_trend_ok,
-        # Strategy fields
+        "full_ma_stack":     full_ma_stack,
+        "momentum_3d":       momentum_3d,
+        # Strategy fields (entry quality only — not scored)
         "ma20":              ma20_val,
         "ma60":              ma60_val,
-        "dip_to_ma20":       dip_to_ma20,
-        "dip_to_ma60":       dip_to_ma60,
+        "dip_to_ma20":       _strat["dip_to_ma20"],
+        "dip_to_ma60":       _strat["dip_to_ma60"],
         "not_chasing":       not_chasing,
         "not_limit_up":      not_limit_up,
         "vol_declining":     vol_declining,
-        "above_ma60":        above_ma60,
+        "above_ma60":        _strat["above_ma60"],
         "ma60_stop_triggered": ma60_stop_triggered,
         "today_chg_pct":     today_chg_pct,
     }
@@ -1257,11 +1274,11 @@ def fetch_analysis(green_sectors, red_sectors, regime,
     except Exception as e:
         status_text.text(f"Batch failed ({e}), fetching individually...")
 
-    # ── Regime thresholds ─────────────────────────────────────────────────────
-    min_score_strong_long  = 6 if regime == "BULL"               else 7
-    min_prob_strong_long   = 0.72 if regime == "BULL"            else 0.78
-    min_score_strong_short = 5 if regime in ("BEAR", "CAUTION")  else 6
-    min_prob_strong_short  = 0.68 if regime in ("BEAR", "CAUTION") else 0.72
+    # ── Regime thresholds — lowered to catch more real swing candidates ──────
+    min_score_strong_long  = 5 if regime == "BULL"               else 6
+    min_prob_strong_long   = 0.68 if regime == "BULL"            else 0.74
+    min_score_strong_short = 4 if regime in ("BEAR", "CAUTION")  else 5
+    min_prob_strong_short  = 0.65 if regime in ("BEAR", "CAUTION") else 0.68
 
     for i, ticker in enumerate(all_tickers):
         try:
@@ -1276,7 +1293,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                              if "Earnings Date" in info_cal.index else info_cal.iloc[0, 0]
                         if not pd.isnull(ed):
                             days_out = (pd.Timestamp(ed).date() - datetime.today().date()).days
-                            if 0 <= days_out <= 14:   # extended to 14 days
+                            if 0 <= days_out <= 7:   # 7-day guard (was 14)
                                 progress_bar.progress((i + 1) / total)
                                 continue
                 except Exception:
@@ -1303,6 +1320,17 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             high  = df["High"].squeeze().ffill()
             low   = df["Low"].squeeze().ffill()
             vol   = df["Volume"].squeeze().ffill()
+
+            # ── Pre-filter: liquidity only ────────────────────────────────────
+            _vol_avg_s = float(vol.rolling(20).mean().iloc[-1])
+            _p_chk     = float(close.iloc[-1])
+            _atr_pct   = float(ta.volatility.average_true_range(
+                             high, low, close, window=14).iloc[-1]) / _p_chk * 100 \
+                         if _p_chk > 0 else 0
+            # Skip if dollar volume < $500k/day (illiquid) or ATR < 0.8% (can't swing 5-10%)
+            if _p_chk * _vol_avg_s < 500_000 or _atr_pct < 0.8:
+                progress_bar.progress((i + 1) / total)
+                continue
 
             # Get sector ETF close for this ticker
             sec_name   = sector_membership.get(ticker, "")
@@ -1365,9 +1393,13 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                             l_prob_raw * l_regime_mult
                             + (1 - l_regime_mult) * 0.40
                             - monday_penalty)), 4)
-            l_top3        = (long_sig["stoch_confirmed"] or
-                             long_sig["bb_bull_squeeze"]  or
-                             long_sig["macd_accel"])
+            l_top3 = (
+                long_sig["stoch_confirmed"] or
+                long_sig["bb_bull_squeeze"] or
+                long_sig["macd_accel"]      or
+                long_sig["vol_breakout"]    or   # breakout on 10d high + vol
+                long_sig.get("vol_surge_up", False)  # green candle + 2x vol + 1.5% up
+            )
 
             if l_score >= min_score_strong_long and l_prob >= min_prob_strong_long and l_top3:
                 l_action = "STRONG BUY"
@@ -1406,12 +1438,13 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 is_ideal_dip = (raw.get("dip_to_ma20") or raw.get("dip_to_ma60")) and \
                                raw.get("vol_declining") and raw.get("not_chasing") and \
                                raw.get("not_limit_up")
+                is_vol_surge = long_sig.get("vol_surge_up", False)   # vol burst entry
                 is_chasing   = not raw.get("not_chasing", True) or not raw.get("not_limit_up", True)
                 is_stopped   = raw.get("ma60_stop_triggered", False)
 
                 if is_stopped:
                     entry_quality = "🚫 AVOID"
-                elif is_ideal_dip:
+                elif is_ideal_dip or is_vol_surge:
                     entry_quality = "✅ BUY"
                 elif is_chasing:
                     entry_quality = "⏳ WAIT"
@@ -1431,10 +1464,10 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 if long_sig["near_52w_high"]:   l_tags.append("52W HIGH")
                 if long_sig["obv_rising"]:      l_tags.append("OBV↑")
                 if long_sig["bull_candle"]:     l_tags.append("BULL CANDLE")
-                if long_sig["consolidation"]:   l_tags.append("COIL")
-                if long_sig["rsi_divergence"]:  l_tags.append("RSI DIV")
                 if long_sig["sector_leader"]:   l_tags.append("SEC LEAD")
-                if squeeze_flag:                l_tags.append("⚡SQUEEZE")
+                if long_sig.get("vol_surge_up"):   l_tags.append("🚀VOL SURGE UP")
+                if long_sig.get("pocket_pivot"):   l_tags.append("📌POCKET PIVOT")
+                if squeeze_flag:                   l_tags.append("⚡SQUEEZE")
                 if vr >= 2.5:                   l_tags.append("VOL SURGE")
                 if is_monday:                   l_tags.append("⚠️MON")
                 if combo_bonus > 0:             l_tags.append(f"COMBO+{combo_bonus:.0%}")
@@ -1447,7 +1480,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "Entry Quality":  entry_quality,
                     "Rise Prob":      f"{l_prob * 100:.1f}%",
                     "Prob Tier":      prob_label(l_prob),
-                    "Score":          f"{l_score}/24",
+                    "Score":          f"{l_score}/25",
                     "Today %":        f"{today_chg:+.2f}%",
                     "Price":          f"${p:.2f}",
                     "MA20":           f"${raw['ma20']:.2f}",
@@ -1710,15 +1743,16 @@ else:
     _currency_sym = "₹";            _price_fmt = lambda p: f"₹{p:,.2f}"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TABS
-# ─────────────────────────────────────────────────────────────────────────────
-tab_sectors, tab_long, tab_short, tab_both, tab_etf, tab_stock, tab_diag, tab_help = st.tabs([
+
+
+tab_sectors, tab_long, tab_short, tab_both, tab_etf, tab_stock, tab_earn, tab_diag, tab_help = st.tabs([
     "🗂️ Sector Heatmap",
     "📈 Long Setups",
     "📉 Short Setups",
     "🔄 Side by Side",
     "📊 ETF Holdings",
     "🔬 Stock Analysis",
+    "📅 Earnings",
     "🔍 Diagnostics",
     "❓ Help",
 ])
@@ -2626,6 +2660,258 @@ with tab_stock:
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 7 — DIAGNOSTICS
 # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB — EARNINGS CALENDAR
+# ─────────────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=3600)
+def fetch_earnings_calendar(tickers: tuple, days_ahead: int = 15) -> pd.DataFrame:
+    """
+    Fast earnings scan — uses yf.download for OHLCV in one batch,
+    then calls tkr.info only for tickers with a valid upcoming earnings date.
+    """
+    today  = datetime.today().date()
+    cutoff = today + pd.Timedelta(days=days_ahead)
+    rows   = []
+
+    # ── Step 1: quick date scan (info only, no OHLCV) ──────────────────────
+    prog = st.progress(0, text="Scanning earnings dates…")
+    candidates = []   # (ticker, earn_date, info)
+
+    for i, ticker in enumerate(tickers):
+        try:
+            info = yf.Ticker(ticker).info or {}
+            earn_date = None
+
+            # Try every timestamp field yfinance exposes
+            for key in ("earningsTimestamp", "earningsTimestampStart",
+                        "earningsTimestampEnd", "earningsDate"):
+                val = info.get(key)
+                if val:
+                    try:
+                        # Numeric unix timestamp
+                        if isinstance(val, (int, float)) and val > 0:
+                            d = pd.Timestamp(val, unit="s").date()
+                        else:
+                            d = pd.Timestamp(val).date()
+                        if d >= today:
+                            earn_date = d
+                            break
+                    except Exception:
+                        continue
+
+            if earn_date and earn_date <= cutoff:
+                candidates.append((ticker, earn_date, info))
+        except Exception:
+            pass
+        prog.progress((i + 1) / len(tickers))
+
+    prog.empty()
+
+    if not candidates:
+        return pd.DataFrame()
+
+    # ── Step 2: build rows for matched tickers ──────────────────────────────
+    for ticker, earn_date, info in candidates:
+        try:
+            days_out   = (earn_date - today).days
+            eps_est    = info.get("forwardEps") or info.get("epsForward")
+            eps_last   = info.get("trailingEps")
+            price      = info.get("currentPrice") or info.get("regularMarketPrice") or 0
+            ma50       = info.get("fiftyDayAverage") or 0
+            ma200      = info.get("twoHundredDayAverage") or 0
+            w52lo      = info.get("fiftyTwoWeekLow") or 0
+            fwd_pe     = info.get("forwardPE")
+            tgt        = info.get("targetMeanPrice")
+            rec        = info.get("recommendationKey", "").upper().replace("_", " ")
+
+            if eps_est and eps_last and eps_last != 0:
+                eps_chg   = (eps_est - eps_last) / abs(eps_last) * 100
+                eps_trend = f"📈 +{eps_chg:.1f}%" if eps_chg > 0 else f"📉 {eps_chg:.1f}%"
+            else:
+                eps_chg, eps_trend = 0, "–"
+
+            above_ma50  = bool(price > ma50)  if ma50  and price else None
+            above_ma200 = bool(price > ma200) if ma200 and price else None
+            analyst_up  = bool(tgt > price)   if tgt   and price else None
+            near_52lo   = bool(price < w52lo * 1.15) if w52lo and price else False
+
+            score = sum(filter(None, [
+                above_ma50, above_ma200, analyst_up,
+                eps_chg > 5,
+                rec in ("BUY", "STRONG BUY"),
+            ]))
+
+            if score >= 4:   verdict, vcol = "✅ BUY",   "buy"
+            elif score == 3: verdict, vcol = "👀 WATCH", "watch"
+            elif score <= 1 or near_52lo: verdict, vcol = "🚫 AVOID", "avoid"
+            else:            verdict, vcol = "⏳ WAIT",  "wait"
+
+            rows.append({
+                "Ticker":         ticker,
+                "Earnings Date":  str(earn_date),
+                "Days Out":       days_out,
+                "Price":          f"${price:.2f}" if price else "–",
+                "EPS Est":        f"${eps_est:.2f}" if eps_est else "–",
+                "EPS Last":       f"${eps_last:.2f}" if eps_last else "–",
+                "EPS Trend":      eps_trend,
+                "Fwd PE":         f"{fwd_pe:.1f}x" if fwd_pe else "–",
+                "Analyst Target": f"${tgt:.2f}" if tgt else "–",
+                "Upside":         f"+{(tgt/price-1)*100:.1f}%" if tgt and price else "–",
+                "Above MA50":     "✅" if above_ma50 else ("❌" if above_ma50 is False else "–"),
+                "Above MA200":    "✅" if above_ma200 else ("❌" if above_ma200 is False else "–"),
+                "Analyst Rec":    rec or "–",
+                "Verdict":        verdict,
+                "_vcol":          vcol,
+                "_days":          days_out,
+            })
+        except Exception:
+            pass
+
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).sort_values("_days").reset_index(drop=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB — EARNINGS CALENDAR
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_earn:
+    st.caption("📅 Upcoming Earnings · Verdict: price vs MAs + analyst target + EPS trend")
+
+    # ── Controls ──────────────────────────────────────────────────────────────
+    ec1, ec2, ec3 = st.columns([1, 1, 2])
+    with ec1:
+        earn_days = st.slider("Days ahead", 5, 30, 15, key="earn_days")
+    with ec2:
+        earn_market = st.radio("Market", ["🇺🇸 US", "🇸🇬 SGX", "🇮🇳 India"],
+                               horizontal=True, key="earn_market_sel")
+    with ec3:
+        # Custom tickers — always include these even if not in base list
+        extra_earn = st.text_input("➕ Add tickers",
+            placeholder="UUUU, NVDA, AAPL", key="earn_extra").strip().upper()
+
+    if earn_market == "🇺🇸 US":
+        earn_base = list(US_TICKERS)
+    elif earn_market == "🇸🇬 SGX":
+        earn_base = list(SG_TICKERS)
+    else:
+        earn_base = list(INDIA_TICKERS)
+
+    # Inject extra tickers at the front so they're scanned first
+    if extra_earn:
+        for t in [x.strip() for x in extra_earn.split(",") if x.strip()]:
+            if t not in earn_base:
+                earn_base.insert(0, t)
+
+    # ── Search + filter — always visible ─────────────────────────────────────
+    sf1, sf2 = st.columns([2, 2])
+    with sf1:
+        earn_search = st.text_input("🔍 Search ticker",
+            placeholder="e.g. UUUU, NVDA", key="earn_search").strip().upper()
+    with sf2:
+        verdict_filter = st.multiselect(
+            "Filter verdict",
+            ["✅ BUY", "👀 WATCH", "⏳ WAIT", "🚫 AVOID"],
+            default=[], key="earn_verdict_filter", placeholder="All verdicts"
+        )
+
+    # ── Fetch button ──────────────────────────────────────────────────────────
+    if st.button("📅 Fetch Earnings Calendar", type="primary", key="btn_earnings"):
+        st.cache_data.clear()   # force fresh fetch
+        earn_df = fetch_earnings_calendar(tuple(earn_base), earn_days)
+        st.session_state["earn_df"] = earn_df
+
+    earn_df = st.session_state.get("earn_df", pd.DataFrame())
+
+    if earn_df.empty:
+        st.info("Click 📅 Fetch Earnings Calendar. Add UUUU in the ➕ Add tickers box to include it.")
+    else:
+        buys   = (earn_df["_vcol"] == "buy").sum()
+        watch  = (earn_df["_vcol"] == "watch").sum()
+        waits  = (earn_df["_vcol"] == "wait").sum()
+        avoids = (earn_df["_vcol"] == "avoid").sum()
+        st.caption(f"✅ **{buys}** Buy · 👀 **{watch}** Watch · ⏳ **{waits}** Wait · 🚫 **{avoids}** Avoid · {len(earn_df)} stocks found")
+
+        # ── Apply search + filter ─────────────────────────────────────────────
+        df_filtered = earn_df.copy()
+        if earn_search:
+            df_filtered = df_filtered[
+                df_filtered["Ticker"].str.contains(earn_search, case=False, na=False)
+            ]
+        if verdict_filter:
+            df_filtered = df_filtered[
+                df_filtered["_vcol"].isin([
+                    v.split()[0].strip("✅👀⏳🚫").strip().lower()
+                    .replace("buy","buy").replace("watch","watch")
+                    .replace("wait","wait").replace("avoid","avoid")
+                    for v in verdict_filter
+                ]) | df_filtered["Verdict"].isin(verdict_filter)
+            ]
+
+        if df_filtered.empty:
+            st.info("No results — try clearing the search or filter.")
+        else:
+            def style_verdict(val):
+                s = str(val)
+                if "BUY"   in s: return "background-color:#d4edda;color:#155724;font-weight:600"
+                if "WATCH" in s: return "background-color:#d1ecf1;color:#0c5460;font-weight:500"
+                if "WAIT"  in s: return "background-color:#fff3cd;color:#856404"
+                if "AVOID" in s: return "background-color:#f8d7da;color:#721c24;font-weight:600"
+                return ""
+
+            def style_eps(val):
+                if "📈" in str(val): return "color:#155724;font-weight:600"
+                if "📉" in str(val): return "color:#721c24;font-weight:600"
+                return ""
+
+            disp_cols = [c for c in [
+                "Ticker","Earnings Date","Days Out","Price",
+                "EPS Est","EPS Last","EPS Trend","Fwd PE",
+                "Analyst Target","Upside","Above MA50","Above MA200",
+                "Analyst Rec","Verdict",
+            ] if c in df_filtered.columns]
+
+            df_show = df_filtered[disp_cols].copy()
+
+            col_cfg = {
+                "Ticker":         st.column_config.TextColumn("Ticker",  width=60),
+                "Earnings Date":  st.column_config.TextColumn("Date",    width=80),
+                "Days Out":       st.column_config.NumberColumn("Days",  width=45),
+                "Price":          st.column_config.TextColumn("Price",   width=62),
+                "EPS Est":        st.column_config.TextColumn("EPS Est", width=58),
+                "EPS Last":       st.column_config.TextColumn("EPS Last",width=58),
+                "EPS Trend":      st.column_config.TextColumn("Trend",   width=72),
+                "Fwd PE":         st.column_config.TextColumn("Fwd PE",  width=52),
+                "Analyst Target": st.column_config.TextColumn("Target",  width=62),
+                "Upside":         st.column_config.TextColumn("Upside",  width=55),
+                "Above MA50":     st.column_config.TextColumn("MA50",    width=42),
+                "Above MA200":    st.column_config.TextColumn("MA200",   width=45),
+                "Analyst Rec":    st.column_config.TextColumn("Rec",     width=68),
+                "Verdict":        st.column_config.TextColumn("Verdict", width=100),
+            }
+            cfg = {k: v for k, v in col_cfg.items() if k in df_show.columns}
+
+            styler = df_show.style
+            sfn    = styler.map if hasattr(styler, "map") else styler.applymap
+            styled = sfn(style_verdict, subset=["Verdict"])
+            styled = (styled.map if hasattr(styled,"map") else styled.applymap)(
+                      style_eps, subset=["EPS Trend"])
+
+            st.dataframe(styled, use_container_width=True, hide_index=True,
+                         column_config=cfg,
+                         height=min(40 + len(df_show) * 35, 520))
+
+        st.caption(
+            "**✅ BUY** = ≥4/5: above MA50, above MA200, analyst target higher, EPS↑>5%, Buy rated · "
+            "**👀 WATCH** = 3/5 · **⏳ WAIT** = 2/5 · **🚫 AVOID** = ≤1/5 or near 52W low"
+        )
+        st.warning(
+            "⚠️ Earnings are binary — stocks can gap ±20% overnight. "
+            "Never hold full position through earnings. "
+            "Best strategy: buy the dip AFTER earnings on good results."
+        )
+
+
 with tab_diag:
     st.caption("🔍 Diagnostics")
     diag_input = st.text_input("Enter ticker(s)", placeholder="NVDA, TSLA, AMD")
