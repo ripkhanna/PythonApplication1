@@ -229,21 +229,6 @@ SG_TICKERS = [
     "8AZ.SI",   # Aztech Global — volatile
     "40B.SI",   # HRnetGroup
     "1D0.SI",   # Nanofilm spin-off
-    # ── New high-beta additions ───────────────────────────────────────────────
-    "E28.SI",   # Frencken — semicon EMS, high swing amplitude
-    "5AB.SI",   # AEM Holdings — semicon test equipment
-    "BN2.SI",   # Valuetronics — electronics, institutional buying
-    "5JS.SI",   # Dyna-Mac — offshore modules
-    "5E2.SI",   # Rex International — oil E&P, pure commodity beta
-    "P9D.SI",   # Civmec — industrial construction, large 52W range
-    "NLC.SI",   # Nam Cheong — offshore vessels
-    "Z25.SI",   # YZJ Financial — Yangzijiang spin-off
-    "9CI.SI",   # CapitaLand Investment — China real estate exposure
-    "J91U.SI",  # AIMS APAC REIT — high yield + reversions
-    "SK6U.SI",  # Frasers Centrepoint Trust — retail REIT
-    "BUOU.SI",  # Frasers Logistics REIT — industrial
-    "J37.SI",   # Thai Beverage — regional consumer
-
 ]
 
 INDIA_TICKERS = [
@@ -1760,7 +1745,7 @@ else:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-tab_sectors, tab_long, tab_short, tab_both, tab_etf, tab_stock, tab_earn, tab_diag, tab_help = st.tabs([
+tab_sectors, tab_long, tab_short, tab_both, tab_etf, tab_stock, tab_earn, tab_lt, tab_diag, tab_help = st.tabs([
     "🗂️ Sector Heatmap",
     "📈 Long Setups",
     "📉 Short Setups",
@@ -1768,6 +1753,7 @@ tab_sectors, tab_long, tab_short, tab_both, tab_etf, tab_stock, tab_earn, tab_di
     "📊 ETF Holdings",
     "🔬 Stock Analysis",
     "📅 Earnings",
+    "🌱 Long Term",
     "🔍 Diagnostics",
     "❓ Help",
 ])
@@ -1851,8 +1837,9 @@ with tab_sectors:
 # SCAN BUTTON  (market-aware)
 # ─────────────────────────────────────────────────────────────────────────────
 col_btn, col_info = st.columns([1, 3])
+
 with col_btn:
-    run = st.button(f"🚀 Scan {market_sel} Stocks", type="primary")
+        run = st.button(f"🚀 Scan {market_sel} Stocks", type="primary")
 with col_info:
     # Show sector preview for the active market
     if market_sel == "🇺🇸 US":
@@ -2952,6 +2939,827 @@ with tab_earn:
             "Best strategy: buy the dip AFTER earnings on good results."
         )
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LONG-TERM TAB — ETF-sourced holdings with quality scoring
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ETFs/funds with strong long-term track records — we pull their TOP HOLDINGS
+LT_ETF_US = {
+    # ── Core Quality/Growth ───────────────────────────────────────────────────
+    "QQQ":   {"name": "Invesco Nasdaq-100",           "theme": "US Tech/Growth",      "ret1y": 11.2, "ret3y": 14.8, "ret5y": 18.2},
+    "VGT":   {"name": "Vanguard IT ETF",              "theme": "US Technology",        "ret1y": 12.1, "ret3y": 15.9, "ret5y": 19.4},
+    "SCHG":  {"name": "Schwab US Large Cap Growth",   "theme": "US Growth",            "ret1y": 10.8, "ret3y": 14.1, "ret5y": 17.8},
+    "QUAL":  {"name": "iShares MSCI USA Quality",     "theme": "Quality Factor",       "ret1y":  9.4, "ret3y": 12.3, "ret5y": 14.6},
+    "MOAT":  {"name": "VanEck Wide Moat ETF",         "theme": "Wide Moat",            "ret1y":  8.7, "ret3y": 11.4, "ret5y": 13.9},
+    "VUG":   {"name": "Vanguard Growth ETF",          "theme": "US Large Growth",      "ret1y": 10.2, "ret3y": 13.5, "ret5y": 16.2},
+    "DGRW":  {"name": "WisdomTree Div Growth",        "theme": "US Div Growth",        "ret1y":  8.1, "ret3y": 10.9, "ret5y": 13.1},
+    # ── High-returning sector ETFs ────────────────────────────────────────────
+    "SOXX":  {"name": "iShares Semiconductor",        "theme": "Semiconductors",       "ret1y":  8.3, "ret3y": 16.2, "ret5y": 22.1},
+    "IGV":   {"name": "iShares Software ETF",         "theme": "Software",             "ret1y": 10.4, "ret3y": 13.7, "ret5y": 16.8},
+    "XLK":   {"name": "SPDR Technology",              "theme": "Technology",           "ret1y": 11.5, "ret3y": 14.9, "ret5y": 18.3},
+    "XLV":   {"name": "SPDR Healthcare",              "theme": "Healthcare",           "ret1y":  6.2, "ret3y":  8.8, "ret5y": 11.4},
+    "XLF":   {"name": "SPDR Financials",              "theme": "Financials",           "ret1y": 14.1, "ret3y": 11.2, "ret5y": 12.7},
+    "CIBR":  {"name": "First Trust Cybersecurity",    "theme": "Cybersecurity",        "ret1y": 10.3, "ret3y": 12.1, "ret5y": 14.2},
+    "PAVE":  {"name": "Global X US Infrastructure",   "theme": "Infrastructure",       "ret1y": 11.8, "ret3y": 13.4, "ret5y": 15.3},
+    # ── Thematic ─────────────────────────────────────────────────────────────
+    "BOTZ":  {"name": "Global X Robotics & AI",       "theme": "AI & Robotics",        "ret1y":  6.4, "ret3y":  8.9, "ret5y": 11.8},
+    "AIQ":   {"name": "Global X AI & Tech",           "theme": "Artificial Intel",     "ret1y":  9.1, "ret3y": 11.2, "ret5y": 13.5},
+    "CLOU":  {"name": "Global X Cloud Computing",     "theme": "Cloud Computing",      "ret1y":  7.8, "ret3y":  9.4, "ret5y": 10.9},
+    "ARKK":  {"name": "ARK Innovation ETF",           "theme": "Disruptive Innov",     "ret1y": -2.1, "ret3y":  1.4, "ret5y":  8.1},
+    "WCLD":  {"name": "WisdomTree Cloud",             "theme": "Cloud/SaaS",           "ret1y":  7.2, "ret3y":  9.1, "ret5y": 11.2},
+    "DRIV":  {"name": "Global X Autonomous/EV",       "theme": "EV/Auto",              "ret1y":  5.1, "ret3y":  7.8, "ret5y": 10.3},
+    "ICLN":  {"name": "iShares Clean Energy",         "theme": "Clean Energy",         "ret1y": -8.4, "ret3y": -3.1, "ret5y":  6.2},
+    # ── India ────────────────────────────────────────────────────────────────
+    "INDA":  {"name": "iShares MSCI India",           "theme": "India Broad",          "ret1y":  8.9, "ret3y": 10.2, "ret5y": 12.4},
+    "INDY":  {"name": "iShares India 50",             "theme": "India Large Cap",      "ret1y":  8.4, "ret3y":  9.8, "ret5y": 11.9},
+    "SMIN":  {"name": "iShares India Small Cap",      "theme": "India Small Cap",      "ret1y": 10.2, "ret3y": 12.4, "ret5y": 14.8},
+    "EPI":   {"name": "WisdomTree India Earnings",    "theme": "India Value",          "ret1y":  9.1, "ret3y": 10.5, "ret5y": 12.1},
+}
+
+LT_ETF_SG = {
+    # ── ETFs that hold actual SGX-listed stocks ───────────────────────────────
+    "EWS":    {"name": "iShares MSCI Singapore",      "theme": "SG Broad Market",    "ret1y": 12.4, "ret3y":  6.8, "ret5y":  8.3},
+    "EWS.SI": {"name": "iShares MSCI Singapore (SGX)","theme": "SG Broad Market",    "ret1y": 12.4, "ret3y":  6.8, "ret5y":  8.3},
+    "VPL":    {"name": "Vanguard Pacific ETF",        "theme": "Asia Pacific",       "ret1y":  8.1, "ret3y":  5.9, "ret5y":  7.4},
+    "AAXJ":   {"name": "iShares MSCI Asia ex-Japan",  "theme": "Asia ex-Japan",      "ret1y": 10.3, "ret3y":  7.2, "ret5y":  8.9},
+    "EPHE":   {"name": "iShares MSCI Philippines",    "theme": "SE Asia",            "ret1y":  3.1, "ret3y":  2.4, "ret5y":  4.1},
+    "ASEA":   {"name": "Global X ASEAN ETF",          "theme": "SE Asia",            "ret1y":  6.2, "ret3y":  4.1, "ret5y":  5.2},
+    "AIA":    {"name": "iShares Asia 50 ETF",         "theme": "Asia Large Cap",     "ret1y": 11.2, "ret3y":  8.3, "ret5y":  9.1},
+    # ── SGX-listed ETFs ───────────────────────────────────────────────────────
+    "SRT.SI": {"name": "CSOP iEdge S-REIT Leaders",  "theme": "SG REITs",           "ret1y":  9.1, "ret3y":  4.2, "ret5y":  5.8},
+    "CLR.SI": {"name": "Lion-Phillip S-REIT ETF",    "theme": "SG REITs",           "ret1y":  8.8, "ret3y":  4.0, "ret5y":  5.6},
+    "ES3.SI": {"name": "SPDR STI ETF",               "theme": "STI Blue Chips",     "ret1y": 29.1, "ret3y": 13.4, "ret5y":  9.8},
+    "G3B.SI": {"name": "Nikko AM STI ETF",           "theme": "STI Blue Chips",     "ret1y": 29.0, "ret3y": 13.3, "ret5y":  9.7},
+}
+
+# Funds/instruments giving 10-12%+ returns for Singapore investors
+HIGH_RETURN_FUNDS = [
+    # ETF / Index
+    {"Name":"Vanguard S&P 500 (VUAA.L)",     "Type":"UCITS ETF",      "Ret5Y":"~15%", "Min":"S$1",    "Risk":"Med",  "Access":"IBKR/Moomoo","Note":"Irish-domiciled, 0% withholding tax for SG investors"},
+    {"Name":"iShares S&P 500 (CSPX.L)",      "Type":"UCITS ETF",      "Ret5Y":"~15%", "Min":"S$1",    "Risk":"Med",  "Access":"IBKR",        "Note":"Accumulating — no dividend drag"},
+    {"Name":"Nasdaq-100 (XNAS.L / ANAU.DE)", "Type":"UCITS ETF",      "Ret5Y":"~17%", "Min":"S$1",    "Risk":"Med-H","Access":"IBKR",        "Note":"Higher vol than S&P 500"},
+    {"Name":"Semiconductor (SOXX)",           "Type":"US ETF",         "Ret5Y":"~22%", "Min":"S$1",    "Risk":"High", "Access":"IBKR/Tiger",  "Note":"High beta — best in upcycles"},
+    {"Name":"iShares India Smallcap (SMIN)",  "Type":"US ETF",         "Ret5Y":"~15%", "Min":"S$1",    "Risk":"High", "Access":"IBKR",        "Note":"India structural growth + smallcap premium"},
+    # RSPs / Regular savings
+    {"Name":"POEMS Share Builders Plan",      "Type":"RSP",            "Ret5Y":"~12%", "Min":"S$100/m","Risk":"Med",  "Access":"Phillip",     "Note":"Monthly DCA into STI ETF or blue chips"},
+    {"Name":"Endowus Fund Smart",             "Type":"Robo/Fund",      "Ret5Y":"~12%", "Min":"S$1k",   "Risk":"Med",  "Access":"Endowus",     "Note":"100% equity portfolio — Dimensional/Vanguard"},
+    {"Name":"Syfe Equity100",                 "Type":"Robo",           "Ret5Y":"~14%", "Min":"S$1",    "Risk":"Med-H","Access":"Syfe",        "Note":"Global equity, auto-rebalanced"},
+    {"Name":"StashAway 36% Risk",             "Type":"Robo",           "Ret5Y":"~11%", "Min":"S$0",    "Risk":"Med",  "Access":"StashAway",   "Note":"ERAA risk-managed, diversified"},
+    {"Name":"Manulife Global Multi-Asset",    "Type":"Unit Trust",     "Ret5Y":"~10%", "Min":"S$1k",   "Risk":"Med",  "Access":"Banks/FAs",   "Note":"Available via CPF-OA investment scheme"},
+    # CPF-investible
+    {"Name":"NIKKO AM STI ETF (G3B)",         "Type":"CPF-investible", "Ret5Y":"~10%", "Min":"S$500",  "Risk":"Med",  "Access":"CPF-OA",      "Note":"29% STI return over 12m to Apr 2026"},
+    {"Name":"SPDR STI ETF (ES3)",             "Type":"CPF-investible", "Ret5Y":"~10%", "Min":"S$500",  "Risk":"Med",  "Access":"CPF-OA",      "Note":"Track STI, liquid, low TER 0.30%"},
+    # Bonds / alternatives
+    {"Name":"Singapore Savings Bonds (SSB)",  "Type":"Capital-safe",   "Ret5Y":"~3%",  "Min":"S$500",  "Risk":"None", "Access":"DBS/OCBC/UOB","Note":"Govt-backed, current 10Y avg ~3.0% pa"},
+    {"Name":"T-bills (6-month)",              "Type":"Capital-safe",   "Ret5Y":"~3.7%","Min":"S$1k",   "Risk":"None", "Access":"SGX/Banks",   "Note":"Current yield ~3.7% — parking cash"},
+]
+
+
+@st.cache_data(ttl=21600)   # 6-hour cache
+def fetch_lt_holdings(etf_ticker: str) -> list:
+    """Pull top holdings from an ETF via yfinance funds_data."""
+    try:
+        tkr = yf.Ticker(etf_ticker)
+        for attr in ("portfolio_holdings", "equity_holdings", "top_holdings"):
+            try:
+                df_h = getattr(tkr.funds_data, attr)
+                if df_h is None or df_h.empty:
+                    continue
+                sym_col = next((c for c in ["Symbol","symbol","Ticker","ticker"]
+                                if c in df_h.columns), None)
+                if sym_col:
+                    syms = df_h[sym_col].dropna().astype(str).tolist()
+                else:
+                    syms = [str(x) for x in df_h.index.tolist()]
+                clean = [s.strip().upper() for s in syms
+                         if s.strip().replace("-","").isalpha()
+                         and 1 <= len(s.strip()) <= 6
+                         and s.strip().upper() != etf_ticker]
+                if clean:
+                    return clean[:30]
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return []
+
+
+@st.cache_data(ttl=3600)
+def score_lt_stock(ticker: str) -> dict:
+    """
+    Long-term quality score for a single stock.
+    Uses: revenue growth, EPS growth, ROE, debt/equity, analyst target, momentum.
+    """
+    try:
+        info = yf.Ticker(ticker).info or {}
+        if not info.get("regularMarketPrice") and not info.get("currentPrice"):
+            return {}
+
+        price       = info.get("currentPrice") or info.get("regularMarketPrice") or 0
+        fwd_pe      = info.get("forwardPE")
+        trail_pe    = info.get("trailingPE")
+        peg         = info.get("trailingPegRatio") or info.get("pegRatio")
+        roe         = info.get("returnOnEquity")        # decimal
+        roa         = info.get("returnOnAssets")
+        profit_mg   = info.get("profitMargins")
+        rev_growth  = info.get("revenueGrowth")         # YoY decimal
+        earn_growth = info.get("earningsGrowth") or info.get("earningsQuarterlyGrowth")
+        debt_eq     = info.get("debtToEquity")
+        fcf         = info.get("freeCashflow")
+        mktcap      = info.get("marketCap") or 0
+        div_yield   = info.get("dividendYield") or 0
+        tgt         = info.get("targetMeanPrice")
+        rec         = info.get("recommendationKey","").upper().replace("_"," ")
+        ma50        = info.get("fiftyDayAverage") or 0
+        ma200       = info.get("twoHundredDayAverage") or 0
+        w52hi       = info.get("fiftyTwoWeekHigh") or 0
+        w52lo       = info.get("fiftyTwoWeekLow") or 0
+        beta        = info.get("beta") or 1.0
+        sector      = info.get("sector","–")
+        name        = info.get("longName") or info.get("shortName") or ticker
+
+        # ── Quality scoring (0–10) ─────────────────────────────────────────
+        score = 0
+        notes = []
+
+        # Revenue growth >10% YoY
+        if rev_growth and rev_growth > 0.10:
+            score += 2
+            notes.append(f"Rev +{rev_growth*100:.0f}%")
+        elif rev_growth and rev_growth > 0:
+            score += 1
+            notes.append(f"Rev +{rev_growth*100:.0f}%")
+
+        # Earnings growth >15% YoY
+        if earn_growth and earn_growth > 0.15:
+            score += 2
+            notes.append(f"EPS +{earn_growth*100:.0f}%")
+        elif earn_growth and earn_growth > 0:
+            score += 1
+
+        # ROE >15%
+        if roe and roe > 0.15:
+            score += 1
+            notes.append(f"ROE {roe*100:.0f}%")
+
+        # Profit margin >15%
+        if profit_mg and profit_mg > 0.15:
+            score += 1
+            notes.append(f"Margin {profit_mg*100:.0f}%")
+
+        # Reasonable debt: D/E < 1.0 or no debt
+        if debt_eq is not None and debt_eq < 100:   # yfinance in %, not ratio
+            score += 1
+            notes.append("Low debt")
+
+        # Price above MA200 (long-term uptrend)
+        if price and ma200 and price > ma200:
+            score += 1
+            notes.append("Above MA200")
+
+        # Analyst target > price
+        upside_pct = 0
+        if tgt and price and tgt > price:
+            upside_pct = (tgt / price - 1) * 100
+            score += 1
+            notes.append(f"Upside {upside_pct:.0f}%")
+
+        # Analyst Buy rating
+        if rec in ("BUY","STRONG BUY"):
+            score += 1
+            notes.append(rec)
+
+        # ───────── CONSERVATIVE EXPECTED 1Y RETURN (FIXED) ─────────
+        # Previous logic used 30% of the last 1-year price move + dividend.
+        # That made stocks that already ran up strongly show unrealistic forward
+        # returns. Example: DBS/SG banks could show ~20-35% after a big run.
+        # New logic: expected return = conservative price estimate + dividend.
+        # It uses capped momentum, analyst upside, quality score and growth,
+        # so mature SG banks/blue chips stay closer to realistic 10-14% ranges.
+
+        exp_parts = []
+
+        def _clip_num(x, low, high, default=0.0):
+            try:
+                if x is None or pd.isna(x):
+                    return default
+                x = float(x)
+                return max(low, min(high, x))
+            except Exception:
+                return default
+
+        # --- Trailing 1Y momentum: small input only, NOT a forecast ---
+        trailing_1y = 0.0
+        try:
+            hist = yf.Ticker(ticker).history(period="18mo", auto_adjust=True)
+            if hist is not None and not hist.empty and "Close" in hist.columns:
+                closes = hist["Close"].dropna()
+                if len(closes) >= 252:
+                    trailing_1y = (float(closes.iloc[-1]) / float(closes.iloc[-252]) - 1) * 100
+                elif len(closes) >= 120:
+                    trailing_1y = (float(closes.iloc[-1]) / float(closes.iloc[0]) - 1) * 100
+        except Exception:
+            trailing_1y = 0.0
+
+        # Cap very high past returns; only 10% of past move is counted.
+        momentum_component = _clip_num(trailing_1y, -20, 35) * 0.10
+
+        # --- Analyst target upside: useful but capped and discounted ---
+        analyst_component = 0.0
+        if tgt and price and tgt > 0 and price > 0:
+            analyst_component = _clip_num((float(tgt) / float(price) - 1) * 100, -20, 30) * 0.35
+
+        # --- Quality component from score: stable forward return assumption ---
+        if score >= 8:
+            quality_component = 6.0
+        elif score >= 6:
+            quality_component = 4.0
+        elif score >= 4:
+            quality_component = 2.0
+        else:
+            quality_component = 0.0
+
+        # --- Growth component: capped so high growth does not explode estimate ---
+        rg = _clip_num((rev_growth or 0) * 100, -20, 30)
+        eg = _clip_num((earn_growth or 0) * 100, -20, 30)
+        growth_component = max(0.0, (rg + eg) / 2.0) * 0.10
+        growth_component = _clip_num(growth_component, 0, 4)
+
+        # Conservative expected PRICE return before dividends.
+        price_return = quality_component + momentum_component + analyst_component + growth_component
+        price_return = _clip_num(price_return, -10, 18)
+
+        if abs(price_return) >= 0.1:
+            exp_parts.append(f"Price {price_return:.1f}%")
+
+        # --- Dividend return: FIXED / conservative ---
+        # yfinance dividendYield can be unreliable for SG stocks.
+        # For example DBS may come as 0.10 = 10%, while true forward/trailing
+        # yield is usually closer to annual dividend per share / current price.
+        def _safe_dividend_return(info_dict, last_price, symbol):
+            candidates = []
+
+            # Best source: annual dividend per share divided by current price.
+            # This avoids inflated yfinance dividendYield values.
+            for k in ("trailingAnnualDividendRate", "dividendRate"):
+                try:
+                    rate = info_dict.get(k)
+                    if rate is not None and last_price:
+                        pct = float(rate) / float(last_price) * 100
+                        if 0 < pct <= 15:
+                            candidates.append(pct)
+                except Exception:
+                    pass
+
+            # Secondary source: yield fields. Normalize decimal vs percent.
+            for k in ("trailingAnnualDividendYield", "dividendYield", "yield", "fiveYearAvgDividendYield"):
+                try:
+                    v = info_dict.get(k)
+                    if v is None:
+                        continue
+                    pct = float(v) * 100 if float(v) < 1 else float(v)
+                    if 0 < pct <= 15:
+                        candidates.append(pct)
+                except Exception:
+                    pass
+
+            if not candidates:
+                return 0.0
+
+            # Use the lowest reasonable value to avoid overstating income.
+            div_pct = min(candidates)
+
+            # SG banks rarely sustain 8-10% dividend yield; cap them lower.
+            if symbol in ("D05.SI", "O39.SI", "U11.SI"):
+                div_pct = min(div_pct, 6.5)
+            else:
+                div_pct = min(div_pct, 8.0)
+
+            return round(max(0.0, div_pct), 1)
+
+        div_return = _safe_dividend_return(info, price, ticker)
+        div_yield = div_return / 100
+
+        if div_return > 0:
+            exp_parts.append(f"Div {div_return:.1f}%")
+
+        # --- FINAL EXPECTED RETURN ---
+        exp_1y = round(price_return + div_return, 1)
+        exp_1y = _clip_num(exp_1y, -10, 24)
+
+        exp_1y_str  = f"+{exp_1y:.1f}%" if exp_1y > 0 else f"{exp_1y:.1f}%"
+        exp_1y_note = " + ".join(exp_parts) if exp_parts else "-"
+
+        # ── Hold horizon ──────────────────────────────────────────────────
+        if score >= 8:
+            horizon = "⭐ CORE HOLD (3–5yr)"
+            hcol    = "buy"
+        elif score >= 6:
+            horizon = "✅ BUY & HOLD (1–3yr)"
+            hcol    = "watch"
+        elif score >= 4:
+            horizon = "👀 ACCUMULATE on dips"
+            hcol    = "wait"
+        else:
+            horizon = "⏳ MONITOR only"
+            hcol    = "avoid"
+
+        mktcap_str = f"${mktcap/1e9:.1f}B" if mktcap > 1e9 else f"${mktcap/1e6:.0f}M"
+
+        return {
+            "Ticker":        ticker,
+            "Name":          name[:28],
+            "Sector":        sector,
+            "Price":         f"${price:.2f}" if price else "–",
+            "Mkt Cap":       mktcap_str,
+            "Exp 1Y Return": exp_1y_str,
+            "Return Breakdown": exp_1y_note,
+            "Rev Growth":    f"+{rev_growth*100:.0f}%" if rev_growth else "–",
+            "EPS Growth":    f"+{earn_growth*100:.0f}%" if earn_growth else "–",
+            "ROE":           f"{roe*100:.0f}%" if roe else "–",
+            "Margin":        f"{profit_mg*100:.0f}%" if profit_mg else "–",
+            "Fwd PE":        f"{fwd_pe:.1f}x" if fwd_pe else "–",
+            "PEG":           f"{peg:.2f}" if peg else "–",
+            "Div Yield":     f"{div_yield*100:.1f}%" if div_yield else "–",
+            "Beta":          f"{beta:.2f}" if beta else "–",
+            "MA200":         "✅" if (price and ma200 and price > ma200) else "❌",
+            "Target":        f"${tgt:.2f}" if tgt else "–",
+            "Upside":        f"+{upside_pct:.0f}%" if upside_pct else "–",
+            "Rec":           rec or "–",
+            "Score":         f"{score}/10",
+            "Horizon":       horizon,
+            "_score":        score,
+            "_hcol":         hcol,
+            "_exp1y":        exp_1y,
+        }
+    except Exception:
+        return {}
+
+
+with tab_lt:
+    st.caption("🌱 Long-Term Portfolio Builder · Stocks from top ETFs · Quality scored")
+
+    lt_sub_us, lt_sub_sg, lt_sub_sg_funds, lt_sub_us_funds = st.tabs([
+        "🇺🇸 US Stocks",
+        "🇸🇬 SG Stocks",
+        "🇸🇬 SG Funds & ETFs",
+        "🇺🇸 US Funds & ETFs",
+    ])
+
+    # ── Shared scan function — shows ETF returns + stock results ─────────────
+    def run_lt_scan(etf_dict, session_key, default_etfs, min_score_key, search_key):
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            search = st.text_input("🔍 Search stock", placeholder="e.g. NVDA, DBS, Keppel",
+                                   key=search_key).strip().upper()
+        with c2:
+            min_sc = st.slider("Min quality score", 1, 10, 5, key=min_score_key)
+
+        horizon_f = st.multiselect(
+            "Filter horizon",
+            ["⭐ CORE HOLD (3–5yr)","✅ BUY & HOLD (1–3yr)",
+             "👀 ACCUMULATE on dips","⏳ MONITOR only"],
+            default=[], key=f"hf_{session_key}", placeholder="All horizons"
+        )
+
+        if st.button("🔍 Find Long-Term Stocks", type="primary", key=f"btn_{session_key}"):
+            etfs = default_etfs
+
+            all_tickers = {}
+            p1 = st.progress(0, text="Loading ETF holdings…")
+            for i, etf in enumerate(etfs):
+                for t in fetch_lt_holdings(etf):
+                    all_tickers.setdefault(t, []).append(etf)
+                p1.progress((i+1)/len(etfs))
+            p1.empty()
+
+            unique = sorted(all_tickers.keys(),
+                            key=lambda t: len(all_tickers[t]), reverse=True)
+
+            results = []
+            p2 = st.progress(0); st2 = st.empty()
+            for i, ticker in enumerate(unique[:120]):
+                st2.caption(f"Scoring {ticker} ({i+1}/{min(len(unique),120)})…")
+                row = score_lt_stock(ticker)
+                if row and row.get("_score",0) >= min_sc:
+                    row["In ETFs"]   = ", ".join(all_tickers[ticker][:4])
+                    row["ETF Count"] = len(all_tickers[ticker])
+                    results.append(row)
+                p2.progress((i+1)/min(len(unique),120))
+            p2.empty(); st2.empty()
+
+            results.sort(key=lambda x: (-x.get("ETF Count",0), -x.get("_score",0)))
+            st.session_state[session_key] = results
+
+        results = st.session_state.get(session_key, [])
+        if not results:
+            return
+
+        df_lt = pd.DataFrame(results)
+        if search:
+            df_lt = df_lt[df_lt["Ticker"].str.contains(search, na=False) |
+                          df_lt["Name"].str.contains(search, case=False, na=False)]
+        if horizon_f:
+            df_lt = df_lt[df_lt["Horizon"].isin(horizon_f)]
+
+        core = (df_lt["_hcol"]=="buy").sum()
+        buyh = (df_lt["_hcol"]=="watch").sum()
+        acc  = (df_lt["_hcol"]=="wait").sum()
+        st.caption(f"⭐ **{core}** Core Hold · ✅ **{buyh}** Buy & Hold · 👀 **{acc}** Accumulate · {len(df_lt)} total")
+
+        def style_horizon(val):
+            s = str(val)
+            if "CORE"  in s: return "background-color:#d4edda;color:#155724;font-weight:700"
+            if "BUY"   in s: return "background-color:#d1ecf1;color:#0c5460;font-weight:600"
+            if "ACCUM" in s: return "background-color:#fff3cd;color:#856404"
+            return "color:#888"
+
+        def style_exp1y(val):
+            s = str(val)
+            try:
+                v = float(s.strip("+%"))
+                if v >= 20: return "background-color:#1a7a3a;color:#fff;font-weight:700"
+                if v >= 12: return "background-color:#27ae60;color:#fff;font-weight:600"
+                if v >= 6:  return "background-color:#a9dfbf;color:#145a32"
+            except: pass
+            return ""
+
+        def style_growth(val):
+            try:
+                v = float(str(val).strip("+%"))
+                if v >= 20: return "color:#155724;font-weight:700"
+                if v >= 10: return "color:#1a5276;font-weight:600"
+            except: pass
+            return ""
+
+        disp = [c for c in ["Ticker","Name","Sector","ETF Count",
+                "Price","Mkt Cap","Exp 1Y Return","Return Breakdown",
+                "Rev Growth","EPS Growth","ROE","Margin",
+                "Fwd PE","Div Yield","Beta","MA200","Target","Upside","Rec",
+                "Score","Horizon"] if c in df_lt.columns]
+        df_show = df_lt[disp].copy()
+
+        col_cfg = {
+            "Ticker":            st.column_config.TextColumn("Ticker",       width=62),
+            "Name":              st.column_config.TextColumn("Name",         width=130),
+            "Sector":            st.column_config.TextColumn("Sector",       width=95),
+            "ETF Count":         st.column_config.NumberColumn("ETFs",       width=42),
+            "Price":             st.column_config.TextColumn("Price",        width=60),
+            "Mkt Cap":           st.column_config.TextColumn("Cap",          width=60),
+            "Exp 1Y Return":     st.column_config.TextColumn("Exp 1Y Ret",   width=80),
+            "Return Breakdown":  st.column_config.TextColumn("Div+Price",    width=130),
+            "Rev Growth":        st.column_config.TextColumn("RevGrw",       width=58),
+            "EPS Growth":        st.column_config.TextColumn("EPSGrw",       width=58),
+            "ROE":               st.column_config.TextColumn("ROE",          width=48),
+            "Margin":            st.column_config.TextColumn("Margin",       width=52),
+            "Fwd PE":            st.column_config.TextColumn("FwdPE",        width=52),
+            "Div Yield":         st.column_config.TextColumn("Yield",        width=48),
+            "Beta":              st.column_config.TextColumn("Beta",         width=42),
+            "MA200":             st.column_config.TextColumn("MA200",        width=42),
+            "Target":            st.column_config.TextColumn("Target",       width=60),
+            "Upside":            st.column_config.TextColumn("Upside",       width=52),
+            "Rec":               st.column_config.TextColumn("Rec",          width=68),
+            "Score":             st.column_config.TextColumn("Score",        width=48),
+            "Horizon":           st.column_config.TextColumn("Horizon",      width=145),
+        }
+        cfg = {k:v for k,v in col_cfg.items() if k in df_show.columns}
+        sfn = df_show.style.map if hasattr(df_show.style,"map") else df_show.style.applymap
+        styled = sfn(style_horizon, subset=["Horizon"])
+        if "Exp 1Y Return" in df_show.columns:
+            styled = (styled.map if hasattr(styled,"map") else styled.applymap)(
+                style_exp1y, subset=["Exp 1Y Return"])
+        for col in ["Rev Growth","EPS Growth","Upside"]:
+            if col in df_show.columns:
+                styled = (styled.map if hasattr(styled,"map") else styled.applymap)(
+                    style_growth, subset=[col])
+        st.dataframe(styled, use_container_width=True, hide_index=True,
+                     column_config=cfg, height=min(40+len(df_show)*35, 600))
+        st.caption("Score/10: RevGrw(+2) EPSGrw(+2) ROE(+1) Margin(+1) LowDebt(+1) AboveMA200(+1) Target(+1) BuyRated(+1) · "
+                   "ETF Count = held by how many ETFs (higher = more institutional conviction)")
+
+    # ── Shared fund table function ────────────────────────────────────────────
+    def show_fund_table(fund_rows, search_key):
+        fsrch = st.text_input("🔍 Search fund", placeholder="Vanguard, REIT, Robo…",
+                              key=search_key).strip()
+        df_f = pd.DataFrame(fund_rows)
+        if fsrch:
+            df_f = df_f[df_f.apply(lambda r: fsrch.lower() in str(r).lower(), axis=1)]
+
+        def sret(val):
+            s = str(val)
+            for p in ["17","18","19","20","21","22","15","16"]:
+                if p in s: return "background-color:#d4edda;color:#155724;font-weight:700"
+            for p in ["10","11","12","13","14"]:
+                if p in s: return "background-color:#d1ecf1;color:#0c5460;font-weight:600"
+            return "color:#888"
+
+        def srisk(val):
+            s = str(val)
+            if s == "None": return "background-color:#d4edda;color:#155724"
+            if s == "Med":  return "background-color:#d1ecf1;color:#0c5460"
+            if "Med-H" in s:return "background-color:#fff3cd;color:#856404"
+            if s == "High": return "background-color:#f8d7da;color:#721c24"
+            return ""
+
+        # Build display columns — include 1Y/3Y if present
+        ret_cols = [c for c in ["Ret1Y","Ret3Y","Ret5Y"] if c in df_f.columns]
+        col_cfg_f = {
+            "Name":   st.column_config.TextColumn("Fund / ETF",    width=210),
+            "Type":   st.column_config.TextColumn("Type",          width=100),
+            "Ret1Y":  st.column_config.TextColumn("1Y Ann Return", width=90),
+            "Ret3Y":  st.column_config.TextColumn("3Y Ann Return", width=90),
+            "Ret5Y":  st.column_config.TextColumn("5Y Ann Return", width=90),
+            "Min":    st.column_config.TextColumn("Min invest",    width=70),
+            "Risk":   st.column_config.TextColumn("Risk",          width=58),
+            "Access": st.column_config.TextColumn("Platform",      width=110),
+            "Note":   st.column_config.TextColumn("Notes",         width=240),
+        }
+        sfn = df_f.style.map if hasattr(df_f.style,"map") else df_f.style.applymap
+        styled = sfn(sret, subset=ret_cols) if ret_cols else df_f.style
+        styled = (styled.map if hasattr(styled,"map") else styled.applymap)(srisk, subset=["Risk"])
+        cfg = {k:v for k,v in col_cfg_f.items() if k in df_f.columns}
+        st.dataframe(styled, use_container_width=True, hide_index=True,
+                     column_config=cfg, height=min(40+len(df_f)*35, 560))
+        st.caption("Returns are approximate annualised historical figures. Past performance ≠ future returns.")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    with lt_sub_us:
+        st.caption("🇺🇸 US stocks sourced from QQQ, SOXX, QUAL, MOAT, VGT and more · sorted by cross-ETF conviction")
+        with st.expander("📊 Source ETFs — 1Y / 3Y / 5Y Ann Returns (click column to sort)", expanded=False):
+            df_etf_us = pd.DataFrame([
+                {"ETF":k, "Name":v["name"], "Theme":v["theme"],
+                 "1Y Ann%": v.get('ret1y',0),
+                 "3Y Ann%": v.get('ret3y',0),
+                 "5Y Ann%": v.get('ret5y',0)}
+                for k,v in LT_ETF_US.items()
+            ])
+            def _sc(val):
+                v = float(val)
+                if v>=15: return "background-color:#1a7a3a;color:#fff;font-weight:700"
+                if v>=10: return "background-color:#1a5276;color:#fff;font-weight:600"
+                if v>= 5: return "background-color:#f0c040;color:#333"
+                if v< 0:  return "background-color:#922b21;color:#fff"
+                return ""
+            sfn = df_etf_us.style.map if hasattr(df_etf_us.style,"map") else df_etf_us.style.applymap
+            st.dataframe(
+                sfn(_sc, subset=["1Y Ann%","3Y Ann%","5Y Ann%"]),
+                use_container_width=True, hide_index=True,
+                column_config={
+                    "ETF":     st.column_config.TextColumn("ETF",    width=70),
+                    "Name":    st.column_config.TextColumn("Name",   width=190),
+                    "Theme":   st.column_config.TextColumn("Theme",  width=120),
+                    "1Y Ann%": st.column_config.NumberColumn("1Y Ann%", format="%.1f%%", width=80),
+                    "3Y Ann%": st.column_config.NumberColumn("3Y Ann%", format="%.1f%%", width=80),
+                    "5Y Ann%": st.column_config.NumberColumn("5Y Ann%", format="%.1f%%", width=80),
+                },
+                height=min(40+len(df_etf_us)*35, 450),
+            )
+        run_lt_scan(LT_ETF_US, "lt_us",
+                    ["QQQ","QUAL","MOAT","SOXX","VGT","INDA","SMIN"],
+                    "lt_us_min", "lt_us_search")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    with lt_sub_sg:
+        st.caption("🇸🇬 SGX long-term stocks · quality scored · curated list + ETF holdings")
+        with st.expander("📊 Source ETFs — 1Y / 3Y / 5Y Ann Returns (click column to sort)", expanded=False):
+            df_etf_sg = pd.DataFrame([
+                {"ETF":k, "Name":v["name"], "Theme":v["theme"],
+                 "1Y Ann%": v.get('ret1y',0),
+                 "3Y Ann%": v.get('ret3y',0),
+                 "5Y Ann%": v.get('ret5y',0)}
+                for k,v in LT_ETF_SG.items()
+            ])
+            def _sc2(val):
+                v = float(val)
+                if v>=15: return "background-color:#1a7a3a;color:#fff;font-weight:700"
+                if v>=10: return "background-color:#1a5276;color:#fff;font-weight:600"
+                if v>= 5: return "background-color:#f0c040;color:#333"
+                if v<  0: return "background-color:#922b21;color:#fff"
+                return ""
+            sfn2 = df_etf_sg.style.map if hasattr(df_etf_sg.style,"map") else df_etf_sg.style.applymap
+            st.dataframe(
+                sfn2(_sc2, subset=["1Y Ann%","3Y Ann%","5Y Ann%"]),
+                use_container_width=True, hide_index=True,
+                column_config={
+                    "ETF":     st.column_config.TextColumn("ETF",    width=70),
+                    "Name":    st.column_config.TextColumn("Name",   width=190),
+                    "Theme":   st.column_config.TextColumn("Theme",  width=120),
+                    "1Y Ann%": st.column_config.NumberColumn("1Y Ann%", format="%.1f%%", width=80),
+                    "3Y Ann%": st.column_config.NumberColumn("3Y Ann%", format="%.1f%%", width=80),
+                    "5Y Ann%": st.column_config.NumberColumn("5Y Ann%", format="%.1f%%", width=80),
+                },
+                height=min(40+len(df_etf_sg)*35, 420),
+            )
+
+        # Curated SGX long-term universe — reliable fallback when ETF holdings unavailable
+        SG_LT_TICKERS = [
+            # ── Banks (highest quality on SGX) ────────────────────────────────
+            "D05.SI",   # DBS — strongest bank in SE Asia, consistent div growth
+            "O39.SI",   # OCBC — wealth management + banking, capital strength
+            "U11.SI",   # UOB — ASEAN expansion, steady compounder
+            # ── Financials / Exchanges ─────────────────────────────────────────
+            "S68.SI",   # SGX — monopoly exchange, record profits 2025-2026
+            "AIY.SI",   # iFAST — UK ePension growth driver, fintech compounder
+            # ── Technology / Semiconductor supply chain ────────────────────────
+            "558.SI",   # UMS Holdings — semiconductor equipment, AI supply chain
+            "E28.SI",   # Frencken — semicon EMS, 47.8% return Q1 2026
+            "5AB.SI",   # AEM Holdings — semiconductor test, TSMC/Intel exposure
+            "BN2.SI",   # Valuetronics — electronics, institutional buying
+            "V03.SI",   # Venture Corp — high-mix electronics, quality manufacturer
+            # ── Industrials / Offshore ─────────────────────────────────────────
+            "S51.SI",   # Seatrium — offshore & marine, clean energy contracts
+            "BN4.SI",   # Keppel Corp — asset-light transformation, infra
+            "U96.SI",   # Sembcorp — clean energy, data centre power
+            "S58.SI",   # SATS — aviation ground handling, post-COVID recovery
+            # ── Telecoms ──────────────────────────────────────────────────────
+            "Z74.SI",   # Singtel — 5G + regional associates (AIS, Airtel, Optus)
+            # ── Consumer / Property ───────────────────────────────────────────
+            "C52.SI",   # ComfortDelGro — transport, UK recovery
+            "F34.SI",   # Wilmar International — agribusiness, Asia consumer
+            "OYY.SI",   # PropNex — property agency, recurring commission
+            # ── REITs (income + growth) ────────────────────────────────────────
+            "C38U.SI",  # CapitaLand CICT — premium SG retail + commercial
+            "A17U.SI",  # Ascendas REIT — industrial/logistics, quarterly div
+            "M44U.SI",  # Mapletree Logistics — Asia logistics, quarterly div
+            "AJBU.SI",  # Keppel DC REIT — data centres, AI tailwind
+            "J91U.SI",  # AIMS APAC REIT — industrial, 6.5% yield
+            "SK6U.SI",  # Frasers Centrepoint Trust — suburban malls
+            # ── Civil construction / Infrastructure ────────────────────────────
+            "P9D.SI",   # Civmec — industrial construction
+            "5JS.SI",   # Dyna-Mac — offshore modules
+        ]
+
+        # Search + score controls
+        sg_c1, sg_c2 = st.columns([3, 1])
+        with sg_c1:
+            sg_search = st.text_input("🔍 Search stock",
+                placeholder="e.g. DBS, Keppel, REIT", key="lt_sg_search").strip().upper()
+        with sg_c2:
+            sg_min_sc = st.slider("Min score", 1, 10, 4, key="lt_sg_min")
+
+        sg_horizon_f = st.multiselect(
+            "Filter horizon",
+            ["⭐ CORE HOLD (3–5yr)","✅ BUY & HOLD (1–3yr)",
+             "👀 ACCUMULATE on dips","⏳ MONITOR only"],
+            default=[], key="hf_lt_sg", placeholder="All horizons"
+        )
+
+        if st.button("🔍 Score SGX Long-Term Stocks", type="primary", key="btn_lt_sg"):
+            results = []
+            p = st.progress(0); st_s = st.empty()
+            for i, ticker in enumerate(SG_LT_TICKERS):
+                st_s.caption(f"Scoring {ticker} ({i+1}/{len(SG_LT_TICKERS)})…")
+                row = score_lt_stock(ticker)
+                if row and row.get("_score", 0) >= sg_min_sc:
+                    results.append(row)
+                p.progress((i+1)/len(SG_LT_TICKERS))
+            p.empty(); st_s.empty()
+            results.sort(key=lambda x: -x.get("_score", 0))
+            st.session_state["lt_sg"] = results
+
+        results = st.session_state.get("lt_sg", [])
+        if not results:
+            st.info(f"Click 🔍 Score SGX Long-Term Stocks. Scores {len(SG_LT_TICKERS)} curated SGX stocks on: "
+                    "revenue growth, EPS growth, ROE, margins, debt, price vs MA200, analyst target, Buy rating.")
+        else:
+            df_sg = pd.DataFrame(results)
+            if sg_search:
+                df_sg = df_sg[df_sg["Ticker"].str.contains(sg_search, na=False) |
+                              df_sg["Name"].str.contains(sg_search, case=False, na=False)]
+            if sg_horizon_f:
+                df_sg = df_sg[df_sg["Horizon"].isin(sg_horizon_f)]
+
+            core = (df_sg["_hcol"]=="buy").sum()
+            buyh = (df_sg["_hcol"]=="watch").sum()
+            acc  = (df_sg["_hcol"]=="wait").sum()
+            st.caption(f"⭐ **{core}** Core Hold · ✅ **{buyh}** Buy & Hold · "
+                       f"👀 **{acc}** Accumulate · {len(df_sg)} total")
+
+            def _sth(val):
+                s = str(val)
+                if "CORE"  in s: return "background-color:#d4edda;color:#155724;font-weight:700"
+                if "BUY"   in s: return "background-color:#d1ecf1;color:#0c5460;font-weight:600"
+                if "ACCUM" in s: return "background-color:#fff3cd;color:#856404"
+                return "color:#888"
+
+            def _stg(val):
+                try:
+                    v = float(str(val).strip("+%"))
+                    if v >= 20: return "color:#155724;font-weight:700"
+                    if v >= 10: return "color:#1a5276;font-weight:600"
+                except: pass
+                return ""
+
+            disp = [c for c in ["Ticker","Name","Sector","Price","Mkt Cap",
+                    "Exp 1Y Return","Return Breakdown",
+                    "Rev Growth","EPS Growth","ROE","Margin","Fwd PE",
+                    "Div Yield","Beta","MA200","Target","Upside","Rec",
+                    "Score","Horizon"] if c in df_sg.columns]
+            df_show = df_sg[disp].copy()
+
+            col_cfg_sg = {
+                "Ticker":           st.column_config.TextColumn("Ticker",      width=70),
+                "Name":             st.column_config.TextColumn("Name",        width=150),
+                "Sector":           st.column_config.TextColumn("Sector",      width=95),
+                "Price":            st.column_config.TextColumn("Price",       width=62),
+                "Mkt Cap":          st.column_config.TextColumn("Cap",         width=62),
+                "Exp 1Y Return":    st.column_config.TextColumn("Exp 1Y Ret",  width=80),
+                "Return Breakdown": st.column_config.TextColumn("Div+Price",   width=130),
+                "Rev Growth":       st.column_config.TextColumn("RevGrw",      width=58),
+                "EPS Growth":       st.column_config.TextColumn("EPSGrw",      width=58),
+                "ROE":              st.column_config.TextColumn("ROE",         width=48),
+                "Margin":           st.column_config.TextColumn("Margin",      width=52),
+                "Fwd PE":           st.column_config.TextColumn("FwdPE",       width=52),
+                "Div Yield":        st.column_config.TextColumn("Yield",       width=50),
+                "Beta":             st.column_config.TextColumn("Beta",        width=42),
+                "MA200":            st.column_config.TextColumn("MA200",       width=45),
+                "Target":           st.column_config.TextColumn("Target",      width=62),
+                "Upside":           st.column_config.TextColumn("Upside",      width=52),
+                "Rec":              st.column_config.TextColumn("Rec",         width=68),
+                "Score":            st.column_config.TextColumn("Score",       width=48),
+                "Horizon":          st.column_config.TextColumn("Horizon",     width=145),
+            }
+            cfg = {k:v for k,v in col_cfg_sg.items() if k in df_show.columns}
+            sfn = df_show.style.map if hasattr(df_show.style,"map") else df_show.style.applymap
+            styled = sfn(_sth, subset=["Horizon"])
+            if "Exp 1Y Return" in df_show.columns:
+                def _se(val):
+                    try:
+                        v = float(str(val).strip("+%"))
+                        if v >= 20: return "background-color:#1a7a3a;color:#fff;font-weight:700"
+                        if v >= 12: return "background-color:#27ae60;color:#fff;font-weight:600"
+                        if v >= 6:  return "background-color:#a9dfbf;color:#145a32"
+                    except: pass
+                    return ""
+                styled = (styled.map if hasattr(styled,"map") else styled.applymap)(
+                    _se, subset=["Exp 1Y Return"])
+            for col in ["Rev Growth","EPS Growth","Upside"]:
+                if col in df_show.columns:
+                    styled = (styled.map if hasattr(styled,"map") else styled.applymap)(
+                        _stg, subset=[col])
+            st.dataframe(styled, use_container_width=True, hide_index=True,
+                         column_config=cfg, height=min(40+len(df_show)*35, 600))
+            st.caption("Score/10: RevGrw(+2) EPSGrw(+2) ROE>15%(+1) Margin>15%(+1) "
+                       "LowDebt(+1) AboveMA200(+1) AnalystTarget(+1) BuyRated(+1)")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    with lt_sub_sg_funds:
+        st.caption("🇸🇬 SG-accessible ETFs & funds · UCITS, SGX-listed, Robo-advisors, CPF-investible")
+        SG_FUNDS = [
+            {"Name":"Vanguard S&P 500 (VUAA.L)",       "Type":"UCITS ETF",      "Ret1Y":"~10%","Ret3Y":"~12%","Ret5Y":"~15%","Min":"S$1",    "Risk":"Med",  "Access":"IBKR/Moomoo","Note":"Irish-domiciled, accumulating, 0% WHT"},
+            {"Name":"iShares S&P 500 (CSPX.L)",        "Type":"UCITS ETF",      "Ret1Y":"~10%","Ret3Y":"~12%","Ret5Y":"~15%","Min":"S$1",    "Risk":"Med",  "Access":"IBKR",       "Note":"Acc, no dividend drag, ER 0.07%"},
+            {"Name":"Xtrackers Nasdaq-100 (XNAS.L)",   "Type":"UCITS ETF",      "Ret1Y":"~11%","Ret3Y":"~14%","Ret5Y":"~17%","Min":"S$1",    "Risk":"Med-H","Access":"IBKR",       "Note":"Best UCITS Nasdaq option, ER 0.20%"},
+            {"Name":"AXA Nasdaq-100 (ANAU.DE)",        "Type":"UCITS ETF",      "Ret1Y":"~11%","Ret3Y":"~14%","Ret5Y":"~17%","Min":"S$1",    "Risk":"Med-H","Access":"IBKR",       "Note":"EUR-denominated Nasdaq tracker"},
+            {"Name":"Vanguard FTSE All-World (VWRA.L)","Type":"UCITS ETF",      "Ret1Y":"~ 8%","Ret3Y":"~10%","Ret5Y":"~13%","Min":"S$1",    "Risk":"Med",  "Access":"IBKR",       "Note":"Global diversification in 1 ETF"},
+            {"Name":"SPDR MSCI World (SWRD.L)",        "Type":"UCITS ETF",      "Ret1Y":"~ 8%","Ret3Y":"~10%","Ret5Y":"~13%","Min":"S$1",    "Risk":"Med",  "Access":"IBKR",       "Note":"Developed markets only, ER 0.12%"},
+            {"Name":"SPDR STI ETF (ES3.SI)",           "Type":"SGX ETF",        "Ret1Y":"~29%","Ret3Y":"~13%","Ret5Y":"~10%","Min":"S$500",  "Risk":"Med",  "Access":"Any broker", "Note":"CPF-OA investible, tracks STI 30"},
+            {"Name":"Nikko AM STI ETF (G3B.SI)",       "Type":"SGX ETF",        "Ret1Y":"~29%","Ret3Y":"~13%","Ret5Y":"~10%","Min":"S$100",  "Risk":"Med",  "Access":"Any broker", "Note":"CPF-OA investible, lowest TER 0.21%"},
+            {"Name":"CSOP S-REIT Leaders (SRT.SI)",    "Type":"SGX REIT ETF",   "Ret1Y":"~ 9%","Ret3Y":"~ 4%","Ret5Y":"~ 6%","Min":"S$1",    "Risk":"Med",  "Access":"Any broker", "Note":"5.6% dividend yield + REIT diversification"},
+            {"Name":"Lion-Phillip S-REIT (CLR.SI)",    "Type":"SGX REIT ETF",   "Ret1Y":"~ 9%","Ret3Y":"~ 4%","Ret5Y":"~ 6%","Min":"S$1",    "Risk":"Med",  "Access":"Any broker", "Note":"Morningstar REIT index, 5.5% yield"},
+            {"Name":"ABF SG Bond ETF (A35.SI)",        "Type":"SGX Bond ETF",   "Ret1Y":"~ 3%","Ret3Y":"~ 2%","Ret5Y":"~ 4%","Min":"S$1",    "Risk":"Low",  "Access":"Any broker", "Note":"Asia bond diversification, 4.6% yield"},
+            {"Name":"Syfe Equity100",                  "Type":"Robo",           "Ret1Y":"~10%","Ret3Y":"~11%","Ret5Y":"~14%","Min":"S$1",    "Risk":"Med-H","Access":"Syfe",       "Note":"Global equity, auto-rebalanced"},
+            {"Name":"Endowus Fund Smart (100% eq)",    "Type":"Robo/Fund",      "Ret1Y":"~ 9%","Ret3Y":"~10%","Ret5Y":"~12%","Min":"S$1k",   "Risk":"Med-H","Access":"Endowus",    "Note":"Dimensional/Vanguard funds, CPF/SRS eligible"},
+            {"Name":"StashAway 36% Risk",              "Type":"Robo",           "Ret1Y":"~ 8%","Ret3Y":"~ 9%","Ret5Y":"~11%","Min":"S$0",    "Risk":"Med",  "Access":"StashAway",  "Note":"ERAA risk-managed, SRS eligible"},
+            {"Name":"POEMS Share Builders Plan",       "Type":"RSP (DCA)",      "Ret1Y":"~29%","Ret3Y":"~13%","Ret5Y":"~12%","Min":"S$100/m","Risk":"Med",  "Access":"Phillip",    "Note":"Monthly DCA into STI/blue chips"},
+            {"Name":"Singapore Savings Bonds (SSB)",   "Type":"Capital-safe",   "Ret1Y":"~ 3%","Ret3Y":"~ 3%","Ret5Y":"~ 3%","Min":"S$500",  "Risk":"None", "Access":"DBS/OCBC",   "Note":"Govt-backed, flexible redemption"},
+            {"Name":"T-bills 6-month",                 "Type":"Capital-safe",   "Ret1Y":"~3.7%","Ret3Y":"~3.5%","Ret5Y":"~3%","Min":"S$1k",  "Risk":"None", "Access":"SGX/Banks",  "Note":"Current yield ~3.7%, park idle cash"},
+        ]
+        show_fund_table(SG_FUNDS, "sg_funds_search")
+        st.warning("⚠️ UCITS ETFs with 15-17% returns are heavily US-tech weighted. Can drop 40-50% in bear markets. "
+                   "Only invest if you have a 5+ year horizon. Capital-safe options (SSB, T-bills) give 3-4% with zero risk.")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    with lt_sub_us_funds:
+        st.caption("🇺🇸 US-listed ETFs & funds · best for IBKR/Tiger users · note US estate tax above USD 60k")
+        US_FUNDS = [
+            # Core index
+            {"Name":"Vanguard S&P 500 ETF (VOO)",      "Type":"US ETF",         "Ret1Y":"~10%","Ret3Y":"~12%","Ret5Y":"~15%","Min":"$1",    "Risk":"Med",  "Access":"IBKR/Tiger", "Note":"Lowest cost S&P 500, ER 0.03%"},
+            {"Name":"Invesco Nasdaq-100 (QQQ)",         "Type":"US ETF",         "Ret1Y":"~11%","Ret3Y":"~14%","Ret5Y":"~18%","Min":"$1",    "Risk":"Med-H","Access":"IBKR/Tiger", "Note":"Top 100 Nasdaq stocks"},
+            {"Name":"Vanguard Total Mkt (VTI)",         "Type":"US ETF",         "Ret1Y":"~ 9%","Ret3Y":"~11%","Ret5Y":"~14%","Min":"$1",    "Risk":"Med",  "Access":"IBKR/Tiger", "Note":"Entire US stock market"},
+            # Quality/factor
+            {"Name":"iShares MSCI USA Quality (QUAL)",  "Type":"US ETF",         "Ret1Y":"~ 9%","Ret3Y":"~12%","Ret5Y":"~15%","Min":"$1",    "Risk":"Med",  "Access":"IBKR",       "Note":"High ROE, stable earnings, low leverage"},
+            {"Name":"VanEck Wide Moat (MOAT)",          "Type":"US ETF",         "Ret1Y":"~ 9%","Ret3Y":"~11%","Ret5Y":"~14%","Min":"$1",    "Risk":"Med",  "Access":"IBKR",       "Note":"Morningstar wide-moat stocks at fair value"},
+            {"Name":"WisdomTree Div Growth (DGRW)",     "Type":"US ETF",         "Ret1Y":"~ 8%","Ret3Y":"~11%","Ret5Y":"~13%","Min":"$1",    "Risk":"Med",  "Access":"IBKR",       "Note":"Dividend growers, quality tilt"},
+            # Sector
+            {"Name":"iShares Semiconductor (SOXX)",     "Type":"US ETF",         "Ret1Y":"~ 8%","Ret3Y":"~16%","Ret5Y":"~22%","Min":"$1",    "Risk":"High", "Access":"IBKR/Tiger", "Note":"AI & chips — highest 5Y return, high vol"},
+            {"Name":"Vanguard IT ETF (VGT)",            "Type":"US ETF",         "Ret1Y":"~12%","Ret3Y":"~16%","Ret5Y":"~19%","Min":"$1",    "Risk":"Med-H","Access":"IBKR/Tiger", "Note":"MSFT, AAPL, NVDA heavy"},
+            {"Name":"iShares Software (IGV)",           "Type":"US ETF",         "Ret1Y":"~10%","Ret3Y":"~14%","Ret5Y":"~17%","Min":"$1",    "Risk":"Med-H","Access":"IBKR",       "Note":"Pure software — MSFT, ORCL, CRM, ADBE"},
+            {"Name":"Global X Robotics & AI (BOTZ)",    "Type":"US ETF",         "Ret1Y":"~ 6%","Ret3Y":"~ 9%","Ret5Y":"~12%","Min":"$1",    "Risk":"High", "Access":"IBKR/Tiger", "Note":"Robotics, AI, automation thematic"},
+            {"Name":"Global X Cloud (CLOU)",            "Type":"US ETF",         "Ret1Y":"~ 8%","Ret3Y":"~ 9%","Ret5Y":"~11%","Min":"$1",    "Risk":"Med-H","Access":"IBKR",       "Note":"Cloud computing companies"},
+            {"Name":"First Trust Cybersecurity (CIBR)", "Type":"US ETF",         "Ret1Y":"~10%","Ret3Y":"~12%","Ret5Y":"~14%","Min":"$1",    "Risk":"Med-H","Access":"IBKR",       "Note":"Cybersecurity sector leader"},
+            {"Name":"Global X US Infrastructure (PAVE)","Type":"US ETF",         "Ret1Y":"~12%","Ret3Y":"~13%","Ret5Y":"~15%","Min":"$1",    "Risk":"Med",  "Access":"IBKR",       "Note":"US infrastructure spend beneficiary"},
+            # India
+            {"Name":"iShares MSCI India (INDA)",        "Type":"US ETF",         "Ret1Y":"~ 9%","Ret3Y":"~10%","Ret5Y":"~12%","Min":"$1",    "Risk":"Med-H","Access":"IBKR/Tiger", "Note":"India large cap broad exposure"},
+            {"Name":"iShares India Small Cap (SMIN)",   "Type":"US ETF",         "Ret1Y":"~10%","Ret3Y":"~12%","Ret5Y":"~15%","Min":"$1",    "Risk":"High", "Access":"IBKR",       "Note":"India small cap premium, high growth"},
+            # Funds
+            {"Name":"Fidelity Contrafund (FCNTX)",      "Type":"US Mutual Fund", "Ret1Y":"~10%","Ret3Y":"~12%","Ret5Y":"~14%","Min":"$2.5k", "Risk":"Med-H","Access":"Fidelity",   "Note":"Active large-growth fund, long track record"},
+            {"Name":"T. Rowe Price Growth (PRGFX)",     "Type":"US Mutual Fund", "Ret1Y":"~11%","Ret3Y":"~13%","Ret5Y":"~16%","Min":"$2.5k", "Risk":"Med-H","Access":"TRowe",      "Note":"Active large-growth, tech overweight"},
+        ]
+        show_fund_table(US_FUNDS, "us_funds_search")
+        st.warning("⚠️ US-listed ETFs carry US estate tax risk for non-US persons above USD 60k total. "
+                   "Consider Irish-domiciled UCITS equivalents (CSPX.L, VUAA.L, XNAS.L) in the 🇸🇬 SG Funds tab instead. "
+                   "Not financial advice.")
 
 with tab_diag:
     st.caption("🔍 Diagnostics")
