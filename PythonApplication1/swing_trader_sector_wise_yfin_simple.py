@@ -1,12 +1,20 @@
 """
-Swing Scanner v11 — Sector-Driven Long & Short
-================================================
+Swing Scanner v12 — Sector-Driven Long & Short + Options Enrichment
+====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
-Signal logic : v5  (exact compute_all_signals, bayesian_prob, action tiers)
-Accuracy     : improved (weekly trend, earnings guard, regime-adjusted thresholds)
+Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
+v11 add-ons  : weekly trend, earnings guard, regime-adjusted thresholds
+v12 add-ons  : options-derived signals — call/put unusual flow, IV term
+               structure, 10% OTM skew, P/C volume, IV vs RV regime,
+               ATM-straddle implied move (informs Smart TP and downgrades
+               fresh BUYs to WATCH on front-month IV inversion).
+               Backends:
+                 • US tickers     → yfinance Ticker.options
+                 • India .NS F&O  → nsepython (only ~200 stocks)
+                 • SGX            → no options market exists, layer skipped
 
 Install:
-  pip install financedatabase ta streamlit yfinance pandas numpy
+  pip install financedatabase ta streamlit yfinance pandas numpy nsepython
 """
 
 import streamlit as st
@@ -20,7 +28,7 @@ from datetime import datetime
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v11",
+    page_title="Swing Scanner v12",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -143,7 +151,7 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v11 — Sector-Driven Long & Short")
+st.title("📈 Swing/Long Term Scanner v12 — Sector + Options Driven")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TICKER UNIVERSE  — v4 curated high-quality list (always scanned)
@@ -344,12 +352,27 @@ LONG_WEIGHTS = {
     # ── Removed from scoring (noise): rsi_divergence, consolidation ──────────
     # rsi_divergence: ~52% win rate, too early, causes premature entries
     # consolidation: fires in downtrends too, not predictive enough
+    # ── v12: Options-derived signals (US tickers only, gated by sidebar) ─────
+    # These come from compute_options_signals() — if options data is not
+    # available (non-US ticker, illiquid chain, fetch failure), the keys
+    # simply aren't present in long_sig and contribute nothing to the
+    # Bayesian update. Weights are intentionally conservative pending a
+    # walk-forward backtest of each flag's hit rate.
+    "opt_unusual_call_flow":  0.70,   # near-money call vol > 3× OI — fresh positioning
+    "opt_call_skew_bullish":  0.65,   # 10% OTM call IV ≥ 10% OTM put IV — call demand
+    "opt_pc_volume_low":      0.62,   # put/call volume < 0.6 — call-biased session
+    "opt_iv_cheap":           0.62,   # ATM IV < 0.85× realized vol — calm-bull regime
 }
 SHORT_WEIGHTS = {
     "stoch_overbought": 0.70, "bb_bear_squeeze": 0.68, "macd_decel":     0.66,
     "vol_breakdown":    0.65, "trend_bearish":   0.63, "lower_highs":    0.62,
     "macd_cross_bear":  0.60, "adx_bear":        0.57, "rsi_cross_bear": 0.59,
     "high_volume_down": 0.64,
+    # ── v12: Options-derived bearish signals (US tickers only) ────────────────
+    "opt_unusual_put_flow":   0.68,   # near-money put vol > 3× OI — fresh hedging
+    "opt_put_skew_bearish":   0.66,   # put IV >> call IV by ≥5 vol pts — fear bid
+    "opt_term_inversion":     0.66,   # front-month IV > back-month IV — event/fear
+    "opt_pc_volume_high":     0.64,   # put/call volume > 1.5 — defensive session
 }
 BASE_RATE = 0.50
 
@@ -361,6 +384,17 @@ try:
     _fd_available = True
 except ImportError:
     _fd_available = False
+
+# ─────────────────────────────────────────────────────────────────────────────
+# nsepython — optional dependency for NSE option chains (.NS tickers)
+# Without this, India scans skip the options layer (same behaviour as SGX).
+# Install: pip install nsepython
+# ─────────────────────────────────────────────────────────────────────────────
+try:
+    from nsepython import nse_optionchain_scrapper as _nse_oc
+    _nse_opt_available = True
+except Exception:
+    _nse_opt_available = False
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPERS  — exact v5 implementations
@@ -1022,6 +1056,372 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# OPTIONS SIGNALS (v12)  — forward-looking flow / IV / positioning
+#
+# Why this exists: price/volume signals are reactive. Options markets aggregate
+# the views of leveraged, often better-informed participants and price expected
+# moves, fear, and positioning *before* spot moves. Folding a small set of
+# option-derived flags into the existing Bayesian engine is purely additive:
+# if the data is missing (no options market, illiquid chain, fetch failure),
+# the keys aren't present and probabilities are unchanged.
+#
+# Backends supported:
+#   • US (.US-listed)  → yfinance Ticker.options / option_chain
+#   • India (.NS)      → nsepython (only the ~200 F&O-listed stocks have chains)
+#   • SGX, HK, others  → no options market or no public chain → skipped
+# ─────────────────────────────────────────────────────────────────────────────
+def _options_backend(ticker: str) -> str:
+    """
+    Returns the data backend that can serve this ticker's option chain:
+      'yfinance' for US-listed names, 'nse' for Indian F&O stocks (.NS),
+      '' for everything else (SGX, HK, ASX, EU, etc.).
+    """
+    if not ticker or not isinstance(ticker, str):
+        return ""
+    if ticker.startswith("^"):
+        return ""
+    if ticker.endswith(".NS"):
+        return "nse" if _nse_opt_available else ""
+    # Any other non-US suffix is unsupported (SGX, HK, ASX, EU, JP, KR, etc.)
+    non_us_suffixes = (".SI", ".BO", ".HK", ".T", ".L",
+                       ".PA", ".DE", ".SW", ".AX", ".TO", ".KS", ".SS", ".SZ")
+    if any(s in ticker for s in non_us_suffixes):
+        return ""
+    return "yfinance"
+
+
+def _is_us_ticker_for_options(ticker: str) -> bool:
+    """
+    Backwards-compatible boolean check (kept so existing call sites in
+    fetch_analysis don't need to change). True whenever ANY backend can
+    fetch an option chain for the ticker — US via yfinance OR India via
+    nsepython. The name is kept for compat; the meaning is now broader.
+    """
+    return _options_backend(ticker) != ""
+
+
+def _fetch_chain_yf(ticker: str, max_expiries: int):
+    """yfinance backend — used for US tickers. Returns list of
+    (expiry_str, calls_df, puts_df). Empty list on failure."""
+    try:
+        tk = yf.Ticker(ticker)
+        exps = tk.options
+        if not exps:
+            return []
+        out = []
+        for exp in exps[:max_expiries]:
+            try:
+                ch = tk.option_chain(exp)
+                calls = ch.calls.copy() if ch.calls is not None else pd.DataFrame()
+                puts  = ch.puts.copy()  if ch.puts  is not None else pd.DataFrame()
+                if calls.empty and puts.empty:
+                    continue
+                out.append((exp, calls, puts))
+            except Exception:
+                continue
+        return out
+    except Exception:
+        return []
+
+
+def _fetch_chain_nse(ticker: str, max_expiries: int):
+    """
+    NSE backend — used for Indian .NS tickers via nsepython. Returns the
+    same shape as the yfinance backend so downstream code is identical.
+
+    NSE returns a single dict containing ALL strikes for ALL expiries; we
+    split it per expiry and map fields to yfinance column names:
+      strikePrice          → strike
+      lastPrice            → lastPrice
+      bidprice / askPrice  → bid / ask
+      totalTradedVolume    → volume
+      openInterest         → openInterest
+      impliedVolatility    → impliedVolatility (NSE returns %, divide by 100
+                              so it matches yfinance's fractional convention)
+
+    Resilience: nsepython's first call after a cold start often fails because
+    its Cloudflare cookie handshake hasn't run yet. We retry once after a
+    1.5s pause before giving up — this dramatically improves first-scan
+    success rates from non-Indian IPs.
+    """
+    if not _nse_opt_available:
+        return []
+    sym = ticker.replace(".NS", "")
+
+    # Try up to 2 times; nsepython's first call frequently fails on cold session
+    oc = None
+    for attempt in range(2):
+        try:
+            oc = _nse_oc(sym)
+            if oc and isinstance(oc, dict) and "records" in oc:
+                break
+        except Exception:
+            oc = None
+        if attempt == 0:
+            try:
+                import time
+                time.sleep(1.5)
+            except Exception:
+                pass
+
+    if not oc or not isinstance(oc, dict) or "records" not in oc:
+        return []
+
+    try:
+        records = oc["records"]
+        expiries = records.get("expiryDates", []) or []
+        all_data = records.get("data", []) or []
+        if not expiries or not all_data:
+            return []
+
+        out = []
+        for exp in expiries[:max_expiries]:
+            calls_rows, puts_rows = [], []
+            for r in all_data:
+                if r.get("expiryDate") != exp:
+                    continue
+                strike = r.get("strikePrice")
+                if strike is None:
+                    continue
+                ce = r.get("CE", {}) or {}
+                pe = r.get("PE", {}) or {}
+                if ce:
+                    calls_rows.append({
+                        "strike":            float(strike),
+                        "lastPrice":         float(ce.get("lastPrice", 0) or 0),
+                        "bid":               float(ce.get("bidprice", 0) or 0),
+                        "ask":               float(ce.get("askPrice", 0) or 0),
+                        "volume":            float(ce.get("totalTradedVolume", 0) or 0),
+                        "openInterest":      float(ce.get("openInterest", 0) or 0),
+                        "impliedVolatility": float(ce.get("impliedVolatility", 0) or 0) / 100.0,
+                    })
+                if pe:
+                    puts_rows.append({
+                        "strike":            float(strike),
+                        "lastPrice":         float(pe.get("lastPrice", 0) or 0),
+                        "bid":               float(pe.get("bidprice", 0) or 0),
+                        "ask":               float(pe.get("askPrice", 0) or 0),
+                        "volume":            float(pe.get("totalTradedVolume", 0) or 0),
+                        "openInterest":      float(pe.get("openInterest", 0) or 0),
+                        "impliedVolatility": float(pe.get("impliedVolatility", 0) or 0) / 100.0,
+                    })
+            calls_df = pd.DataFrame(calls_rows)
+            puts_df  = pd.DataFrame(puts_rows)
+            if calls_df.empty and puts_df.empty:
+                continue
+            # Normalise NSE expiry string "DD-MMM-YYYY" → "YYYY-MM-DD" so the
+            # downstream pd.Timestamp(...) call in compute_options_signals works.
+            try:
+                exp_iso = pd.Timestamp(exp).strftime("%Y-%m-%d")
+            except Exception:
+                exp_iso = exp
+            out.append((exp_iso, calls_df, puts_df))
+        return out
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=15 * 60, show_spinner=False)
+def fetch_options_chain(ticker: str, max_expiries: int = 2):
+    """
+    Unified entry point for option chain data — dispatches to the right
+    backend (yfinance for US, nsepython for Indian F&O). Cached 15 min.
+    Returns [] on failure / unsupported tickers.
+    """
+    backend = _options_backend(ticker)
+    if backend == "yfinance":
+        return _fetch_chain_yf(ticker, max_expiries)
+    if backend == "nse":
+        return _fetch_chain_nse(ticker, max_expiries)
+    return []
+
+
+def _atm_iv(df: pd.DataFrame, spot: float):
+    """Implied vol at the strike closest to spot (rejects junk IVs)."""
+    if df is None or df.empty or "strike" not in df.columns or "impliedVolatility" not in df.columns:
+        return None
+    d = df.dropna(subset=["strike", "impliedVolatility"])
+    d = d[d["impliedVolatility"] > 0.01]
+    if d.empty:
+        return None
+    idx = (d["strike"] - spot).abs().idxmin()
+    iv = float(d.loc[idx, "impliedVolatility"])
+    return iv if 0.05 <= iv <= 5.0 else None
+
+
+def _iv_at_moneyness(df: pd.DataFrame, spot: float, moneyness_pct: float):
+    """IV at the strike closest to spot * (1 + moneyness_pct/100)."""
+    if df is None or df.empty:
+        return None
+    target = spot * (1 + moneyness_pct / 100.0)
+    d = df.dropna(subset=["strike", "impliedVolatility"])
+    d = d[d["impliedVolatility"] > 0.01]
+    if d.empty:
+        return None
+    idx = (d["strike"] - target).abs().idxmin()
+    iv = float(d.loc[idx, "impliedVolatility"])
+    return iv if 0.05 <= iv <= 5.0 else None
+
+
+def _atm_straddle_pct(calls: pd.DataFrame, puts: pd.DataFrame, spot: float):
+    """ATM straddle (call mid + put mid) as a fraction of spot — the market's
+    implied move for that expiry."""
+    if calls is None or puts is None or calls.empty or puts.empty or spot <= 0:
+        return None
+    try:
+        ci = (calls["strike"] - spot).abs().idxmin()
+        pi = (puts["strike"]  - spot).abs().idxmin()
+        c_ask = float(calls.loc[ci, "ask"]) if "ask" in calls.columns else 0
+        c_bid = float(calls.loc[ci, "bid"]) if "bid" in calls.columns else 0
+        p_ask = float(puts.loc[pi,  "ask"]) if "ask" in puts.columns  else 0
+        p_bid = float(puts.loc[pi,  "bid"]) if "bid" in puts.columns  else 0
+        cm = (c_bid + c_ask) / 2 if c_ask > 0 else float(calls.loc[ci, "lastPrice"])
+        pm = (p_bid + p_ask) / 2 if p_ask > 0 else float(puts.loc[pi,  "lastPrice"])
+        if cm <= 0 or pm <= 0:
+            return None
+        return float((cm + pm) / spot)
+    except Exception:
+        return None
+
+
+def _unusual_flow(df: pd.DataFrame, spot: float,
+                  near_pct: float = 10.0, vol_to_oi_min: float = 3.0,
+                  min_total_vol: int = 100):
+    """
+    True if any near-the-money strike has today's volume > vol_to_oi_min × OI
+    AND the near-money zone has meaningful overall volume. Catches "unusual
+    options activity" that often front-runs price.
+    """
+    if df is None or df.empty:
+        return False
+    if "volume" not in df.columns or "openInterest" not in df.columns or "strike" not in df.columns:
+        return False
+    d = df.dropna(subset=["strike"]).copy()
+    d["volume"]       = d["volume"].fillna(0)
+    d["openInterest"] = d["openInterest"].fillna(0)
+    lo = spot * (1 - near_pct / 100)
+    hi = spot * (1 + near_pct / 100)
+    near = d[(d["strike"] >= lo) & (d["strike"] <= hi)]
+    if near.empty or near["volume"].sum() < min_total_vol:
+        return False
+    near = near[near["openInterest"] >= 50]
+    if near.empty:
+        return False
+    near["ratio"] = near["volume"] / near["openInterest"].replace(0, np.nan)
+    return bool((near["ratio"] >= vol_to_oi_min).any())
+
+
+def _pc_volume_ratio(calls: pd.DataFrame, puts: pd.DataFrame):
+    """Total put volume / total call volume across the chain."""
+    if calls is None or puts is None or calls.empty or puts.empty:
+        return None
+    cv = float(calls.get("volume", pd.Series(dtype=float)).fillna(0).sum())
+    pv = float(puts.get("volume",  pd.Series(dtype=float)).fillna(0).sum())
+    if cv <= 0:
+        return None
+    return pv / cv
+
+
+def compute_options_signals(ticker: str, spot: float,
+                            realized_vol_20d_pct: float = None):
+    """
+    Forward-looking options-derived signals.
+
+    Backend is auto-selected by ticker suffix via _options_backend():
+      • US tickers          → yfinance Ticker.options
+      • Indian .NS tickers  → nsepython (only F&O-listed stocks have chains)
+      • SGX/HK/EU/etc.      → no backend, returns empty dicts
+
+    Returns (long_signals, short_signals, raw) — same shape as
+    compute_all_signals so dicts can be merged before bayesian_prob().
+
+    On any failure or unsupported ticker: returns empty dicts → no effect.
+
+    realized_vol_20d_pct: 20-day annualized realized vol in % (e.g. 35.0).
+        Used as a poor-man's IV-Rank denominator since neither yfinance nor
+        nsepython provides a historical IV time series.
+    """
+    empty = ({}, {}, {})
+    if not _is_us_ticker_for_options(ticker) or spot is None or spot <= 0:
+        return empty
+    chains = fetch_options_chain(ticker, max_expiries=2)
+    if not chains:
+        return empty
+
+    front_exp, front_calls, front_puts = chains[0]
+    second = chains[1] if len(chains) > 1 else None
+
+    front_atm_iv = _atm_iv(front_calls, spot) or _atm_iv(front_puts, spot)
+    if front_atm_iv is None:
+        return empty
+
+    # ── Implied move: ATM straddle as % of spot, scaled to ~10 trading days ──
+    front_im = _atm_straddle_pct(front_calls, front_puts, spot)
+    try:
+        days_front = max(1, (pd.Timestamp(front_exp).date() - datetime.today().date()).days)
+    except Exception:
+        days_front = 14
+    implied_move_2w = (front_im * (10 / days_front) ** 0.5) if (front_im and days_front > 0) else None
+
+    # ── IV term structure: front vs back month ───────────────────────────────
+    term_inversion = False
+    term_slope_pp  = None
+    if second is not None:
+        _, sc_calls, sc_puts = second
+        back_atm_iv = _atm_iv(sc_calls, spot) or _atm_iv(sc_puts, spot)
+        if back_atm_iv is not None:
+            term_slope_pp  = (back_atm_iv - front_atm_iv) * 100      # IV pp
+            term_inversion = front_atm_iv > back_atm_iv * 1.05       # ≥5% inverted
+
+    # ── Skew: 10% OTM call IV vs 10% OTM put IV (proxy for 25Δ risk reversal)
+    iv_call_otm = _iv_at_moneyness(front_calls, spot, +10.0)
+    iv_put_otm  = _iv_at_moneyness(front_puts,  spot, -10.0)
+    risk_reversal = (iv_call_otm - iv_put_otm) if (iv_call_otm is not None and iv_put_otm is not None) else None
+    call_skew_bullish = (risk_reversal is not None) and (risk_reversal >= 0.0)
+    put_skew_bearish  = (risk_reversal is not None) and (risk_reversal <= -0.05)
+
+    # ── Flow / positioning ───────────────────────────────────────────────────
+    unusual_call_flow = _unusual_flow(front_calls, spot)
+    unusual_put_flow  = _unusual_flow(front_puts,  spot)
+    pc_vol = _pc_volume_ratio(front_calls, front_puts)
+    pc_volume_low  = (pc_vol is not None) and (pc_vol < 0.6)
+    pc_volume_high = (pc_vol is not None) and (pc_vol > 1.5)
+
+    # ── IV vs realized vol (proxy IV-Rank since true IVR needs history) ──────
+    iv_rank_proxy = iv_rich = iv_cheap = None
+    if realized_vol_20d_pct and realized_vol_20d_pct > 0:
+        ratio = (front_atm_iv * 100) / realized_vol_20d_pct
+        iv_rank_proxy = ratio
+        iv_rich  = ratio > 1.40   # IV expensive vs realized — usually event premium
+        iv_cheap = ratio < 0.85   # IV cheap — calm regime, often pre-trend
+
+    long_signals = {
+        "opt_unusual_call_flow":   bool(unusual_call_flow),
+        "opt_call_skew_bullish":   bool(call_skew_bullish),
+        "opt_pc_volume_low":       bool(pc_volume_low),
+        "opt_iv_cheap":            bool(iv_cheap),
+    }
+    short_signals = {
+        "opt_unusual_put_flow":    bool(unusual_put_flow),
+        "opt_put_skew_bearish":    bool(put_skew_bearish),
+        "opt_term_inversion":      bool(term_inversion),
+        "opt_pc_volume_high":      bool(pc_volume_high),
+    }
+    raw = {
+        "front_atm_iv":    front_atm_iv,
+        "front_im_pct":    front_im,
+        "implied_move_2w": implied_move_2w,
+        "term_slope_pp":   term_slope_pp,
+        "term_inversion":  term_inversion,
+        "risk_reversal":   risk_reversal,
+        "pc_volume":       pc_vol,
+        "iv_rank_proxy":   iv_rank_proxy,
+        "iv_rich":         bool(iv_rich) if iv_rich is not None else False,
+        "iv_cheap":        bool(iv_cheap) if iv_cheap is not None else False,
+        "front_expiry":    front_exp,
+        "days_to_front":   days_front,
+    }
+    return long_signals, short_signals, raw
 # ETF HOLDINGS  — v7 fast batch (FinanceDatabase + yfinance fallback)
 # ─────────────────────────────────────────────────────────────────────────────
 def _score_stocks_batch(symbols: list) -> dict:
@@ -1182,7 +1582,7 @@ def fetch_sector_constituents(target_per_sector: int = 25) -> dict:
 @st.cache_data(ttl=3600)
 def fetch_analysis(green_sectors, red_sectors, regime,
                    skip_earnings, top_n_sectors, live_sectors=None,
-                   market_tickers=None):
+                   market_tickers=None, enable_options=True):
     sectors_data = live_sectors or {}
     sector_membership = {}
     for sec_name, sec_data in sectors_data.items():
@@ -1349,6 +1749,32 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 (close.iloc[-1] - close.iloc[-2]) / close.iloc[-2] * 100
             ) if len(close) >= 2 else 0.0
 
+            # ── v12: OPTIONS ENRICHMENT ───────────────────────────────────────
+            # Run only on US tickers that already show technical interest, so
+            # we don't pay the option-chain HTTP cost on the full universe.
+            # Failures fall through silently — keys simply won't be present
+            # in long_sig/short_sig and bayesian_prob is unaffected.
+            opt_long, opt_short, opt_raw = ({}, {}, {})
+            if enable_options and _is_us_ticker_for_options(ticker):
+                pre_l = sum(1 for v in long_sig.values()  if v)
+                pre_s = sum(1 for v in short_sig.values() if v)
+                if pre_l >= 4 or pre_s >= 3:
+                    try:
+                        rets   = close.pct_change().dropna().tail(20)
+                        rv_pct = float(rets.std() * (252 ** 0.5) * 100) \
+                                 if len(rets) >= 10 else None
+                        opt_long, opt_short, opt_raw = compute_options_signals(
+                            ticker, p, rv_pct
+                        )
+                    except Exception:
+                        opt_long, opt_short, opt_raw = ({}, {}, {})
+
+            # Merge option signals into the existing signal dicts. The
+            # Bayesian engine only consumes keys present in LONG_WEIGHTS /
+            # SHORT_WEIGHTS, so this is purely additive.
+            long_sig  = {**long_sig,  **opt_long}
+            short_sig = {**short_sig, **opt_short}
+
             # ── Float and short interest from yfinance.info ───────────────────
             float_shares = short_pct = pe = None
             try:
@@ -1499,6 +1925,37 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 elif l_prob >= 0.82:            l_tags.append("⚠️PROB-NO-GATE")
                 l_tags.extend(strat_tags)       # append strategy tags
 
+                # ── v12: Options tags + smart targets + entry-tier downgrades ─
+                opt_tags = []
+                if opt_long.get("opt_unusual_call_flow"): opt_tags.append("🔥CALL FLOW")
+                if opt_long.get("opt_call_skew_bullish"): opt_tags.append("📈CALL SKEW")
+                if opt_long.get("opt_pc_volume_low"):     opt_tags.append("P/C↓")
+                if opt_long.get("opt_iv_cheap"):          opt_tags.append("IV CHEAP")
+                if opt_raw.get("term_inversion"):         opt_tags.append("⚠️IV INVERTED")
+                if opt_raw.get("iv_rich"):                opt_tags.append("⚠️IV RICH")
+
+                # If front-month IV is inverted, near-term event/fear is
+                # priced in — downgrade a fresh ✅ BUY to 👀 WATCH.
+                if opt_raw.get("term_inversion") and entry_quality == "✅ BUY":
+                    entry_quality = "👀 WATCH"
+
+                l_tags.extend(opt_tags)
+
+                # Implied move (scaled to ~10 trading days) and "smart" TP
+                # derived from it. Falls back to "–" when options data
+                # is unavailable so the column behaviour is uniform.
+                im_2w = opt_raw.get("implied_move_2w")
+                if im_2w is not None and 0.005 <= im_2w <= 0.30:
+                    implied_move_str = f"±{im_2w*100:.1f}%"
+                    smart_tp_val     = round(p * (1 + max(im_2w, 0.05)), 2)
+                    smart_tp_str     = f"${smart_tp_val:.2f}"
+                else:
+                    implied_move_str = "–"
+                    smart_tp_str     = "–"
+
+                ivr = opt_raw.get("iv_rank_proxy")
+                iv_rank_str = f"{ivr:.2f}× RV" if ivr is not None else "–"
+
                 long_results.append({
                     "Ticker":         ticker,
                     "Sector":         sector_label(ticker),
@@ -1506,7 +1963,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "Entry Quality":  entry_quality,
                     "Rise Prob":      f"{l_prob * 100:.1f}%",
                     "Prob Tier":      prob_label(l_prob),
-                    "Score":          f"{l_score}/25",
+                    "Score":          f"{l_score}/{len(long_sig)}",
                     "Today %":        f"{today_chg:+.2f}%",
                     "Price":          f"${p:.2f}",
                     "MA20":           f"${raw['ma20']:.2f}",
@@ -1515,12 +1972,16 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "TP1 +10%":       f"${l_pt_short:.2f}",
                     "TP2 +15%":       f"${l_pt_swing1:.2f}",
                     "TP3 +20%":       f"${l_pt_swing2:.2f}",
+                    "Smart TP":       smart_tp_str,
+                    "Implied Move 2W": implied_move_str,
+                    "IV vs RV":       iv_rank_str,
                     "Trail Stop":     f"${l_trail:.2f}",
                     "Time Stop":      l_time_stop,
                     "Pos/$1k risk":   int(1000 / l_risk) if l_risk > 0 else 0,
                     "Float":          float_str,
                     "Short %":        short_str,
                     "Signals":        " | ".join(l_tags) if l_tags else "–",
+                    "Opt Flow":       " | ".join(opt_tags) if opt_tags else "–",
                     "RSI":            round(raw["rsi0"], 1),
                     "Vol Ratio":      round(vr, 2),
                     "BB Squeeze":     "YES" if long_sig["bb_bull_squeeze"] else "–",
@@ -1593,6 +2054,24 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 if squeeze_flag:                    s_tags.append("⚡SQUEEZE-RISK")
                 if is_monday:                       s_tags.append("⚠️MON")
 
+                # ── v12: Options tags for short ───────────────────────────────
+                opt_s_tags = []
+                if opt_short.get("opt_unusual_put_flow"):  opt_s_tags.append("🔻PUT FLOW")
+                if opt_short.get("opt_put_skew_bearish"):  opt_s_tags.append("📉PUT SKEW")
+                if opt_short.get("opt_term_inversion"):    opt_s_tags.append("⚠️IV INVERTED")
+                if opt_short.get("opt_pc_volume_high"):    opt_s_tags.append("P/C↑")
+                if opt_raw.get("iv_rich"):                 opt_s_tags.append("⚠️IV RICH")
+                s_tags.extend(opt_s_tags)
+
+                # Implied move row data — same scaling as long branch
+                im_2w_s = opt_raw.get("implied_move_2w")
+                if im_2w_s is not None and 0.005 <= im_2w_s <= 0.30:
+                    implied_move_str_s = f"±{im_2w_s*100:.1f}%"
+                else:
+                    implied_move_str_s = "–"
+                ivr_s = opt_raw.get("iv_rank_proxy")
+                iv_rank_str_s = f"{ivr_s:.2f}× RV" if ivr_s is not None else "–"
+
                 # Short entry quality — mirror of long but for sell setups
                 s_is_ideal   = short_sig["trend_bearish"] and raw.get("vol_declining", False) \
                                and not raw.get("ma60_stop_triggered", False)
@@ -1615,12 +2094,14 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "Entry Quality":  s_entry_quality,
                     "Fall Prob":      f"{s_prob * 100:.1f}%",
                     "Prob Tier":      prob_label(s_prob),
-                    "Score":          f"{s_score}/10",
+                    "Score":          f"{s_score}/{len(short_sig)}",
                     "Today %":        f"{today_chg:+.2f}%",
                     "Price":          f"${p:.2f}",
                     "Cover Stop":     f"${s_cover:.2f}",
                     "Target 1:1":     f"${s_t1:.2f}",
                     "Target 1:2":     f"${s_t2:.2f}",
+                    "Implied Move 2W": implied_move_str_s,
+                    "IV vs RV":       iv_rank_str_s,
                     "Trail Stop":     f"${s_trail:.2f}",
                     "Regime bonus":   "YES" if regime in ("BEAR","CAUTION") else "–",
                     "Float":          float_str,
@@ -1628,6 +2109,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "RSI":            round(raw["rsi0"], 1),
                     "Vol Ratio":      round(vr, 2),
                     "Signals":        " | ".join(s_tags) if s_tags else "–",
+                    "Opt Flow":       " | ".join(opt_s_tags) if opt_s_tags else "–",
                 })
 
         except Exception:
@@ -1739,6 +2221,43 @@ top_n_sectors  = st.sidebar.slider("Top N green/red sectors to scan", 1, 6, 3)
 min_prob_long  = st.sidebar.slider("Min LONG rise prob (%)",  40, 95, 62)
 min_prob_short = st.sidebar.slider("Min SHORT fall prob (%)", 40, 95, 60)
 skip_earnings  = st.sidebar.checkbox("Skip earnings within 7 days", False)
+enable_options = st.sidebar.checkbox(
+    "Use options data (US + India F&O, +30–60s)",
+    value=False,
+    help="Adds call/put flow, IV term structure, skew, and implied-move "
+         "signals on top of the technical Bayesian engine. "
+         "US tickers use yfinance; Indian .NS tickers use nsepython "
+         "(only F&O-listed stocks have option chains). SGX has no liquid "
+         "single-stock options market and is skipped automatically. "
+         "After toggling this, you must click 🚀 Scan again — results are "
+         "only recomputed on Scan, not on checkbox change.",
+)
+# v12: When the toggle flips, invalidate ONLY fetch_analysis' cache so the
+# next Scan click is guaranteed fresh. Other caches (sectors, holdings,
+# regime) are untouched.
+_prev_opt = st.session_state.get("_prev_enable_options")
+if _prev_opt is not None and _prev_opt != enable_options:
+    try:
+        fetch_analysis.clear()
+    except Exception:
+        pass
+st.session_state["_prev_enable_options"] = enable_options
+
+# v12: Hard filter — when ON, only show stocks that fired ≥1 option signal.
+# This is the surefire way to make the toggle's effect unmistakable: turn it
+# on with the main toggle ON and you see only options-confirmed setups; turn
+# the main toggle OFF and the tables empty out (because Opt Flow is "–" for
+# every row). It's also the cleanest way to diagnose whether the options
+# pipeline is reaching your machine — if the table empties even on a US
+# scan with the main toggle ON, yfinance options aren't loading.
+opt_required = st.sidebar.checkbox(
+    "Filter: only options-confirmed setups",
+    value=False,
+    help="Hides any stock that didn't fire at least one option signal. "
+         "Requires 'Use options data' ON. If the table empties on a US "
+         "scan, it means yfinance is not returning option-chain data — "
+         "try `pip install --upgrade yfinance` and `streamlit cache clear`.",
+)
 
 st.sidebar.markdown("---")
 st.sidebar.header("Long signal filters")
@@ -1759,10 +2278,115 @@ extra_input = st.sidebar.text_input("Add tickers (comma-separated)", placeholder
 st.sidebar.markdown("---")
 st.sidebar.markdown(
     f"**Data sources**\n\n"
-    f"✅\n\n"
+    f"✅ yfinance · US options\n\n"
     f"{'✅' if _fd_available else '⚠️'} FinanceDatabase "
-    f"({'installed' if _fd_available else 'pip install financedatabase'})"
+    f"({'installed' if _fd_available else 'pip install financedatabase'})\n\n"
+    f"{'✅' if _nse_opt_available else '⚠️'} nsepython · India F&O options "
+    f"({'installed' if _nse_opt_available else 'pip install nsepython'})"
 )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v12: OPTIONS PIPELINE DIAGNOSTICS
+# Lets the user run a live, single-ticker test against each backend and see
+# exactly what came back. This bypasses the technical pre-filter, the cache,
+# and every UI layer — so if the test fails here, the problem is in the data
+# layer (library install, IP block, library bug), not in our integration.
+# ─────────────────────────────────────────────────────────────────────────────
+with st.sidebar.expander("🩺 Options diagnostics"):
+    st.caption(
+        "Tests both backends with a single liquid ticker each. "
+        "Use this to find out *exactly* why options data isn't flowing."
+    )
+    st.write(f"**yfinance:** ✅ available")
+    st.write(
+        f"**nsepython:** {'✅ installed' if _nse_opt_available else '❌ NOT installed — `pip install nsepython` and restart Streamlit'}"
+    )
+
+    if st.button("Run live backend test", key="opt_diag_btn"):
+        # ── US backend ────────────────────────────────────────────────────────
+        st.markdown("**🇺🇸 US backend test — AAPL**")
+        try:
+            with st.spinner("Calling yfinance..."):
+                _yf_chain = _fetch_chain_yf("AAPL", 2)
+            if _yf_chain:
+                _exp, _c, _p = _yf_chain[0]
+                st.success(
+                    f"✅ {len(_yf_chain)} expirations · "
+                    f"front {_exp} · {len(_c)} calls · {len(_p)} puts"
+                )
+                if not _c.empty and "impliedVolatility" in _c.columns:
+                    _ivs = _c["impliedVolatility"].dropna()
+                    if not _ivs.empty:
+                        st.caption(f"IV sanity: median {_ivs.median():.3f}, range {_ivs.min():.3f}–{_ivs.max():.3f}")
+            else:
+                st.error("❌ Empty result. yfinance returned no chain. "
+                         "Try `pip install --upgrade yfinance` and restart.")
+        except Exception as _e:
+            st.error(f"❌ Exception: `{type(_e).__name__}: {_e}`")
+
+        # ── India backend ─────────────────────────────────────────────────────
+        st.markdown("**🇮🇳 India backend test — RELIANCE**")
+        if not _nse_opt_available:
+            st.warning(
+                "Skipped — `nsepython` is not installed. "
+                "Run `pip install nsepython` and restart Streamlit."
+            )
+        else:
+            try:
+                with st.spinner("Calling NSE (may take 5–10 seconds on first call)..."):
+                    _nse_chain = _fetch_chain_nse("RELIANCE.NS", 2)
+                if _nse_chain:
+                    _exp, _c, _p = _nse_chain[0]
+                    st.success(
+                        f"✅ {len(_nse_chain)} expirations · "
+                        f"front {_exp} · {len(_c)} calls · {len(_p)} puts"
+                    )
+                    if not _c.empty and "impliedVolatility" in _c.columns:
+                        _ivs = _c["impliedVolatility"][_c["impliedVolatility"] > 0]
+                        if not _ivs.empty:
+                            st.caption(
+                                f"IV sanity (should be 0.10–0.80 for RELIANCE): "
+                                f"median {_ivs.median():.3f}, "
+                                f"range {_ivs.min():.3f}–{_ivs.max():.3f}"
+                            )
+                        else:
+                            st.warning(
+                                "⚠️ Chain fetched but all IVs are 0. NSE often "
+                                "returns 0 IV for OTM strikes; the integration "
+                                "filters these out automatically."
+                            )
+                else:
+                    # Try to discover whether nsepython is reachable at all
+                    st.error(
+                        "❌ Empty result from NSE. Most likely causes:\n\n"
+                        "1. **NSE blocking your IP.** From Singapore (or any "
+                        "non-IN/cloud IP), NSE can rate-limit aggressively. "
+                        "Wait 60 seconds and retry.\n\n"
+                        "2. **Cloudflare challenge.** `nsepython`'s cookie/"
+                        "session bootstrap can fail silently if NSE returns a "
+                        "Cloudflare interstitial. Try `pip install --upgrade nsepython`.\n\n"
+                        "3. **Proxy/firewall.** If you're behind a corporate "
+                        "proxy or VPN, NSE may refuse the connection."
+                    )
+                    # Show raw nsepython response for debugging
+                    try:
+                        _raw = _nse_oc("RELIANCE")
+                        if not _raw:
+                            st.caption("Debug: nsepython returned an empty/falsy value.")
+                        elif isinstance(_raw, dict):
+                            _keys = list(_raw.keys())[:5]
+                            st.caption(f"Debug: nsepython returned a dict with keys {_keys} — "
+                                       f"but `records` was missing or unparseable.")
+                        else:
+                            st.caption(f"Debug: nsepython returned type `{type(_raw).__name__}`.")
+                    except Exception as _e2:
+                        st.caption(f"Debug: nsepython raised `{type(_e2).__name__}: {_e2}`")
+            except Exception as _e:
+                st.error(
+                    f"❌ Exception: `{type(_e).__name__}: {_e}`\n\n"
+                    f"This is usually a network or NSE-blocking issue, not a "
+                    f"code bug. Try again in 60 seconds."
+                )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MARKET REGIME BANNER
@@ -1976,6 +2600,7 @@ if run:
                 regime, skip_earnings, top_n_sectors,
                 live_sectors if live_sectors else None,
                 market_tickers=tuple(active_tickers),
+                enable_options=enable_options,
             )
 
         # Apply sidebar filters
@@ -1985,6 +2610,9 @@ if run:
             if req_stoch: df_long = df_long[df_long["Signals"].str.contains("STOCH")]
             if req_bb:    df_long = df_long[df_long["BB Squeeze"] == "YES"]
             if req_accel: df_long = df_long[df_long["Signals"].str.contains("MACD ACCEL")]
+            # v12: hard options filter
+            if opt_required and enable_options and "Opt Flow" in df_long.columns:
+                df_long = df_long[df_long["Opt Flow"] != "–"]
             df_long = df_long.drop(columns="_p")
 
         if not df_short.empty:
@@ -1993,23 +2621,96 @@ if run:
             if req_s_stoch: df_short = df_short[df_short["Signals"].str.contains("STOCH")]
             if req_s_bb:    df_short = df_short[df_short["Signals"].str.contains("BB BEAR")]
             if req_s_decel: df_short = df_short[df_short["Signals"].str.contains("MACD DECEL")]
+            # v12: hard options filter
+            if opt_required and enable_options and "Opt Flow" in df_short.columns:
+                df_short = df_short[df_short["Opt Flow"] != "–"]
             df_short = df_short.drop(columns="_p")
 
         st.session_state["df_long"]            = df_long
         st.session_state["df_short"]           = df_short
         st.session_state["live_sectors_cache"] = live_sectors
         st.session_state["last_market"]        = market_sel
+        # v12: record the options state at scan time + how many candidates
+        # actually received option-chain data. Used by the banner below to
+        # tell the user when their toggle differs from the displayed scan.
+        _opt_count_l = int((df_long["Implied Move 2W"] != "–").sum())  \
+                       if (not df_long.empty and "Implied Move 2W" in df_long.columns) else 0
+        _opt_count_s = int((df_short["Implied Move 2W"] != "–").sum()) \
+                       if (not df_short.empty and "Implied Move 2W" in df_short.columns) else 0
+        st.session_state["last_scan_opt_enabled"] = enable_options
+        st.session_state["last_scan_opt_count"]   = _opt_count_l + _opt_count_s
+        st.session_state["last_scan_market"]      = market_sel
 
 df_long  = st.session_state.get("df_long",  pd.DataFrame())
 df_short = st.session_state.get("df_short", pd.DataFrame())
 last_market = st.session_state.get("last_market", market_sel)
 
 # ─────────────────────────────────────────────────────────────────────────────
+# v12: Toggle-state banner
+# Tells the user when the current "Use options data" checkbox value differs
+# from what was used to produce the displayed tables, so they know whether
+# they need to click 🚀 Scan again. Also reports how many candidates in the
+# last scan actually received option-chain data — useful for diagnosing
+# yfinance rate limits or non-US universes where options aren't available.
+# ─────────────────────────────────────────────────────────────────────────────
+if "last_scan_opt_enabled" in st.session_state:
+    _last_state = st.session_state["last_scan_opt_enabled"]
+    _last_n     = st.session_state.get("last_scan_opt_count", 0)
+    _last_mkt   = st.session_state.get("last_scan_market", "")
+    if _last_state != enable_options:
+        st.warning(
+            f"⚠️ Options toggle changed since the last scan "
+            f"(was **{'ON' if _last_state else 'OFF'}**, now "
+            f"**{'ON' if enable_options else 'OFF'}**). "
+            f"Click **🚀 Scan** to refresh — toggling alone does not re-run the scan."
+        )
+    elif enable_options:
+        if _last_n > 0:
+            st.caption(
+                f"🧩 Options enrichment was ON in the last scan · "
+                f"{_last_n} candidate(s) received option-chain data "
+                f"(market: {_last_mkt})."
+            )
+        elif _last_mkt == "🇸🇬 SGX":
+            st.caption(
+                "🧩 Options enrichment is ON, but SGX has no liquid single-stock "
+                "options market — there is no option chain to fetch. The toggle "
+                "has no effect on SGX scans by design."
+            )
+        elif _last_mkt == "🇮🇳 India" and not _nse_opt_available:
+            st.caption(
+                "🧩 Options enrichment is ON, but `nsepython` is not installed. "
+                "Run `pip install nsepython` and restart Streamlit to enable "
+                "India F&O option signals."
+            )
+        elif _last_mkt == "🇮🇳 India":
+            st.caption(
+                "🧩 Options enrichment was ON for India, but no candidates "
+                "received option-chain data. Likely causes: NSE rate-limited "
+                "(wait ~60 seconds and retry), no candidate cleared the "
+                "technical pre-filter, or the tickers scanned aren't in NSE's "
+                "F&O list (~200 stocks have option chains)."
+            )
+        else:
+            st.caption(
+                "🧩 Options enrichment was ON in the last scan, but no candidates "
+                "received option-chain data. Likely causes: yfinance rate-limited, "
+                "or no candidate cleared the technical pre-filter "
+                "(≥4 long signals or ≥3 short signals)."
+            )
+
+# ─────────────────────────────────────────────────────────────────────────────
 # TAB 2 — LONG
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_long:
     if not df_long.empty:
-        st.caption(f"Results for **{last_market}** · {len(df_long)} setups found")
+        # v12: count how many of the displayed setups have option-flow tags
+        _n_opt_l = int((df_long["Opt Flow"] != "–").sum()) \
+                   if "Opt Flow" in df_long.columns else 0
+        st.caption(
+            f"Results for **{last_market}** · {len(df_long)} setups · "
+            f"🧩 **{_n_opt_l}** options-confirmed"
+        )
     st.info(
         "📐 **Strategy** — Stop: MA60 · Targets: TP1 +10% · TP2 +15% · TP3 +20% | "
         "**✅ BUY** = dip to MA with low vol · "
@@ -2048,7 +2749,13 @@ with tab_long:
 with tab_short:
     st.warning("⚠️ Short selling has unlimited loss potential. Always use a hard cover-stop.")
     if not df_short.empty:
-        st.caption(f"Results for **{last_market}** · {len(df_short)} setups found")
+        # v12: count how many of the displayed setups have option-flow tags
+        _n_opt_s = int((df_short["Opt Flow"] != "–").sum()) \
+                   if "Opt Flow" in df_short.columns else 0
+        st.caption(
+            f"Results for **{last_market}** · {len(df_short)} setups · "
+            f"🧩 **{_n_opt_s}** options-confirmed"
+        )
     st.info(
         "📐 **Strategy** — Stop: Cover Stop · Targets: T1 −10% · T2 −20% | "
         "**✅ SELL** = confirmed downtrend with declining vol · "
@@ -4268,17 +4975,103 @@ The dividend logic was corrected so abnormal yfinance values do not make stocks 
 | Column | Meaning |
 |---|---|
 | **Rise Prob / Fall Prob** | Bayesian probability estimate from active technical signals |
-| **Score** | Number of active long/short signals |
+| **Score** | Number of active long/short signals (denominator scales with the engine version) |
 | **Entry Quality** | Practical entry label: BUY, WATCH, WAIT, AVOID |
 | **Today %** | Latest daily percentage change |
 | **MA60 Stop** | Stop reference based on 60-day moving average logic |
 | **TP1 / TP2 / TP3** | Long trade targets at +10%, +15%, +20% where shown |
+| **Smart TP** | Target derived from the option-implied 2-week move (US tickers only) |
+| **Implied Move 2W** | ATM straddle-implied expected move, scaled to ~10 trading days |
+| **IV vs RV** | Front-month ATM IV ÷ 20-day realized vol (proxy for IV Rank) |
 | **Cover Stop** | Stop level for short trades |
 | **Target 1:1 / 1:2** | Risk/reward-based targets |
+| **Opt Flow** | Compact summary of active options-derived signals |
 | **Exp 1Y Return** | Long-term estimated price appreciation + dividend |
 | **Return Breakdown** | Shows how much comes from price vs dividend |
 | **Div Yield** | Normalised dividend yield estimate |
 | **Horizon** | Suggested long-term category: Core, Buy & Hold, Accumulate, Monitor |
+        """)
+
+    # ── OPTIONS LAYER ─────────────────────────────────────────────────────────
+    with st.expander("🧩 Options enrichment (v12) — what it adds and how to read it"):
+        st.markdown("""
+v12 adds a forward-looking options layer on top of the existing technical
+Bayesian engine. Two backends are wired in:
+
+| Market | Backend | Coverage |
+|---|---|---|
+| 🇺🇸 US | **yfinance** | All optionable US-listed stocks |
+| 🇮🇳 India | **nsepython** (`pip install nsepython`) | F&O list only — about 200 stocks have liquid option chains on NSE |
+| 🇸🇬 SGX | — | No liquid single-stock options market exists. SGX scans skip this layer entirely; the toggle has no effect on SGX. |
+
+The toggle is in the sidebar: **"Use options data (US + India F&O, +30–60s)"**.
+The helper checkbox **"Filter: only options-confirmed setups"** hides any
+stock that didn't fire an option signal — fastest way to confirm the layer
+is actually flowing on your machine.
+
+### Bullish flags
+
+| Tag | Meaning | Why it matters for swing |
+|---|---|---|
+| **🔥CALL FLOW** | Any near-money call strike with today's volume > 3× its open interest, plus a meaningful absolute volume baseline | Captures fresh, aggressive call positioning that often front-runs price |
+| **📈CALL SKEW** | 10% OTM call IV ≥ 10% OTM put IV (proxy for a positive 25Δ risk reversal) | Call demand priced richer than put demand — unusual, typically bullish |
+| **P/C↓** | Total put/call volume across the chain < 0.6 | Call-biased session — confirms directional bias |
+| **IV CHEAP** | Front-month ATM IV < 0.85 × 20-day realized vol | Calm-bull regime; IV underpricing realized often precedes trends |
+
+### Bearish flags
+
+| Tag | Meaning | Why it matters |
+|---|---|---|
+| **🔻PUT FLOW** | Near-money put with volume > 3× OI | Fresh hedging or directional shorts |
+| **📉PUT SKEW** | 10% OTM put IV ≥ 5 vol pts above 10% OTM call IV | Fear bid for downside protection |
+| **⚠️IV INVERTED** | Front-month ATM IV > back-month ATM IV (≥5%) | Acute near-term event/fear priced in. Also **downgrades a fresh ✅ BUY to 👀 WATCH** because event risk dominates the swing horizon |
+| **P/C↑** | Total put/call volume > 1.5 | Defensive session — confirms downside positioning |
+
+### Risk / context flags
+
+| Tag | Meaning |
+|---|---|
+| **⚠️IV RICH** | Front-month IV > 1.4 × realized vol — options expensive, often around earnings or pending news |
+
+### How `Smart TP` works
+The **Implied Move 2W** column is the ATM straddle expressed as % of spot,
+scaled by √(t) to roughly 10 trading days. **Smart TP** = price ×
+(1 + max(implied move, 5%)) — a target the market itself believes is in
+range. If your TP1 (+10%) sits well outside the implied move, the market
+is telling you that target is in the tail — size accordingly.
+
+### India-specific notes
+- NSE returns the **whole option chain in one JSON** (all expiries, all
+  strikes). The code splits it per expiry and maps NSE field names to the
+  yfinance schema so the downstream signal logic is identical for both
+  markets.
+- NSE quotes **IV in percent** (e.g. `35.5`); yfinance returns **fractions**
+  (e.g. `0.355`). The NSE backend divides by 100 internally — you don't
+  need to do anything.
+- **Rate limits are tighter than yfinance.** First scan after a long idle
+  period may hit a 401/cooldown. The 15-minute cache and the technical
+  pre-filter (≥4 long signals or ≥3 short signals) cap the call rate.
+- Only stocks on the NSE F&O list have chains. Most mid/small caps in
+  `INDIA_TICKERS` won't have option data — that's expected, not a bug.
+- NSE chain data is **delayed by 3–5 minutes**. Fine for swing horizons,
+  not for intraday entries.
+
+### What it does NOT do
+- It does **not** override or replace technicals. Each option flag is just
+  another piece of evidence for the same Bayesian engine.
+- It does **not** estimate dealer gamma exposure (would need Black-Scholes
+  greeks and is heuristic on retail data). Easy to add later if useful.
+- It does **not** run on SGX, HK, ASX, EU, JP, KR, or other markets — no
+  free public option-chain feed equivalent to yfinance/nsepython for these.
+
+### Important caveat
+The signal weights (0.62–0.70) are set conservatively by analogy to the
+Tier-2 technical signals. They are **not** backtested. To trust them
+seriously, run a 6–12 month walk-forward and measure each flag's actual
+hit rate vs forward 5-day returns, then update the weights in
+`LONG_WEIGHTS` / `SHORT_WEIGHTS`. Without that, treat options flags as
+**confirming evidence** for technicals you already like, not as
+standalone reasons to enter.
         """)
 
     # ── TRADE PLAN ───────────────────────────────────────────────────────────
@@ -4350,22 +5143,23 @@ Risk only a small fixed amount per trade. For example, if your max risk is S$500
     with st.expander("🔧 Install & run"):
         st.markdown("""
 ```bash
-pip install streamlit yfinance pandas numpy ta financedatabase plotly
+pip install streamlit yfinance pandas numpy ta financedatabase plotly nsepython
 python -m streamlit run swing_trader_sector_wise_yfin_simple.py
 ```
 
 If data fetch fails:
 ```bash
-pip install --upgrade yfinance
+pip install --upgrade yfinance nsepython
 streamlit cache clear
 ```
 
 Recommended packages:
 - `streamlit` — app UI
-- `yfinance` — market data
+- `yfinance` — market data + US option chains
 - `pandas`, `numpy` — data processing
 - `ta` — technical indicators
 - `financedatabase` — optional ETF/sector data
+- `nsepython` — optional, NSE option chains for India F&O scans
 - `plotly` — charting in Stock Analysis
         """)
 
