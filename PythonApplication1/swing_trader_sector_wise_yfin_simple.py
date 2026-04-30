@@ -512,7 +512,7 @@ def show_table(df, label, prob_col="Rise Prob"):
     if prob_col in df_disp.columns:
         st.dataframe(
             style_fn(fn, subset=[prob_col]),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             column_config=cfg,
             height=height,
@@ -520,7 +520,7 @@ def show_table(df, label, prob_col="Rise Prob"):
     else:
         st.dataframe(
             df_disp,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             column_config=cfg,
             height=height,
@@ -1801,7 +1801,7 @@ else:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-tab_sectors, tab_long, tab_short, tab_both, tab_etf, tab_stock, tab_earn, tab_lt, tab_diag, tab_help = st.tabs([
+tab_sectors, tab_long, tab_short, tab_both, tab_etf, tab_stock, tab_earn, tab_event, tab_lt, tab_diag, tab_help = st.tabs([
     "🗂️ Sector Heatmap",
     "📈 Long Setups",
     "📉 Short Setups",
@@ -1809,6 +1809,7 @@ tab_sectors, tab_long, tab_short, tab_both, tab_etf, tab_stock, tab_earn, tab_lt
     "📊 ETF Holdings",
     "🔬 Stock Analysis",
     "📅 Earnings",
+    "📰 Event Predictor",
     "🌱 Long Term",
     "🔍 Diagnostics",
     "❓ Help",
@@ -1958,7 +1959,7 @@ if run:
                          "# Stocks": sd.get("count", len(sd.get("stocks",[]))),
                          "Top 8": ", ".join(sd.get("stocks",[])[:8])}
                         for sn, sd in live_sectors.items()]
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
         # Build active ticker list (market-specific + custom)
         active_tickers = list(_active_tickers)
@@ -2032,7 +2033,7 @@ with tab_long:
         )
 
         # sec_cnt = df_long.groupby("Sector").size().reset_index(name="Setups")
-        # st.dataframe(sec_cnt, use_container_width=True, hide_index=True)
+        # st.dataframe(sec_cnt, width="stretch", hide_index=True)
 
         st.caption("🔥 Strong Buy")
         show_table(strong_l, "strong buy", "Rise Prob")
@@ -2071,7 +2072,7 @@ with tab_short:
         )
 
         # sec_cnt = df_short.groupby("Sector").size().reset_index(name="Setups")
-        # st.dataframe(sec_cnt, use_container_width=True, hide_index=True)
+        # st.dataframe(sec_cnt, width="stretch", hide_index=True)
 
         st.caption("🔥 Strong Short")
         show_table(strong_s, "strong short", "Fall Prob")
@@ -2321,7 +2322,7 @@ with tab_etf:
     styled   = style_fn(colour_ret, subset=["1Y Ret %","3Y Ann %","5Y Ann %"])
     styled   = (styled.map if hasattr(styled,"map") else styled.applymap)(colour_er,  subset=["ER %"])
     styled   = (styled.map if hasattr(styled,"map") else styled.applymap)(colour_vol, subset=["Vol %"])
-    st.dataframe(styled, use_container_width=True)
+    st.dataframe(styled, width="stretch")
 
     st.caption("✅ = fetched live ·  〰️ = using fallback value")
     st.markdown("---")
@@ -2376,17 +2377,17 @@ with tab_etf:
                 with c1:
                     st.dataframe(
                         df_stocks.iloc[:col_size],
-                        use_container_width=True, hide_index=True
+                        width="stretch", hide_index=True
                     )
                 with c2:
                     st.dataframe(
                         df_stocks.iloc[col_size:col_size*2],
-                        use_container_width=True, hide_index=True
+                        width="stretch", hide_index=True
                     )
                 with c3:
                     st.dataframe(
                         df_stocks.iloc[col_size*2:],
-                        use_container_width=True, hide_index=True
+                        width="stretch", hide_index=True
                     )
 
     # Refresh button
@@ -2705,7 +2706,7 @@ with tab_stock:
                         fig.update_yaxes(gridcolor="rgba(128,128,128,0.15)")
                         fig.update_xaxes(gridcolor="rgba(128,128,128,0.05)")
 
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width="stretch")
 
                     except ImportError:
                         st.warning("Install plotly for charts: `pip install plotly`")
@@ -2856,6 +2857,162 @@ def fetch_earnings_calendar(tickers: tuple, days_ahead: int = 15) -> pd.DataFram
     return pd.DataFrame(rows).sort_values("_days").reset_index(drop=True)
 
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EVENT PREDICTOR HELPERS — earnings + market/news + orders/contracts
+# ─────────────────────────────────────────────────────────────────────────────
+_POSITIVE_NEWS_WORDS = ["beat", "beats", "raise", "raised", "upgrade", "upgraded", "buyback", "record", "strong", "growth", "profit", "surge", "rally", "partnership", "deal", "contract", "order", "award", "backlog", "approval", "launch", "expansion", "guidance raised"]
+_NEGATIVE_NEWS_WORDS = ["miss", "misses", "cut", "cuts", "downgrade", "downgraded", "lawsuit", "probe", "investigation", "fraud", "weak", "loss", "decline", "falls", "plunge", "warning", "guidance cut", "delay", "cancel", "cancelled", "recall"]
+_ORDER_WORDS = ["contract", "order", "award", "awarded", "backlog", "tender", "project", "supply", "shipbuilding", "data centre", "data center", "defence", "defense", "semiconductor", "government", "framework agreement", "purchase agreement"]
+
+def _safe_float_event(v, default=0.0):
+    try:
+        if v is None or pd.isna(v):
+            return default
+        return float(v)
+    except Exception:
+        return default
+
+def _extract_news_titles(ticker_obj, limit=12):
+    items = []
+    try:
+        raw_news = ticker_obj.news or []
+        for n in raw_news[:limit]:
+            title = ""; publisher = ""; link = ""; pub_time = ""
+            if isinstance(n, dict):
+                title = n.get("title") or n.get("content", {}).get("title") or ""
+                publisher = n.get("publisher") or n.get("content", {}).get("provider", {}).get("displayName") or ""
+                link = n.get("link") or n.get("content", {}).get("canonicalUrl", {}).get("url") or ""
+                pub_time = n.get("providerPublishTime") or n.get("content", {}).get("pubDate") or ""
+            if title:
+                items.append({"title": str(title), "publisher": str(publisher), "link": str(link), "time": str(pub_time)})
+    except Exception:
+        pass
+    return items
+
+def _score_news_titles(news_items):
+    titles = " ".join([x.get("title", "") for x in news_items]).lower()
+    pos_hits = sorted({w for w in _POSITIVE_NEWS_WORDS if w in titles})
+    neg_hits = sorted({w for w in _NEGATIVE_NEWS_WORDS if w in titles})
+    order_hits = sorted({w for w in _ORDER_WORDS if w in titles})
+    news_score = min(3, len(pos_hits)) - min(4, len(neg_hits))
+    order_score = 3 if len(order_hits) >= 2 else (2 if len(order_hits) == 1 else 0)
+    sentiment = "🔴 Negative" if (neg_hits and len(neg_hits) >= len(pos_hits)) else ("🟢 Positive" if pos_hits else "⚪ Neutral")
+    order_tag = "✅ Order/Contract" if order_score >= 2 else "–"
+    return news_score, order_score, sentiment, order_tag, pos_hits, neg_hits, order_hits
+
+@st.cache_data(ttl=1800)
+def fetch_event_predictions(tickers: tuple, days_ahead: int = 30) -> pd.DataFrame:
+    today = datetime.today().date()
+    rows = []
+    total = len(tickers)
+    prog = st.progress(0, text="Scanning earnings, news and orders…")
+    status = st.empty()
+    for i, ticker in enumerate(tickers):
+        try:
+            status.caption(f"Event scoring {ticker} ({i+1}/{total})…")
+            tkr = yf.Ticker(ticker)
+            info = tkr.info or {}
+            price = _safe_float_event(info.get("currentPrice") or info.get("regularMarketPrice"))
+            ma50 = _safe_float_event(info.get("fiftyDayAverage"))
+            ma200 = _safe_float_event(info.get("twoHundredDayAverage"))
+            tgt = _safe_float_event(info.get("targetMeanPrice"))
+            rec = str(info.get("recommendationKey", "")).upper().replace("_", " ")
+            eps_est = info.get("forwardEps") or info.get("epsForward")
+            eps_last = info.get("trailingEps")
+
+            earn_date = None
+            for key in ("earningsTimestamp", "earningsTimestampStart", "earningsTimestampEnd", "earningsDate"):
+                val = info.get(key)
+                if val:
+                    try:
+                        d = pd.Timestamp(val, unit="s").date() if isinstance(val, (int, float)) and val > 0 else pd.Timestamp(val).date()
+                        if d >= today:
+                            earn_date = d
+                            break
+                    except Exception:
+                        continue
+            days_out = (earn_date - today).days if earn_date else None
+            if days_out is not None and 0 <= days_out <= 7:
+                earnings_score, earnings_tag = -4, "🚫 Earnings ≤7d"
+            elif days_out is not None and 8 <= days_out <= 21:
+                earnings_score, earnings_tag = -1, "👀 Earnings 8–21d"
+            elif days_out is not None and days_out <= days_ahead:
+                earnings_score, earnings_tag = 0, "⚪ Earnings ahead"
+            else:
+                earnings_score, earnings_tag = 1, "✅ No near earnings"
+
+            eps_chg = 0.0
+            try:
+                if eps_est and eps_last and float(eps_last) != 0:
+                    eps_chg = (float(eps_est) - float(eps_last)) / abs(float(eps_last)) * 100
+            except Exception:
+                eps_chg = 0.0
+            if eps_chg > 10:
+                earnings_score += 2
+            elif eps_chg > 5:
+                earnings_score += 1
+            elif eps_chg < -10:
+                earnings_score -= 2
+
+            news_items = _extract_news_titles(tkr, limit=12)
+            news_score, order_score, sentiment, order_tag, pos_hits, neg_hits, order_hits = _score_news_titles(news_items)
+
+            trend_score = 0
+            if price and ma50 and price > ma50:
+                trend_score += 1
+            if price and ma200 and price > ma200:
+                trend_score += 1
+            if price and tgt and tgt > price:
+                trend_score += 1
+            if rec in ("BUY", "STRONG BUY"):
+                trend_score += 1
+
+            total_score = earnings_score + news_score + order_score + trend_score
+            if total_score >= 8 and trend_score >= 2 and earnings_score >= 0:
+                verdict, vcol = "✅ BUY", "buy"
+            elif total_score >= 6:
+                verdict, vcol = "👀 WATCH", "watch"
+            elif total_score >= 4:
+                verdict, vcol = "⏳ WAIT", "wait"
+            else:
+                verdict, vcol = "🚫 AVOID", "avoid"
+            if days_out is not None and 0 <= days_out <= 7:
+                verdict, vcol = "🚫 AVOID", "avoid"
+
+            top_news = " | ".join([x["title"] for x in news_items[:3]]) if news_items else "–"
+            evidence = []
+            if pos_hits: evidence.append("+" + ", ".join(pos_hits[:4]))
+            if neg_hits: evidence.append("-" + ", ".join(neg_hits[:4]))
+            if order_hits: evidence.append("Orders: " + ", ".join(order_hits[:4]))
+
+            rows.append({
+                "Ticker": ticker,
+                "Price": f"${price:.2f}" if price else "–",
+                "Earnings": earnings_tag,
+                "Days Out": int(days_out) if days_out is not None else None,
+                "EPS Trend": f"{eps_chg:+.1f}%" if eps_chg else "–",
+                "News": sentiment,
+                "Orders": order_tag,
+                "Trend Score": f"{trend_score}/4",
+                "Event Score": total_score,
+                "Verdict": verdict,
+                "Evidence": " ; ".join(evidence) if evidence else "–",
+                "Top News": top_news,
+                "_vcol": vcol,
+                "_score": total_score,
+            })
+        except Exception:
+            pass
+        prog.progress((i + 1) / max(total, 1))
+
+    prog.empty(); status.empty()
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).sort_values(["_score", "Ticker"], ascending=[False, True]).reset_index(drop=True)
+
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB — EARNINGS CALENDAR
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2956,6 +3113,8 @@ with tab_earn:
             ] if c in df_filtered.columns]
 
             df_show = df_filtered[disp_cols].copy()
+            if "Days Out" in df_show.columns:
+                df_show["Days Out"] = pd.to_numeric(df_show["Days Out"], errors="coerce")
 
             col_cfg = {
                 "Ticker":         st.column_config.TextColumn("Ticker",  width=60),
@@ -2981,7 +3140,7 @@ with tab_earn:
             styled = (styled.map if hasattr(styled,"map") else styled.applymap)(
                       style_eps, subset=["EPS Trend"])
 
-            st.dataframe(styled, use_container_width=True, hide_index=True,
+            st.dataframe(styled, width="stretch", hide_index=True,
                          column_config=cfg,
                          height=min(40 + len(df_show) * 35, 520))
 
@@ -2994,6 +3153,114 @@ with tab_earn:
             "Never hold full position through earnings. "
             "Best strategy: buy the dip AFTER earnings on good results."
         )
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB — EVENT PREDICTOR: Earnings + News + Orders
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_event:
+    st.caption("📰 Event Predictor · combines earnings risk, recent news sentiment, order/contract keywords and trend confirmation")
+
+    ev1, ev2, ev3 = st.columns([1, 1, 2])
+    with ev1:
+        ev_days = st.slider("Earnings window", 7, 60, 30, key="event_days")
+    with ev2:
+        ev_market = st.radio("Market", ["🇺🇸 US", "🇸🇬 SGX", "🇮🇳 India"], horizontal=True, key="event_market")
+    with ev3:
+        ev_extra = st.text_input("Tickers to check", placeholder="AIY.SI, OYY.SI, UUUU, NVDA", key="event_extra").strip().upper()
+
+    if ev_market == "🇺🇸 US":
+        ev_base = list(US_TICKERS[:120])
+    elif ev_market == "🇸🇬 SGX":
+        ev_base = list(SG_TICKERS)
+    else:
+        ev_base = list(INDIA_TICKERS)
+
+    if ev_extra:
+        extras = [x.strip() for x in ev_extra.split(",") if x.strip()]
+        ev_base = extras + [x for x in ev_base if x not in extras]
+
+    f1, f2 = st.columns([2, 2])
+    with f1:
+        ev_search = st.text_input("🔍 Search", placeholder="ticker", key="event_search").strip().upper()
+    with f2:
+        ev_verdict_filter = st.multiselect("Filter verdict", ["✅ BUY", "👀 WATCH", "⏳ WAIT", "🚫 AVOID"], default=[], key="event_verdict_filter", placeholder="All verdicts")
+
+    if st.button("📰 Predict from Earnings + News + Orders", type="primary", key="btn_event_predictor"):
+        st.session_state["event_df"] = fetch_event_predictions(tuple(dict.fromkeys(ev_base)), ev_days)
+
+    event_df = st.session_state.get("event_df", pd.DataFrame())
+
+    if event_df.empty:
+        st.info("Enter tickers or select a market, then click 📰 Predict from Earnings + News + Orders.")
+        st.caption("BUY requires enough event score plus trend confirmation. Near earnings ≤7 days is forced AVOID because gap risk is high.")
+    else:
+        df_event = event_df.copy()
+        if ev_search:
+            df_event = df_event[df_event["Ticker"].str.contains(ev_search, case=False, na=False)]
+        if ev_verdict_filter:
+            df_event = df_event[df_event["Verdict"].isin(ev_verdict_filter)]
+
+        b = (df_event["_vcol"] == "buy").sum()
+        w = (df_event["_vcol"] == "watch").sum()
+        wait = (df_event["_vcol"] == "wait").sum()
+        a = (df_event["_vcol"] == "avoid").sum()
+        st.caption(f"✅ **{b}** Buy · 👀 **{w}** Watch · ⏳ **{wait}** Wait · 🚫 **{a}** Avoid · {len(df_event)} shown")
+
+        def _style_event_verdict(val):
+            s = str(val)
+            if "BUY" in s: return "background-color:#d4edda;color:#155724;font-weight:700"
+            if "WATCH" in s: return "background-color:#d1ecf1;color:#0c5460;font-weight:600"
+            if "WAIT" in s: return "background-color:#fff3cd;color:#856404"
+            if "AVOID" in s: return "background-color:#f8d7da;color:#721c24;font-weight:700"
+            return ""
+
+        def _style_event_score(val):
+            try:
+                v = float(val)
+                if v >= 8: return "color:#155724;font-weight:700"
+                if v >= 6: return "color:#0c5460;font-weight:600"
+                if v < 4: return "color:#721c24;font-weight:600"
+            except Exception:
+                pass
+            return ""
+
+        disp = [c for c in [
+            "Ticker", "Price", "Earnings", "Days Out", "EPS Trend", "News", "Orders",
+            "Trend Score", "Event Score", "Verdict", "Evidence", "Top News"
+        ] if c in df_event.columns]
+        df_show = df_event[disp].copy()
+        if "Days Out" in df_show.columns:
+            df_show["Days Out"] = pd.to_numeric(df_show["Days Out"], errors="coerce")
+
+        col_cfg = {
+            "Ticker": st.column_config.TextColumn("Ticker", width=70),
+            "Price": st.column_config.TextColumn("Price", width=65),
+            "Earnings": st.column_config.TextColumn("Earnings", width=120),
+            "Days Out": st.column_config.NumberColumn("Days", width=50),
+            "EPS Trend": st.column_config.TextColumn("EPS", width=70),
+            "News": st.column_config.TextColumn("News", width=90),
+            "Orders": st.column_config.TextColumn("Orders", width=110),
+            "Trend Score": st.column_config.TextColumn("Trend", width=62),
+            "Event Score": st.column_config.NumberColumn("Score", width=55),
+            "Verdict": st.column_config.TextColumn("Verdict", width=90),
+            "Evidence": st.column_config.TextColumn("Evidence", width=220),
+            "Top News": st.column_config.TextColumn("Top News", width=420),
+        }
+
+        styler = df_show.style
+        sfn = styler.map if hasattr(styler, "map") else styler.applymap
+        styled = sfn(_style_event_verdict, subset=["Verdict"])
+        styled = (styled.map if hasattr(styled, "map") else styled.applymap)(_style_event_score, subset=["Event Score"])
+
+        st.dataframe(
+            styled, width="stretch", hide_index=True,
+            column_config={k:v for k,v in col_cfg.items() if k in df_show.columns},
+            height=min(60 + len(df_show) * 36, 560)
+        )
+        st.warning("News/order detection uses recent yfinance headlines and keyword matching. Treat it as a watchlist filter, not a guarantee. Confirm important orders from SGX/company announcements before buying.")
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3489,7 +3756,7 @@ with tab_lt:
             if col in df_show.columns:
                 styled = (styled.map if hasattr(styled,"map") else styled.applymap)(
                     style_growth, subset=[col])
-        st.dataframe(styled, use_container_width=True, hide_index=True,
+        st.dataframe(styled, width="stretch", hide_index=True,
                      column_config=cfg, height=min(40+len(df_show)*35, 600))
         st.caption("Score/10: RevGrw(+2) EPSGrw(+2) ROE(+1) Margin(+1) LowDebt(+1) AboveMA200(+1) Target(+1) BuyRated(+1) · "
                    "ETF Count = held by how many ETFs (higher = more institutional conviction)")
@@ -3535,7 +3802,7 @@ with tab_lt:
         styled = sfn(sret, subset=ret_cols) if ret_cols else df_f.style
         styled = (styled.map if hasattr(styled,"map") else styled.applymap)(srisk, subset=["Risk"])
         cfg = {k:v for k,v in col_cfg_f.items() if k in df_f.columns}
-        st.dataframe(styled, use_container_width=True, hide_index=True,
+        st.dataframe(styled, width="stretch", hide_index=True,
                      column_config=cfg, height=min(40+len(df_f)*35, 560))
         st.caption("Returns are approximate annualised historical figures. Past performance ≠ future returns.")
 
@@ -3560,7 +3827,7 @@ with tab_lt:
             sfn = df_etf_us.style.map if hasattr(df_etf_us.style,"map") else df_etf_us.style.applymap
             st.dataframe(
                 sfn(_sc, subset=["1Y Ann%","3Y Ann%","5Y Ann%"]),
-                use_container_width=True, hide_index=True,
+                width="stretch", hide_index=True,
                 column_config={
                     "ETF":     st.column_config.TextColumn("ETF",    width=70),
                     "Name":    st.column_config.TextColumn("Name",   width=190),
@@ -3596,7 +3863,7 @@ with tab_lt:
             sfn2 = df_etf_sg.style.map if hasattr(df_etf_sg.style,"map") else df_etf_sg.style.applymap
             st.dataframe(
                 sfn2(_sc2, subset=["1Y Ann%","3Y Ann%","5Y Ann%"]),
-                use_container_width=True, hide_index=True,
+                width="stretch", hide_index=True,
                 column_config={
                     "ETF":     st.column_config.TextColumn("ETF",    width=70),
                     "Name":    st.column_config.TextColumn("Name",   width=190),
@@ -3754,7 +4021,7 @@ with tab_lt:
                 if col in df_show.columns:
                     styled = (styled.map if hasattr(styled,"map") else styled.applymap)(
                         _stg, subset=[col])
-            st.dataframe(styled, use_container_width=True, hide_index=True,
+            st.dataframe(styled, width="stretch", hide_index=True,
                          column_config=cfg, height=min(40+len(df_show)*35, 600))
             st.caption("Score/10: RevGrw(+2) EPSGrw(+2) ROE>15%(+1) Margin>15%(+1) "
                        "LowDebt(+1) AboveMA200(+1) AnalystTarget(+1) BuyRated(+1)")
