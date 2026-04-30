@@ -1401,12 +1401,36 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 long_sig.get("vol_surge_up", False)  # green candle + 2x vol + 1.5% up
             )
 
-            if l_score >= min_score_strong_long and l_prob >= min_prob_strong_long and l_top3:
+            # ── HIGH-ACCURACY GATE ─────────────────────────────────────────────
+            # This prevents the Bayesian score from becoming over-confident when
+            # many correlated trend signals fire together. Only these setups are
+            # allowed to become STRONG BUY / ✅ BUY. Everything else is WATCH/WAIT.
+            volume_confirmed = (
+                long_sig.get("vol_breakout", False) or
+                long_sig.get("pocket_pivot", False) or
+                long_sig.get("vol_surge_up", False)
+            )
+            high_accuracy_long = (
+                l_prob >= 0.82 and
+                l_score >= 8 and
+                raw.get("above_ma60", False) and
+                raw.get("not_chasing", False) and
+                raw.get("not_limit_up", False) and
+                raw.get("today_chg_pct", 99) < 6 and
+                long_sig.get("trend_daily", False) and
+                long_sig.get("weekly_trend", False) and
+                long_sig.get("rel_strength", False) and
+                volume_confirmed
+            )
+
+            if high_accuracy_long:
                 l_action = "STRONG BUY"
-            elif l_score >= 4 and l_prob >= 0.62 and long_sig["trend_daily"]:
+            elif l_score >= min_score_strong_long and l_prob >= min_prob_strong_long and l_top3:
                 l_action = "WATCH – HIGH QUALITY"
-            elif l_score >= 3 and long_sig["trend_daily"]:
+            elif l_score >= 4 and l_prob >= 0.62 and long_sig["trend_daily"]:
                 l_action = "WATCH – DEVELOPING"
+            elif l_score >= 3 and long_sig["trend_daily"]:
+                l_action = "WATCH – EARLY"
             else:
                 l_action = None
 
@@ -1444,7 +1468,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
 
                 if is_stopped:
                     entry_quality = "🚫 AVOID"
-                elif is_ideal_dip or is_vol_surge:
+                elif high_accuracy_long and (is_ideal_dip or is_vol_surge or long_sig.get("pocket_pivot", False) or long_sig.get("vol_breakout", False)):
                     entry_quality = "✅ BUY"
                 elif is_chasing:
                     entry_quality = "⏳ WAIT"
@@ -1471,6 +1495,8 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 if vr >= 2.5:                   l_tags.append("VOL SURGE")
                 if is_monday:                   l_tags.append("⚠️MON")
                 if combo_bonus > 0:             l_tags.append(f"COMBO+{combo_bonus:.0%}")
+                if high_accuracy_long:          l_tags.append("🎯HIGH-ACCURACY")
+                elif l_prob >= 0.82:            l_tags.append("⚠️PROB-NO-GATE")
                 l_tags.extend(strat_tags)       # append strategy tags
 
                 long_results.append({
@@ -1510,12 +1536,38 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                               short_sig["bb_bear_squeeze"]  or
                               short_sig["macd_decel"])
 
-            if s_score >= min_score_strong_short and s_prob >= min_prob_strong_short and s_top3:
+            # ── HIGH-ACCURACY SHORT GATE ──────────────────────────────────────
+            # Same idea as the long gate: high Fall Prob alone is not enough.
+            # A true SELL needs bearish trend + breakdown/distribution volume +
+            # no gap-down chase + no obvious short-squeeze risk.
+            short_volume_confirmed = (
+                short_sig.get("vol_breakdown", False) or
+                short_sig.get("high_volume_down", False)
+            )
+            short_momentum_confirmed = (
+                short_sig.get("macd_decel", False) or
+                short_sig.get("stoch_overbought", False) or
+                short_sig.get("rsi_cross_bear", False)
+            )
+            high_accuracy_short = (
+                s_prob >= 0.82 and
+                s_score >= 5 and
+                short_sig.get("trend_bearish", False) and
+                short_momentum_confirmed and
+                short_volume_confirmed and
+                raw.get("today_chg_pct", 0) > -6.0 and   # avoid chasing big gap-downs
+                raw.get("today_chg_pct", 0) < 2.0 and    # avoid shorting strong green days
+                not squeeze_flag                         # avoid crowded squeeze risk
+            )
+
+            if high_accuracy_short:
                 s_action = "STRONG SHORT"
-            elif s_score >= 4 and s_prob >= 0.60 and short_sig["trend_bearish"]:
+            elif s_score >= min_score_strong_short and s_prob >= min_prob_strong_short and s_top3:
                 s_action = "WATCH SHORT – HIGH QUALITY"
-            elif s_score >= 3 and short_sig["trend_bearish"]:
+            elif s_score >= 4 and s_prob >= 0.60 and short_sig["trend_bearish"]:
                 s_action = "WATCH SHORT – DEVELOPING"
+            elif s_score >= 3 and short_sig["trend_bearish"]:
+                s_action = "WATCH SHORT – EARLY"
             else:
                 s_action = None
 
@@ -1536,7 +1588,10 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 if short_sig["lower_highs"]:       s_tags.append("LOWER HIGHS")
                 if short_sig["rsi_cross_bear"]:    s_tags.append("RSI<50")
                 if short_sig["high_volume_down"]:  s_tags.append("DIST DAY")
-                if is_monday:                      s_tags.append("⚠️MON")
+                if high_accuracy_short:             s_tags.append("🎯HIGH-ACCURACY")
+                elif s_prob >= 0.82:                s_tags.append("⚠️PROB-NO-GATE")
+                if squeeze_flag:                    s_tags.append("⚡SQUEEZE-RISK")
+                if is_monday:                       s_tags.append("⚠️MON")
 
                 # Short entry quality — mirror of long but for sell setups
                 s_is_ideal   = short_sig["trend_bearish"] and raw.get("vol_declining", False) \
@@ -1544,9 +1599,9 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 s_is_chasing = raw.get("today_chg_pct", 0) < -8.0   # gapped down >8%, avoid
                 s_is_stopped = not short_sig["trend_bearish"] and raw.get("above_ma60", True)
 
-                if s_is_stopped:
+                if s_is_stopped or squeeze_flag:
                     s_entry_quality = "🚫 AVOID"
-                elif s_is_ideal:
+                elif high_accuracy_short and s_is_ideal:
                     s_entry_quality = "✅ SELL"
                 elif s_is_chasing:
                     s_entry_quality = "⏳ WAIT"
@@ -1572,6 +1627,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "Short %":        short_str,
                     "RSI":            round(raw["rsi0"], 1),
                     "Vol Ratio":      round(vr, 2),
+                    "Signals":        " | ".join(s_tags) if s_tags else "–",
                 })
 
         except Exception:
