@@ -1,5 +1,5 @@
 """
-Swing Scanner v10 — Sector-Driven Long & Short
+Swing Scanner v11 — Sector-Driven Long & Short
 ================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (exact compute_all_signals, bayesian_prob, action tiers)
@@ -20,7 +20,7 @@ from datetime import datetime
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v10",
+    page_title="Swing Scanner v11",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -143,7 +143,7 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 5–7 Day Swing Scanner v10 — Sector-Driven Long & Short")
+st.title("📈 Swing/Long Term Scanner v11 — Sector-Driven Long & Short")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TICKER UNIVERSE  — v4 curated high-quality list (always scanned)
@@ -3782,248 +3782,245 @@ with tab_diag:
 # TAB 8 — HELP
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_help:
-    st.markdown("## ❓ How to Use the Swing Scanner v10")
-    st.caption("Complete guide — updated for v10 multi-market logic")
+    st.markdown("## ❓ How to Use the Swing/Long Term Scanner v11")
+    st.caption("Updated guide for v11: market-aware swing scans, earnings calendar, SG-focused long-term builder, corrected dividend logic, diagnostics, and compact searchable grids.")
 
     # ── QUICK START ───────────────────────────────────────────────────────────
-    with st.expander("🚀 Quick Start — 5 steps to your first scan", expanded=True):
+    with st.expander("🚀 Quick Start — what to use each tab for", expanded=True):
         st.markdown("""
-**Step 1 — Pick your market**
-Use the **🌍 Market Selector** radio button above the tabs:
-- 🇺🇸 **US** — ~220 US stocks (Nasdaq, NYSE). Sector heatmap uses 15 US ETFs (XLK, SOXX, XLF…)
-- 🇸🇬 **Singapore (SGX)** — 27 SGX stocks (.SI suffix). Heatmap uses 10 sector groups (Banks, REITs, Transport…)
-- 🇮🇳 **India (NSE)** — 55 NSE stocks (.NS suffix). Heatmap uses 14 NSE indices (^NSEBANK, ^CNXIT…)
+**1) Choose a market at the top**
+- 🇺🇸 **US** — US swing setup scanning and US ETF sector heatmap.
+- 🇸🇬 **SGX** — Singapore swing setup scanning, SGX stock-group heatmap, and SG long-term stock builder.
+- 🇮🇳 **India** — NSE swing setup scanning and India sector-index heatmap.
 
-**Step 2 — Check the Sector Heatmap tab**
-Green tiles = sectors gaining today → scan for **longs**.
-Red tiles = sectors falling today → scan for **shorts**.
-The heatmap automatically shows the correct market based on your selection.
+**2) Use the tab based on your goal**
 
-**Step 3 — Set sidebar filters**
-- **Top N sectors**: Start with 3.
-- **Min LONG rise prob**: Default 62%. Raise to 72%+ for high conviction only.
-- **Skip earnings**: Keep ON — earnings gaps destroy swing trades (14-day guard).
+| Goal | Go to tab | What it does |
+|---|---|---|
+| Find strong 5–7 day buy setups | 📈 Long Setups | Shows bullish swing candidates after scan |
+| Find bearish / short setups | 📉 Short Setups | Shows breakdown / bearish setups |
+| Compare long and short lists | 🔄 Side by Side | Longs and shorts together |
+| Check hot / weak sectors first | 🗂️ Sector Heatmap | Market-aware sector strength map |
+| Analyse one stock deeply | 🔬 Stock Analysis | Chart, indicators, stops, targets, notes |
+| Check upcoming earnings risk | 📅 Earnings | Upcoming earnings + verdict scoring |
+| Build 1–3 year SG portfolio | 🌱 Long Term | SG stocks, SG funds/ETFs, US funds/ETFs |
+| Debug why a ticker passed/failed | 🔍 Diagnostics | Full signal condition breakdown |
 
-**Step 4 — Click 🚀 Scan [Market] Stocks**
-The button label changes to match your market. The scanner:
-1. Downloads only that market's stocks in one batch
-2. Computes 20 long + 10 short signals per stock
-3. Applies Bayesian probability + regime + Monday penalty
-4. Shows results sorted by probability
+**3) Scan button logic**
+The main scan button is for swing-trading tabs only. It should not be used inside **📅 Earnings** or **🌱 Long Term** because those tabs have their own buttons and logic.
 
-**Step 5 — Verify with 🔬 Stock Analysis tab**
-Type any ticker (NVDA, D05.SI, RELIANCE.NS) to see full chart + trade plan.
-Confirm risk:reward ≥ 1:2 and stop loss is within your tolerance before entering.
+**4) Always verify before buying**
+After a ticker appears in Long/Short Setups, open **🔬 Stock Analysis** or **🔍 Diagnostics** to confirm support, resistance, risk/reward, and earnings risk.
         """)
 
     # ── MARKET SELECTOR ───────────────────────────────────────────────────────
-    with st.expander("🌍 Market Selector — what changes per market"):
+    with st.expander("🌍 Market selector — what changes per market"):
         st.markdown("""
-| | 🇺🇸 US | 🇸🇬 SGX | 🇮🇳 India |
+The market selector controls the active ticker list, heatmap source, currency formatting, and scan universe.
+
+| Feature | 🇺🇸 US | 🇸🇬 SGX | 🇮🇳 India |
 |---|---|---|---|
-| **Ticker count** | ~220 stocks | 27 stocks (.SI) | 55 stocks (.NS) |
-| **Sector heatmap** | 15 US ETFs (XLK, SOXX, etc.) | 10 stock-group averages | 14 NSE indices (^NSEBANK, etc.) |
-| **Currency** | USD ($) | SGD (S$) | INR (₹) |
-| **Trading hours** | NYSE/Nasdaq 09:30–16:00 EST | SGX 09:00–17:00 SGT | NSE 09:15–15:30 IST |
-| **Live ETF holdings** | ✅ Fetched via FinanceDatabase/yfinance | ❌ Not available (uses fixed list) | ❌ Not available (uses fixed list) |
-| **Short selling** | ✅ Available (IBKR, etc.) | ⚠️ Limited on SGX | ❌ Not available for retail in India |
-| **Liquidity note** | High — tight spreads | Low — use limit orders | Medium — NSE is liquid for large-caps |
+| Swing ticker universe | US stocks + ETFs | Singapore `.SI` stocks | NSE `.NS` stocks |
+| Sector heatmap | US sector ETFs | SG stock-group averages | NSE sector indices |
+| Currency shown | USD `$` | SGD `S$` | INR `₹` |
+| Short setup usefulness | High | Limited | Limited for retail |
+| Liquidity | Highest | Lower, use limit orders | Good for large caps |
 
-**SGX heatmap note:** SGX has no liquid sector ETFs so the heatmap is computed as the average % change of constituent stocks within each sector group. It is directionally accurate but may differ slightly from an official sector index.
+**Important:** SGX has no liquid sector ETFs, so SG heatmap is calculated from average returns of stock groups like Banks, REITs, Telecoms, Transport, Shipping, and Tech.
         """)
 
-    # ── SIGNAL GUIDE ─────────────────────────────────────────────────────────
-    with st.expander("📊 Signal Guide — all 20 long + 10 short signals"):
-        st.markdown("### Long Signals (20 total → Score /20)")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("""
-**Original 10 signals**
-
-| Tag | What it detects |
-|-----|----------------|
-| `TREND` | Price > EMA8 > EMA21 — short-term uptrend |
-| `STOCH BOUNCE` | Stoch K was <20 for 2 bars, now crossing above D-line |
-| `BB BULL SQ` | BB squeeze + price above midline — coil before explosion |
-| `MACD ACCEL` | MACD histogram rising 3 bars — momentum accelerating |
-| `MACD CROSS` | MACD line crossed above signal with +ve histogram |
-| `RSI>50` | RSI crossed above 50 — bullish shift confirmed |
-| `ADX>20` | Trend strength confirmed |
-| `VOL>1.5×` | Volume 1.5× 20-day average |
-| `VOL BREAKOUT` | Price at 10-day high + vol ≥1.8× |
-| `HIGHER LOWS` | Two consecutive higher swing lows |
-            """)
-        with col2:
-            st.markdown("""
-**New accuracy signals (10)**
-
-| Tag | What it detects |
-|-----|----------------|
-| `WKLY TREND` | EMA20 > EMA50 — macro uptrend on weekly timeframe |
-| `🟡GC` / `🔥FRESH GC` | EMA50 > EMA200 golden cross. Fresh = last 10 bars |
-| `RS>SPY` | Stock beat SPY over last 5 days |
-| `52W HIGH` | Price within 10% of 52-week high — momentum |
-| `OBV↑` | On-Balance Volume rising 5 consecutive days |
-| `BULL CANDLE` | Hammer or bullish engulfing on last candle |
-| `ATR EXP` | Today's range > 1.2× ATR — breakout energy |
-| `COIL` | 3–8 tight-range days before today |
-| `RSI DIV` | Price lower low but RSI higher low — divergence |
-| `SEC LEAD` | Stock outperforming its sector ETF last 5 days |
-| `⚡SQUEEZE` | Short interest >15% + bullish — squeeze potential |
-| `COMBO+%` | High-win signal cluster bonus (up to +8% probability) |
-| `⚠️MON` | Monday flag — probability reduced 6% (gap risk) |
-            """)
-
-        st.markdown("### Short Signals (10 total → Score /10)")
+    # ── MAIN TABS ─────────────────────────────────────────────────────────────
+    with st.expander("🧭 Tab guide — what each tab now does"):
         st.markdown("""
-| Tag | What it detects |
-|-----|----------------|
-| `TREND BEAR` | Price < EMA8 < EMA21 — short-term downtrend |
-| `STOCH ROLLOVER` | Stoch K was >80 for 2 bars, now crossing below D-line |
-| `BB BEAR SQ` | BB squeeze + price below midline |
-| `MACD DECEL` | MACD histogram declining 3 consecutive bars |
-| `MACD BEAR` | MACD line below signal with –ve histogram |
-| `RSI<50` | RSI crossed below 50 — bearish shift confirmed |
-| `ADX BEAR` | ADX >20 with price below EMA21 |
-| `DIST DAY` | Large red candle on 2× average volume |
-| `VOL BREAKDOWN` | Price at 10-day low + high volume |
-| `LOWER HIGHS` | Two consecutive lower swing highs |
+| Tab | Use it for | Notes |
+|---|---|---|
+| 🗂️ **Sector Heatmap** | See strongest/weakest sectors before scanning | Refreshes from yfinance cache |
+| 📈 **Long Setups** | 5–7 day bullish swing ideas | Uses Bayesian probability + signal score |
+| 📉 **Short Setups** | Bearish setups / breakdowns | Best for US market; use caution elsewhere |
+| 🔄 **Side by Side** | Compare long and short results | Helps spot sector concentration |
+| 📊 **ETF Holdings** | Pull US ETF holdings into scan universe | Mainly useful for US sector/thematic ETFs |
+| 🔬 **Stock Analysis** | Detailed chart and trade plan for one ticker | Use this before entry |
+| 📅 **Earnings** | Upcoming earnings scanner | Uses EPS trend, MA50/MA200, analyst target/rec |
+| 🌱 **Long Term** | 1–3 year portfolio ideas | SG Stocks + SG Funds/ETFs + US Funds/ETFs |
+| 🔍 **Diagnostics** | Debug signal logic | Shows every pass/fail condition |
+| ❓ **Help** | This guide | Updated for v11 |
         """)
 
-    # ── ACTION TIERS ─────────────────────────────────────────────────────────
-    with st.expander("🎯 Action tiers — how STRONG BUY is determined"):
+    # ── SWING LOGIC ───────────────────────────────────────────────────────────
+    with st.expander("📊 Swing setup logic — long, short, probability, and entry quality"):
         st.markdown("""
-### Long tiers (score out of 20)
+### Long setup engine
+The long scanner combines trend, momentum, volume, volatility, relative strength, and structure signals.
 
-| Action | Score | Rise Prob | Also needs | What to do |
-|--------|-------|-----------|------------|------------|
-| 🔥 **STRONG BUY** | ≥6 (BULL) / ≥7 (BEAR/CAUTION) | ≥72% (BULL) / ≥78% | One of: Stoch/BB/MACD | Enter next day at open. Set stop immediately. |
-| 👀 **WATCH – HIGH QUALITY** | ≥4 | ≥62% | Daily trend | Watchlist. Enter if opens strong. |
-| 📋 **WATCH – DEVELOPING** | ≥3 | any | Daily trend | Monitor only. Setup not confirmed. |
+Important signals include:
+- **Trend Daily:** price > EMA8 > EMA21
+- **Weekly / higher trend:** broader trend confirmation
+- **Volume breakout:** price near 10-day high with strong volume
+- **Pocket pivot / volume surge up:** institutional-style accumulation
+- **MACD acceleration:** momentum improving
+- **Stoch bounce:** oversold bounce confirmation
+- **Near 52-week high:** momentum leadership
+- **OBV rising:** accumulation
+- **Strong close:** buyers controlled the close
+- **VCP tightness:** volatility contraction before expansion
 
-### Short tiers (score out of 10)
+### Short setup engine
+The short scanner looks for bearish trend, overbought rollover, MACD deceleration, high-volume red candles, 10-day breakdowns, lower highs, and MA60 stop-break behavior.
 
-| Action | Score | Fall Prob | Also needs | What to do |
-|--------|-------|-----------|------------|------------|
-| 🔥 **STRONG SHORT** | ≥5 (BEAR/CAUTION) / ≥6 (BULL) | ≥68% (BEAR) / ≥72% | One of: Stoch/BB/MACD | Enter short. Place cover stop immediately. |
-| 👀 **WATCH SHORT – HQ** | ≥4 | ≥60% | Bearish trend | Watchlist. Short if continues lower. |
-| 📋 **WATCH SHORT – DEV** | ≥3 | any | Bearish trend | Monitor only. |
+### Probability engine
+The script uses weighted Bayesian-style probability. Stronger signals move the probability more than weak/noisy signals. Market regime then adjusts the result:
 
-### Market regime effect
+| Regime | Meaning | Effect |
+|---|---|---|
+| 🟢 **BULL** | SPY above EMA20 and VIX below 20 | Normal long thresholds |
+| 🟡 **CAUTION** | Mixed market | Longs stricter; shorts slightly boosted |
+| 🔴 **BEAR** | SPY below EMA50 or VIX high | Longs much stricter; shorts boosted |
 
-| Regime | Detected when | Long adjustment | Short adjustment |
-|--------|--------------|-----------------|------------------|
-| 🟢 **BULL** | SPY > EMA20 and VIX < 20 | Normal thresholds | Normal |
-| 🟡 **CAUTION** | Between BULL and BEAR | Prob × 0.88 (–12%) | Bonus +3% |
-| 🔴 **BEAR** | SPY < EMA50 or VIX > 25 | Prob × 0.75 (–25%), score ≥7 | Bonus +8% |
+### Entry Quality
+Long tables show **BUY / WATCH / WAIT / AVOID** based on trend, probability, volume, and entry-risk filters. Do not buy only because probability is high; confirm entry level and stop.
+        """)
 
-### Signal combo bonuses (added to probability)
+    # ── EARNINGS ──────────────────────────────────────────────────────────────
+    with st.expander("📅 Earnings tab — how to read it"):
+        st.markdown("""
+The Earnings tab scans for upcoming earnings dates and gives a quick verdict.
 
-| Combo | Bonus |
-|-------|-------|
-| BB squeeze + Vol breakout + Stoch bounce | +7% |
-| MACD accel + RSI>50 + Higher lows | +6% |
-| Daily trend + Weekly trend + RS>SPY | +5% |
-| Fresh golden cross + Vol breakout | +8% |
+It checks:
+- **Days Out** — how close the earnings event is
+- **EPS Est vs EPS Last** — whether expected earnings trend is improving
+- **MA50 / MA200** — whether price is technically strong
+- **Analyst Target / Upside** — whether analysts still see upside
+- **Analyst Rec** — buy/hold/sell style rating
+
+| Verdict | Meaning |
+|---|---|
+| ✅ **BUY** | Multiple confirmations: trend, target upside, EPS trend, analyst support |
+| 👀 **WATCH** | Some positives but not enough for full confidence |
+| ⏳ **WAIT** | Mixed signals; better to wait until after earnings |
+| 🚫 **AVOID** | Weak trend, weak estimates, or poor setup |
+
+**Rule:** Earnings are binary. A stock can gap up or down sharply. For swing trades, avoid full-size positions through earnings unless you intentionally accept event risk.
+        """)
+
+    # ── LONG TERM ─────────────────────────────────────────────────────────────
+    with st.expander("🌱 Long Term tab — SG stocks, funds, expected return logic"):
+        st.markdown("""
+The Long Term tab is now focused on practical 1–3 year investing, especially for Singapore investors.
+
+### SG Stocks
+The SG stock list uses a curated universe of Singapore companies such as banks, REITs, industrials, telecom, transport, finance, property, and growth names.
+
+Scoring uses:
+- Revenue growth
+- EPS growth
+- ROE and margins
+- Debt level
+- Price vs MA200
+- Analyst target upside
+- Analyst recommendation
+- Dividend yield
+
+### Expected 1Y Return
+The **Exp 1Y Return** column is now split into:
+
+`Price appreciation estimate + Dividend yield estimate`
+
+The dividend logic was corrected so abnormal yfinance values do not make stocks like DBS show unrealistic 10% dividends. The displayed dividend estimate is capped/normalised and should be used as an estimate, not a guarantee.
+
+### Funds / ETFs
+- **SG Funds & ETFs**: Singapore-friendly fund/ETF ideas, including Irish-domiciled UCITS alternatives where relevant.
+- **US Funds & ETFs**: US-listed fund/ETF ideas, with a warning about US estate tax risk for non-US persons.
+
+### How to use this tab
+1. Start with **SG Stocks** for direct stock ideas.
+2. Use **Min score** to filter quality.
+3. Use **Search** for tickers like `D05`, `O39`, `AIY`, `OYY`, `C38U`.
+4. Check **Return Breakdown** to see whether expected return is coming from price growth or dividends.
+5. Use dividend names for income; growth names for capital appreciation.
+        """)
+
+    # ── COLUMNS ───────────────────────────────────────────────────────────────
+    with st.expander("🔎 Important columns explained"):
+        st.markdown("""
+| Column | Meaning |
+|---|---|
+| **Rise Prob / Fall Prob** | Bayesian probability estimate from active technical signals |
+| **Score** | Number of active long/short signals |
+| **Entry Quality** | Practical entry label: BUY, WATCH, WAIT, AVOID |
+| **Today %** | Latest daily percentage change |
+| **MA60 Stop** | Stop reference based on 60-day moving average logic |
+| **TP1 / TP2 / TP3** | Long trade targets at +10%, +15%, +20% where shown |
+| **Cover Stop** | Stop level for short trades |
+| **Target 1:1 / 1:2** | Risk/reward-based targets |
+| **Exp 1Y Return** | Long-term estimated price appreciation + dividend |
+| **Return Breakdown** | Shows how much comes from price vs dividend |
+| **Div Yield** | Normalised dividend yield estimate |
+| **Horizon** | Suggested long-term category: Core, Buy & Hold, Accumulate, Monitor |
         """)
 
     # ── TRADE PLAN ───────────────────────────────────────────────────────────
-    with st.expander("💼 Trade plan — stops, targets, sizing"):
+    with st.expander("💼 Swing trade plan — stops, targets, sizing"):
         st.markdown("""
-### Stop loss
+### Long trades
+- Prefer setups in green sectors and bullish/caution regime.
+- Avoid chasing if price is far above MA20.
+- Use stop loss immediately after entry.
+- Take partial profit at first target when possible.
 
-**Best Stop** = higher of:
-- **ATR Stop**: Entry − 1.5 × 14-day ATR
-- **Swing Stop**: Last swing low × 0.995
-
-**Trail Stop** — move stop to Entry + 0.5× risk once Target 1:1 is hit. Locks in profit.
-
-**Time Stop** — exit on Day 4 if price hasn't reached Target 1:1. Prevents dead money.
+### Stop loss ideas
+- ATR stop: Entry − 1.5 × ATR
+- Swing stop: below recent swing low
+- MA60 stop: useful for trend-following exits
 
 ### Targets
-
-| Target | Formula | Action |
-|--------|---------|--------|
-| **1:1** | Entry + (Entry − Stop) | Take 50% off position here |
-| **1:2** | Entry + 2× risk | Exit remainder here |
+| Target | Meaning |
+|---|---|
+| **TP1 +10%** | First profit-taking zone |
+| **TP2 +15%** | Strong swing target |
+| **TP3 +20%** | Extended target; not always reached |
 
 ### Position sizing
+Risk only a small fixed amount per trade. For example, if your max risk is S$500 and stop distance is S$0.50/share, position size is about 1,000 shares.
+        """)
 
-`Pos/$1k risk` = 1000 ÷ risk per share
+    # ── SEARCH / REFRESH ──────────────────────────────────────────────────────
+    with st.expander("🔍 Search, refresh, and cache behavior"):
+        st.markdown("""
+- Most result grids now have a **Search** box.
+- Search works by ticker/name where available.
+- yfinance data is cached to keep the app fast.
+- If values look stale, rerun the scan or clear Streamlit cache.
+- If yfinance returns empty data, wait and retry; rate limits happen.
 
-**Example:** NVDA at ₹150, stop ₹145 → risk = ₹5 → buy 200 shares per ₹1,000 risked.
-Risk max 1–2% of portfolio per trade.
-
-### Short trade plan (reversed)
-
-- **Cover Stop** = Entry + 1.5× ATR or last swing high × 1.005 (whichever is closer)
-- **Targets** are BELOW entry price
-- **Time Stop**: exit Day 4 if price hasn't reached Target 1:1
+| Data | Approx cache |
+|---|---|
+| Sector heatmaps | 15 minutes |
+| Market regime | 30 minutes |
+| Swing scan results | 60 minutes |
+| Earnings calendar | 60 minutes |
+| ETF holdings / long-term data | 6 hours where cached |
         """)
 
     # ── RISK WARNINGS ────────────────────────────────────────────────────────
     with st.expander("⚠️ Risk warnings — read before trading"):
         st.warning("""
-**This tool does not provide financial advice. All signals are for informational purposes only.**
+**This tool does not provide financial advice. All outputs are estimates and signals only.**
 
-**1. Signal accuracy is not 100%** — even 78% probability means 22 in 100 trades lose. Always use stops.
+**1. Probability is not certainty.** A 75% probability can still fail.
 
-**2. Short selling — US only** — Short selling has unlimited loss potential. SGX is limited; India retail cannot short individual stocks. Never short without a hard cover-stop placed immediately.
+**2. Earnings risk is high.** Stocks can gap sharply overnight.
 
-**3. Earnings risk** — 14-day guard is active, but surprise earnings/guidance can still gap stocks 20–30% overnight.
+**3. Dividend yield can change.** Dividends may be cut, raised, delayed, or special/non-recurring.
 
-**4. Concentration risk** — Side-by-Side tab warns when ≥3 STRONG BUY setups are in the same sector. Stocks in the same sector are 0.80+ correlated — a sector sell-off wipes all positions simultaneously.
+**4. SGX liquidity is lower.** Use limit orders; spreads can be wide.
 
-**5. Monday penalty** — Probability is reduced 6% on Mondays. Setups tagged ⚠️MON have lower reliability. Consider waiting for Tuesday entry.
+**5. Short selling risk is high.** Losses can exceed your initial capital if unmanaged.
 
-**6. SGX liquidity** — SGX stocks have much lower daily volume. Use limit orders and expect wider spreads. Position size accordingly.
+**6. Sector concentration matters.** If many picks are from banks, REITs, tech, or semiconductors, one sector move can hit all positions.
 
-**7. India FX risk** — India NSE prices are in INR. If you are investing from Singapore, add INR/SGD currency risk to your position sizing.
+**7. Currency risk matters.** USD, SGD, INR, JPY, GBP, and EUR assets can move differently from your home currency.
 
-**8. Market hours** — Data is only live during respective market hours. Outside hours, sector heatmap shows previous close data.
-        """)
-
-    # ── SIDEBAR SETTINGS ─────────────────────────────────────────────────────
-    with st.expander("⚙️ Sidebar settings explained"):
-        st.markdown("""
-| Setting | What it does | Recommended |
-|---------|-------------|-------------|
-| **Top N green/red sectors** | How many sectors to pull candidates from. Higher = more stocks, slower scan. | 3 |
-| **Min LONG rise prob** | Minimum Bayesian probability to show in results. | 62% (strict: 72%) |
-| **Min SHORT fall prob** | Minimum probability for short setups. | 60% (strict: 70%) |
-| **Skip earnings within 7 days** | Skips stocks with earnings in the next 14 days (guard is extended to 14). | ON always |
-| **Must have Stoch bounce** | Only show longs with confirmed Stoch RSI oversold bounce. | OFF normally |
-| **Must have BB bull squeeze** | Only show longs with BB squeeze + price above midline. | OFF normally |
-| **Must have MACD acceleration** | Only show longs with MACD histogram accelerating up. | OFF normally |
-| **Custom tickers** | Add tickers not in the base list. Works for any market suffix (.SI, .NS, etc.). | e.g. HIMS, RVNL.NS |
-
-**Market Selector (above tabs)** — controls which ticker list is scanned AND which heatmap is shown. Changing the market does NOT automatically re-run the scan — click the scan button again.
-        """)
-
-    # ── GLOSSARY ─────────────────────────────────────────────────────────────
-    with st.expander("📖 Glossary"):
-        st.markdown("""
-| Term | Meaning |
-|------|---------|
-| **EMA8 / EMA21** | Exponential Moving Averages. Price > EMA8 > EMA21 = short-term uptrend |
-| **EMA50 / EMA200** | Long-term trend. Golden Cross = EMA50 crosses above EMA200 |
-| **RSI** | Relative Strength Index (0–100). >70 overbought, <30 oversold, 50 = neutral |
-| **Stochastic RSI** | K line = RSI position vs recent range. D line = 3-day avg of K |
-| **MACD** | Moving Average Convergence Divergence. Histogram = MACD line minus signal |
-| **Bollinger Bands** | ±2 std dev envelope around 20-day MA. Squeeze = bands narrowing before a move |
-| **ADX** | Average Directional Index. >20 = trending, >40 = strongly trending |
-| **ATR** | Average True Range. Daily volatility measure used for stop placement |
-| **OBV** | On-Balance Volume. Rising = buying pressure / accumulation |
-| **Bayesian probability** | Sequential update: each signal adjusts probability based on its historical win rate |
-| **Combo bonus** | Extra probability boost when specific high-win signal combinations fire together |
-| **Monday penalty** | –6% probability adjustment on Mondays to account for weekend gap risk |
-| **VCP** | Volatility Contraction Pattern. ATR5/ATR20 < 0.85 = stock coiling before a move |
-| **RS>SPY** | Stock's 5-day return greater than SPY's 5-day return = market outperformer |
-| **Short interest** | % of float sold short. >15% with bullish signals = squeeze candidate |
-| **Float** | Number of shares available to trade publicly |
-| **Dollar volume** | Price × average daily volume. >$5M filter ensures liquid swing trades |
-| **Trail Stop** | Stop moved to breakeven + 0.5× risk after Target 1:1 is hit |
-| **Time Stop** | Exit on Day 4 if Target 1:1 not reached regardless of P&L |
+**8. Model assumptions can be wrong.** Always check company news, earnings dates, support/resistance, and your own risk tolerance.
         """)
 
     # ── INSTALL ──────────────────────────────────────────────────────────────
@@ -4031,19 +4028,45 @@ Risk max 1–2% of portfolio per trade.
         st.markdown("""
 ```bash
 pip install streamlit yfinance pandas numpy ta financedatabase plotly
-python -m streamlit run swing_trader_v10.py
+python -m streamlit run swing_trader_sector_wise_yfin_simple.py
 ```
 
-| Data | Cache | Notes |
-|------|-------|-------|
-| Sector heatmaps | 15 min | All 3 markets cached separately |
-| Market regime (SPY/VIX) | 30 min | Shows warning if fetch fails |
-| Scan results | 60 min | Re-run scan to refresh |
-| US ETF holdings | 6 hours | Only fetched for US market scans |
-| ETF performance table | 60 min | Click 🔄 Refresh to force update |
+If data fetch fails:
+```bash
+pip install --upgrade yfinance
+streamlit cache clear
+```
 
-**Market regime shows UNKNOWN?** Run `pip install --upgrade yfinance` — this is the most common cause. The regime banner now shows the exact error message to help diagnose.
+Recommended packages:
+- `streamlit` — app UI
+- `yfinance` — market data
+- `pandas`, `numpy` — data processing
+- `ta` — technical indicators
+- `financedatabase` — optional ETF/sector data
+- `plotly` — charting in Stock Analysis
+        """)
+
+    # ── GLOSSARY ─────────────────────────────────────────────────────────────
+    with st.expander("📖 Glossary"):
+        st.markdown("""
+| Term | Meaning |
+|---|---|
+| **EMA8 / EMA21** | Short-term exponential moving averages |
+| **MA50 / MA200** | Medium/long-term moving averages |
+| **Golden Cross** | EMA50 crossing above EMA200 |
+| **RSI** | Momentum oscillator; >70 overbought, <30 oversold |
+| **Stoch RSI** | Faster RSI-based momentum signal |
+| **MACD** | Momentum/trend indicator; histogram shows acceleration/deceleration |
+| **Bollinger Squeeze** | Volatility compression before possible expansion |
+| **ATR** | Average True Range; used for volatility and stops |
+| **OBV** | On-Balance Volume; accumulation/distribution clue |
+| **VCP** | Volatility contraction pattern |
+| **RS>SPY** | Stock outperforming SPY over recent days |
+| **Bayesian probability** | Probability estimate updated by active weighted signals |
+| **MA60 Stop** | Trend stop around the 60-day moving average |
+| **Dividend Yield** | Annual dividend divided by current price |
+| **Exp 1Y Return** | Estimated price return plus estimated dividend return |
         """)
 
     st.markdown("---")
-    st.caption("Swing Scanner v10 · US + SGX + India · Built with yfinance + TA + Streamlit · Not financial advice · Created by Ripin")
+    st.caption("Swing/Long Term Scanner v11 · US + SGX + India · Not financial advice · Created by Ripin")
