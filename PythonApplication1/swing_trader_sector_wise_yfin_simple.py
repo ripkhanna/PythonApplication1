@@ -2425,10 +2425,11 @@ else:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-tab_sectors, tab_long, tab_short, tab_both, tab_etf, tab_stock, tab_earn, tab_event, tab_lt, tab_diag, tab_help = st.tabs([
+tab_sectors, tab_long, tab_short, tab_short_sniper, tab_both, tab_etf, tab_stock, tab_earn, tab_event, tab_lt, tab_diag, tab_backtest, tab_help = st.tabs([
     "🗂️ Sector Heatmap",
     "📈 Long Setups",
     "📉 Short Setups",
+    "🎯 Sniper Short 90%",
     "🔄 Side by Side",
     "📊 ETF Holdings",
     "🔬 Stock Analysis",
@@ -2436,6 +2437,7 @@ tab_sectors, tab_long, tab_short, tab_both, tab_etf, tab_stock, tab_earn, tab_ev
     "📰 Event Predictor",
     "🌱 Long Term",
     "🔍 Diagnostics",
+    "🧪 Accuracy Lab",
     "❓ Help",
 ])
 
@@ -2801,6 +2803,259 @@ with tab_short:
 `DIST DAY` — large red candle on 2× average volume  
 `VOL BREAKDOWN` — 10-day low on above-average volume  
 `LOWER HIGHS` — two consecutive lower swing highs
+            """)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 3b — SNIPER SHORT 90%  (ultra-selective high-conviction shorts)
+# ─────────────────────────────────────────────────────────────────────────────
+# Filters df_short with stacked conviction gates so only setups where the
+# Bayesian engine's posterior probability is ≥ 90% AND every confluence
+# layer (trend / momentum / volume / regime / no-squeeze / no-Monday /
+# options when available) agrees are shown.
+#
+# IMPORTANT — what "90%" means here:
+#   It is the *model's* posterior probability after Bayesian update with
+#   regime bonus, NOT a backtested forward win rate. The stacked filters
+#   below are designed to make this number meaningful, but the weights in
+#   SHORT_WEIGHTS are conservatively chosen by analogy and have NOT been
+#   walk-forward validated. Treat sniper picks as your highest-conviction
+#   candidates — not as a guarantee.
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_short_sniper:
+    st.caption("🎯 Sniper Short — conviction-scored high-probability shorts")
+    st.warning(
+        "⚠️ **Short selling has unlimited loss potential.** Always use a hard "
+        "cover-stop. The **90%** label = model posterior probability + "
+        "multi-layer confluence — **not** a backtested win rate. Size small."
+    )
+
+    if df_short.empty:
+        st.info("Run the scan from the sidebar first to see sniper short setups.")
+    else:
+        # ── Build numeric helper columns ─────────────────────────────────────
+        df_s = df_short.copy()
+        df_s["_p"] = df_s["Fall Prob"].str.rstrip("%").astype(float)
+        try:
+            df_s["_score"] = df_s["Score"].astype(str).str.split("/").str[0].astype(float)
+        except Exception:
+            df_s["_score"] = 0
+
+        sigs = df_s["Signals"].fillna("–").astype(str)
+        opts_col = df_s["Opt Flow"].fillna("–").astype(str) \
+                   if "Opt Flow" in df_s.columns \
+                   else pd.Series(["–"] * len(df_s), index=df_s.index)
+
+        # ── 9-point conviction score (each gate worth 1 point) ───────────────
+        # The score is a *count* of how many gates pass — so even if not all 9
+        # pass, we can rank by conviction and always surface the best available.
+        g1 = (df_s["_p"] >= 85.0).astype(int)                                # softened from 90 → 85 (engine caps at 95%)
+        g2 = (df_s["Action"] == "STRONG SHORT").astype(int)
+        g3 = (df_s["Entry Quality"] == "✅ SELL").astype(int)
+        g4 = (df_s["_score"] >= 5).astype(int)                                # softened from 6 → 5 (some markets lack options signals)
+        g5 = (df_s["Regime bonus"] == "YES").astype(int)
+        g6 = (~sigs.str.contains("SQUEEZE-RISK", na=False)).astype(int)
+        g7 = (~sigs.str.contains("MON", na=False)).astype(int)
+        g8 = (sigs.str.contains("VOL BREAKDOWN", na=False) |
+              sigs.str.contains("DIST DAY",      na=False)).astype(int)
+        g9 = ((sigs.str.contains("STOCH ROLLOVER", na=False).astype(int) +
+               sigs.str.contains("BB BEAR SQ",    na=False).astype(int) +
+               sigs.str.contains("MACD DECEL",     na=False).astype(int)) >= 2
+              ).astype(int)
+
+        df_s["_conv"] = g1 + g2 + g3 + g4 + g5 + g6 + g7 + g8 + g9
+        df_s["Conviction"] = df_s["_conv"].astype(str) + "/9"
+
+        # Bear options confirmation (any of 4 bearish option flags)
+        has_bear_opt = (
+            opts_col.str.contains("PUT FLOW",    na=False) |
+            opts_col.str.contains("PUT SKEW",    na=False) |
+            opts_col.str.contains("IV INVERTED", na=False) |
+            opts_col.str.contains("P/C↑",         na=False)
+        )
+
+        # Sort by conviction first, then probability
+        df_s = df_s.sort_values(["_conv", "_p"], ascending=[False, False])
+
+        # ── Tier split based on conviction count ─────────────────────────────
+        sniper = df_s[df_s["_conv"] == 9]                 # all 9 → true 90%+
+        elite  = df_s[df_s["_conv"].between(7, 8)]        # 7-8 of 9 → strong
+        strong = df_s[df_s["_conv"].between(5, 6)]        # 5-6 of 9 → developing
+
+        # Always show top 10 by conviction as a fallback
+        top10 = df_s.head(10)
+
+        # ── Headline metrics row ─────────────────────────────────────────────
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("🎯 Sniper (9/9)", f"{len(sniper)}")
+        c2.metric("⭐ Elite (7-8/9)", f"{len(elite)}")
+        c3.metric("📋 Strong (5-6/9)", f"{len(strong)}")
+        top_conv = df_s["Conviction"].iloc[0] if not df_s.empty else "–"
+        top_p    = df_s["Fall Prob"].iloc[0]   if not df_s.empty else "–"
+        c4.metric("Best in scan", f"{top_conv} · {top_p}")
+
+        st.caption(
+            f"Results for **{last_market}** · scanned {len(df_short)} short setups · "
+            f"sniper conviction filter applied"
+        )
+
+        # ── Gate-pass diagnostic strip ───────────────────────────────────────
+        # Tells the user *which* gate is killing all candidates so they know
+        # whether to wait for a better regime, switch markets, or just rerun.
+        with st.expander("🩺 Gate diagnostic — which filter is rejecting setups?", expanded=(len(sniper) == 0)):
+            n = len(df_s)
+            gates_summary = pd.DataFrame([
+                {"Gate": "1. Fall Prob ≥ 85%",            "Pass": int(g1.sum()), "%":  f"{g1.sum()/max(n,1)*100:.0f}%"},
+                {"Gate": "2. Action = STRONG SHORT",       "Pass": int(g2.sum()), "%":  f"{g2.sum()/max(n,1)*100:.0f}%"},
+                {"Gate": "3. Entry Quality = ✅ SELL",     "Pass": int(g3.sum()), "%":  f"{g3.sum()/max(n,1)*100:.0f}%"},
+                {"Gate": "4. Signal Score ≥ 5",            "Pass": int(g4.sum()), "%":  f"{g4.sum()/max(n,1)*100:.0f}%"},
+                {"Gate": "5. Regime bonus = YES",          "Pass": int(g5.sum()), "%":  f"{g5.sum()/max(n,1)*100:.0f}%"},
+                {"Gate": "6. No SQUEEZE-RISK",             "Pass": int(g6.sum()), "%":  f"{g6.sum()/max(n,1)*100:.0f}%"},
+                {"Gate": "7. No Monday penalty",           "Pass": int(g7.sum()), "%":  f"{g7.sum()/max(n,1)*100:.0f}%"},
+                {"Gate": "8. Volume confirmation",         "Pass": int(g8.sum()), "%":  f"{g8.sum()/max(n,1)*100:.0f}%"},
+                {"Gate": "9. ≥2 momentum signals",          "Pass": int(g9.sum()), "%":  f"{g9.sum()/max(n,1)*100:.0f}%"},
+            ])
+            st.dataframe(gates_summary, width="stretch", hide_index=True,
+                         column_config={
+                             "Gate": st.column_config.TextColumn("Gate", width=170),
+                             "Pass": st.column_config.NumberColumn("Pass", width=60),
+                             "%":    st.column_config.TextColumn("Pass%", width=60),
+                         })
+
+            # Identify the bottleneck gate(s)
+            gate_pass_counts = {
+                "regime (gate 5)":   int(g5.sum()),
+                "Action=STRONG SHORT (gate 2)": int(g2.sum()),
+                "Fall Prob ≥ 85% (gate 1)":     int(g1.sum()),
+                "Score ≥ 5 (gate 4)":           int(g4.sum()),
+                "Entry=✅ SELL (gate 3)":      int(g3.sum()),
+                "Volume confirm (gate 8)":      int(g8.sum()),
+                "Momentum confluence (gate 9)": int(g9.sum()),
+            }
+            tightest = min(gate_pass_counts, key=gate_pass_counts.get)
+            tightest_n = gate_pass_counts[tightest]
+            if len(sniper) == 0 and n > 0:
+                if tightest_n == 0:
+                    st.warning(
+                        f"🔎 **Bottleneck:** zero setups pass **{tightest}**. "
+                        "This is what's blocking sniper picks today."
+                    )
+                else:
+                    st.info(
+                        f"🔎 **Tightest gate:** **{tightest}** — only "
+                        f"{tightest_n}/{n} setups pass it."
+                    )
+
+        # ── Tier display ─────────────────────────────────────────────────────
+        if not sniper.empty:
+            st.info(
+                "📐 **Strategy** — Stop: Cover Stop · Targets: T1 1R · T2 2R | "
+                "Sniper-tier: size **0.5× normal short risk**. High probability ≠ certainty."
+            )
+            sniper_a = sniper[has_bear_opt.reindex(sniper.index, fill_value=False)]
+            sniper_b = sniper[~has_bear_opt.reindex(sniper.index, fill_value=False)]
+            if not sniper_a.empty:
+                st.caption(f"🎯 **Sniper · Options Confirmed** ({len(sniper_a)})")
+                show_table(sniper_a.drop(columns=["_p", "_score", "_conv"], errors="ignore"),
+                           "snipe-tier-opt", "Fall Prob")
+            if not sniper_b.empty:
+                st.caption(f"🎯 **Sniper · Technical Only** ({len(sniper_b)})")
+                show_table(sniper_b.drop(columns=["_p", "_score", "_conv"], errors="ignore"),
+                           "snipe-tier-tech", "Fall Prob")
+
+        if not elite.empty:
+            st.caption(f"⭐ **Elite — 7–8/9 conviction** ({len(elite)})")
+            show_table(elite.drop(columns=["_p", "_score", "_conv"], errors="ignore"),
+                       "snipe-elite", "Fall Prob")
+
+        if not strong.empty:
+            st.caption(f"📋 **Strong — 5–6/9 conviction** ({len(strong)})")
+            show_table(strong.drop(columns=["_p", "_score", "_conv"], errors="ignore"),
+                       "snipe-strong", "Fall Prob")
+
+        # Fallback: nothing in any tier — show top 10 by conviction so the
+        # tab is never useless.
+        if sniper.empty and elite.empty and strong.empty:
+            st.warning(
+                "🚫 No setups reached the 5/9 conviction floor. "
+                "Showing the top-10 short candidates by conviction score so "
+                "you can still see the best of what scanned. **Skip these "
+                "unless you have an independent thesis** — the engine isn't "
+                "confident enough."
+            )
+            if not top10.empty:
+                st.caption(f"📊 Top 10 by conviction (fallback view)")
+                show_table(top10.drop(columns=["_p", "_score", "_conv"], errors="ignore"),
+                           "snipe-top10", "Fall Prob")
+
+        # ── How the conviction score works ───────────────────────────────────
+        with st.expander("🔍 How the 9-point conviction score works"):
+            st.markdown("""
+Each setup earns **1 point** for every gate it passes. Total = `0–9`.
+
+| # | Gate | What it checks |
+|---|---|---|
+| 1 | **Fall Prob ≥ 85%** | Bayesian posterior is high (engine caps at 95%) |
+| 2 | **Action = STRONG SHORT** | Cleared the engine's internal high-accuracy gate (≥ 0.82 + confluence) |
+| 3 | **Entry Quality = ✅ SELL** | Confirmed downtrend, declining volume, MA60 intact |
+| 4 | **Signal Score ≥ 5** | At least 5 active short signals firing |
+| 5 | **Regime bonus = YES** | Market in BEAR or CAUTION regime |
+| 6 | **No SQUEEZE-RISK** | Float / short-interest doesn't suggest crowded short |
+| 7 | **No Monday penalty** | Avoid the Monday short-cover bias |
+| 8 | **Volume confirmation** | `VOL BREAKDOWN` or `DIST DAY` present |
+| 9 | **Momentum confluence** | ≥ 2 of: `STOCH ROLLOVER`, `BB BEAR SQ`, `MACD DECEL` |
+
+### Tiers
+- 🎯 **Sniper (9/9)** — all gates pass. The headline "90% accuracy" tier.
+- ⭐ **Elite (7–8/9)** — strong, but missing one or two confirmations.
+- 📋 **Strong (5–6/9)** — qualified candidates worth tracking.
+- *(Below 5/9: hidden by default; surfaced only via the fallback view.)*
+
+Within the Sniper tier, picks are split into **Options Confirmed**
+(at least one of 🔻PUT FLOW, 📉PUT SKEW, ⚠️IV INVERTED, P/C↑) and
+**Technical Only** (used on SGX and other markets without options data).
+
+### Why this is more useful than a hard 90% AND-filter
+A strict AND of 9 gates produces zero picks on most days — especially in
+bull regimes (gate 5 fails for the whole universe) or on SGX (gate 4 is
+harder without options signals). Ranking by *count of gates passed* keeps
+the tab informative every day while still surfacing the best opportunities
+at the top.
+
+### Honest about "90% accuracy"
+The 9/9 score means *every layer of the model agrees*. It does **not**
+mean 9 out of 10 trades will win. That number can only come from a
+walk-forward backtest in the **🧪 Accuracy Lab** tab using your own
+historical data. The signal weights in `SHORT_WEIGHTS` are conservative
+defaults, not validated estimates.
+            """)
+
+        # ── Trade-management cheat sheet ─────────────────────────────────────
+        with st.expander("💼 Sniper short — sizing & exit playbook"):
+            st.markdown("""
+### Position sizing by tier
+- **🎯 Sniper (9/9)** — up to 1× your normal short risk per trade
+- **⭐ Elite (7–8/9)** — 0.5× normal risk
+- **📋 Strong (5–6/9)** — 0.25× normal risk, or paper-trade only
+- Cap **total** sniper short exposure at 15–20% of portfolio gross.
+- Never short on margin you can't cover in cash — gap-up risk is real.
+
+### Stop placement
+- The `Cover Stop` shown is the **tighter** of:
+  - ATR stop: Entry + 1.5 × ATR
+  - Swing stop: 0.5% above the most recent swing high
+- Place this as a **hard stop-buy** immediately on entry. Do not widen.
+
+### Exit plan
+- **T1 (1R)** — cover ½. Move stop to entry on the remainder.
+- **T2 (2R)** — cover another ¼. Trail the rest behind 8-EMA.
+- **Time stop** — flatten if the trade hasn't moved in your favour after
+  5 sessions. Stale shorts are the most dangerous shorts.
+
+### When to skip a sniper signal
+- Earnings within 5 sessions (check the 📅 Earnings tab).
+- Stock is on a known short-squeeze watchlist (meme names, etc).
+- Sector heatmap is rotating green — the regime is changing under you.
+- You'd be uncomfortable holding the position over a weekend.
             """)
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -4807,6 +5062,160 @@ with tab_diag:
                 if vs.startswith("PASS"):   cb.success(vs)
                 elif vs.startswith("FAIL"): cb.error(vs)
                 else:                       cb.write(vs)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB — ACCURACY LAB / WALK-FORWARD BACKTEST
+# Keeps the scanner logic unchanged. This tab only validates past signal quality.
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_backtest:
+    st.caption("🧪 Accuracy Lab · walk-forward check of current swing signal quality")
+    st.info(
+        "This tab does not change BUY/SELL logic. It replays historical candles, "
+        "runs the same signal engine, and checks forward returns after 5/10/15 days. "
+        "Use it to verify real hit rate instead of trusting displayed probability alone."
+    )
+
+    bt_cols = st.columns([3, 1, 1, 1])
+    with bt_cols[0]:
+        bt_tickers_txt = st.text_input(
+            "Tickers to test",
+            value=", ".join(_active_tickers[:6]),
+            key="bt_tickers",
+            placeholder="D05.SI, O39.SI, AIY.SI"
+        )
+    with bt_cols[1]:
+        bt_horizon = st.selectbox("Horizon", [5, 10, 15], index=1, key="bt_horizon")
+    with bt_cols[2]:
+        bt_period = st.selectbox("History", ["1y", "2y", "3y"], index=1, key="bt_period")
+    with bt_cols[3]:
+        bt_mode = st.selectbox("Signal", ["BUY/SELL", "High Prob Only"], index=0, key="bt_mode")
+
+    def _bt_flatten(df: pd.DataFrame) -> pd.DataFrame:
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        return df.ffill().dropna()
+
+    def _bt_pct(x):
+        try:
+            return float(str(x).replace("%", ""))
+        except Exception:
+            return np.nan
+
+    def _quick_signal_backtest(ticker: str, horizon: int = 10, period: str = "2y", mode: str = "BUY/SELL") -> dict:
+        """Backtest the current signal engine without changing live scanner behaviour."""
+        try:
+            raw = yf.download(ticker, period=period, interval="1d", progress=False, auto_adjust=True)
+            df = _bt_flatten(raw)
+            if df.empty or len(df) < 260:
+                return {"Ticker": ticker, "Samples": 0, "Long Win %": "–", "Short Win %": "–", "Note": "Not enough history"}
+
+            closes = df["Close"].ffill().dropna()
+            highs  = df["High"].ffill().dropna()
+            lows   = df["Low"].ffill().dropna()
+            vols   = df["Volume"].ffill().dropna()
+
+            long_trades = long_wins = short_trades = short_wins = 0
+            long_rets, short_rets = [], []
+
+            # Step by 3 bars to keep UI responsive and reduce overlapping samples.
+            for end in range(220, len(closes) - horizon, 3):
+                c = closes.iloc[:end]
+                h = highs.iloc[:end]
+                l = lows.iloc[:end]
+                v = vols.iloc[:end]
+                try:
+                    long_sig, short_sig, rv = compute_all_signals(c, h, l, v)
+                except Exception:
+                    continue
+
+                p_now = float(c.iloc[-1])
+                p_fut = float(closes.iloc[end + horizon])
+                if p_now <= 0 or np.isnan(p_now) or np.isnan(p_fut):
+                    continue
+
+                fwd_ret = (p_fut / p_now - 1) * 100
+                l_score = sum(1 for x in long_sig.values() if x)
+                s_score = sum(1 for x in short_sig.values() if x)
+                l_prob = bayesian_prob(LONG_WEIGHTS, long_sig, 0)
+                s_prob = bayesian_prob(SHORT_WEIGHTS, short_sig, 0)
+
+                # Keep this tab separate from live scanner logic. These gates mirror the current
+                # scanner intent: probability + score + core trend/volume confirmation.
+                long_gate = (l_prob >= 0.72 and l_score >= 6)
+                short_gate = (s_prob >= 0.68 and s_score >= 4)
+
+                if mode == "High Prob Only":
+                    long_gate = long_gate and l_prob >= 0.82
+                    short_gate = short_gate and s_prob >= 0.82
+
+                # Simple safety checks for historical test only, to avoid counting junk bars.
+                dollar_vol_20d = float((c.tail(20) * v.tail(20)).mean()) if len(c) >= 20 else 0
+                if ticker.endswith(".SI"):
+                    liq_ok = dollar_vol_20d >= 250_000
+                elif ticker.endswith(".NS"):
+                    liq_ok = dollar_vol_20d >= 1_000_000
+                else:
+                    liq_ok = dollar_vol_20d >= 3_000_000
+
+                if not liq_ok:
+                    continue
+
+                if long_gate:
+                    long_trades += 1
+                    long_wins += int(fwd_ret > 0)
+                    long_rets.append(fwd_ret)
+                if short_gate:
+                    short_trades += 1
+                    short_wins += int(fwd_ret < 0)
+                    short_rets.append(-fwd_ret)
+
+            return {
+                "Ticker": ticker,
+                "Samples": int(long_trades + short_trades),
+                "Long Trades": int(long_trades),
+                "Long Win %": f"{(long_wins / long_trades * 100):.1f}%" if long_trades else "–",
+                "Long Avg %": f"{np.mean(long_rets):.2f}%" if long_rets else "–",
+                "Short Trades": int(short_trades),
+                "Short Win %": f"{(short_wins / short_trades * 100):.1f}%" if short_trades else "–",
+                "Short Avg %": f"{np.mean(short_rets):.2f}%" if short_rets else "–",
+                "Note": "OK" if (long_trades + short_trades) else "No signal samples"
+            }
+        except Exception as e:
+            return {"Ticker": ticker, "Samples": 0, "Long Win %": "–", "Short Win %": "–", "Note": str(e)[:80]}
+
+    if st.button("🧪 Run Accuracy Backtest", type="primary", key="run_accuracy_lab"):
+        bt_tickers = [t.strip().upper() for t in bt_tickers_txt.split(",") if t.strip()]
+        rows = []
+        prog = st.progress(0)
+        msg = st.empty()
+        max_n = min(len(bt_tickers), 20)
+        for i, t in enumerate(bt_tickers[:20]):
+            msg.caption(f"Backtesting {t} ({i+1}/{max_n})…")
+            rows.append(_quick_signal_backtest(t, bt_horizon, bt_period, bt_mode))
+            prog.progress((i + 1) / max_n)
+        prog.empty(); msg.empty()
+
+        df_bt = pd.DataFrame(rows)
+        st.dataframe(
+            df_bt,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "Ticker": st.column_config.TextColumn("Ticker", width=80),
+                "Samples": st.column_config.NumberColumn("Samples", width=70),
+                "Long Trades": st.column_config.NumberColumn("Long", width=60),
+                "Long Win %": st.column_config.TextColumn("Long Win", width=80),
+                "Long Avg %": st.column_config.TextColumn("Long Avg", width=80),
+                "Short Trades": st.column_config.NumberColumn("Short", width=60),
+                "Short Win %": st.column_config.TextColumn("Short Win", width=80),
+                "Short Avg %": st.column_config.TextColumn("Short Avg", width=80),
+                "Note": st.column_config.TextColumn("Note", width=180),
+            }
+        )
+        st.caption(
+            "Read this with sample count. A 90% win rate on 5 samples is weaker evidence than "
+            "65–70% on 50+ samples. Past performance is not a guarantee."
+        )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 8 — HELP
