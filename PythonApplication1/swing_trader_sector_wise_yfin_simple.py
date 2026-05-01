@@ -339,6 +339,8 @@ LONG_WEIGHTS = {
     "golden_cross":    0.65,   # EMA50 > EMA200 — macro trend aligned
     "sector_leader":   0.65,   # outperforming sector ETF
     "strong_close":    0.65,   # closes in top 25% of range — buyers in control
+    "operator_accumulation": 0.69, # smart-money accumulation: volume + strong close + OBV/VWAP
+    "vwap_support":    0.64,   # price holding above VWAP = controlled buyer support
     "higher_lows":     0.63,   # uptrend structure
     "trend_daily":     0.63,   # price > EMA8 > EMA21
     "vcp_tightness":   0.63,   # ATR contracting — coiling before move
@@ -368,6 +370,8 @@ SHORT_WEIGHTS = {
     "vol_breakdown":    0.65, "trend_bearish":   0.63, "lower_highs":    0.62,
     "macd_cross_bear":  0.60, "adx_bear":        0.57, "rsi_cross_bear": 0.59,
     "high_volume_down": 0.64,
+    "operator_distribution": 0.67, # smart-money selling: high volume + weak close / failed breakout
+    "below_vwap":       0.62, # price below VWAP confirms seller control
     # ── v12: Options-derived bearish signals (US tickers only) ────────────────
     "opt_unusual_put_flow":   0.68,   # near-money put vol > 3× OI — fresh hedging
     "opt_put_skew_bearish":   0.66,   # put IV >> call IV by ≥5 vol pts — fear bid
@@ -501,12 +505,14 @@ def show_table(df, label, prob_col="Rise Prob"):
     if prob_col == "Rise Prob":
         display_cols = [c for c in [
             "Ticker", "Entry Quality", "Today %", "Rise Prob", "Score",
+            "Operator", "Op Score", "VWAP", "Trap Risk",
             "Price", "MA60 Stop", "TP1 +10%", "TP2 +15%", "TP3 +20%",
             "Sector", "Action",
         ] if c in df.columns]
     else:
         display_cols = [c for c in [
             "Ticker", "Entry Quality", "Today %", "Fall Prob", "Score",
+            "Operator", "Op Score", "VWAP", "Trap Risk",
             "Price", "Cover Stop", "Target 1:1", "Target 1:2",
             "Sector", "Action",
         ] if c in df.columns]
@@ -521,6 +527,10 @@ def show_table(df, label, prob_col="Rise Prob"):
         "Rise Prob":     st.column_config.TextColumn("Rise%",         width=55),
         "Fall Prob":     st.column_config.TextColumn("Fall%",         width=55),
         "Score":         st.column_config.TextColumn("Score",         width=50),
+        "Operator":      st.column_config.TextColumn("Operator",      width=120),
+        "Op Score":      st.column_config.TextColumn("Op",            width=45),
+        "VWAP":          st.column_config.TextColumn("VWAP",          width=60),
+        "Trap Risk":     st.column_config.TextColumn("Trap",          width=80),
         "Price":         st.column_config.TextColumn("Price",         width=60),
         "MA60 Stop":     st.column_config.TextColumn("MA60Stop",      width=65),
         "Cover Stop":    st.column_config.TextColumn("CoverStop",     width=65),
@@ -968,6 +978,59 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
     else:
         momentum_3d = False
 
+    # ── [NEW] VWAP + OPERATOR / SMART-MONEY ACTIVITY LAYER ───────────────────
+    # These are confirmation filters, not standalone reasons to buy. They look
+    # for footprints of accumulation/distribution: volume expansion, close
+    # location, OBV, VWAP control, and failed breakouts.
+    try:
+        typical_price = (high + low + close) / 3
+        cum_vol = vol.replace(0, np.nan).cumsum()
+        vwap_series = ((typical_price * vol).cumsum() / cum_vol).replace([np.inf, -np.inf], np.nan).ffill()
+        vwap_now = float(vwap_series.iloc[-1]) if len(vwap_series.dropna()) else p
+    except Exception:
+        vwap_now = p
+
+    above_vwap = p >= vwap_now
+    below_vwap = p < vwap_now
+    vwap_support = p >= vwap_now * 0.995
+
+    false_breakout = (p >= h10 * 0.995) and (vr >= 1.8) and (not strong_close)
+    gap_chase_risk = (today_chg_pct > 7.0) and (vr > 2.5)
+    operator_distribution = (vr >= 1.8) and (today_chg_pct <= 0.5) and (not strong_close)
+
+    operator_score = 0
+    if (not candle_red) and (vr >= 2.0):
+        operator_score += 2
+    if (vr >= 1.5) and strong_close:
+        operator_score += 2
+    if obv_rising:
+        operator_score += 1
+    if (p >= h10 * 0.995) and (vr >= 1.8):
+        operator_score += 2
+    if above_vwap:
+        operator_score += 1
+    if (p > ma20_val) and above_ma60:
+        operator_score += 1
+    if 0 < today_chg_pct < 8:
+        operator_score += 1
+    # Accumulation/absorption: red/high-volume day but price closes off lows.
+    if candle_red and (vr >= 1.8) and (closing_pos >= 0.45) and (p >= ma20_val * 0.98):
+        operator_score += 2
+
+    if false_breakout or gap_chase_risk or operator_distribution:
+        operator_score = max(0, operator_score - 2)
+
+    if operator_score >= 6:
+        operator_label = "🔥 STRONG OPERATOR"
+    elif operator_score >= 4:
+        operator_label = "🟢 ACCUMULATION"
+    elif operator_score >= 2:
+        operator_label = "🟡 WEAK SIGNS"
+    else:
+        operator_label = "⚪ NONE"
+
+    trap_risk_label = "FALSE BO" if false_breakout else "GAP CHASE" if gap_chase_risk else "DISTRIB" if operator_distribution else "–"
+
     # ── LONG signals (scored) ─────────────────────────────────────────────────
     long_signals = {
         "trend_daily":     (p > e8) and (e8 > e21),
@@ -990,6 +1053,8 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
         "sector_leader":   sector_leader,
         "vcp_tightness":   vcp_tightness,
         "strong_close":    strong_close,
+        "operator_accumulation": operator_score >= 4,
+        "vwap_support":    vwap_support,
         "rs_momentum":     rs_momentum,
         "full_ma_stack":   full_ma_stack,
         "momentum_3d":     momentum_3d,
@@ -1014,6 +1079,8 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
         "rsi_cross_bear":   (rsi2 > 50) and (rsi1 <= 50) and (rsi0 < rsi1) and (rsi0 > 28),
         "adx_bear":         adxv > 20 and (p < e21),
         "high_volume_down": candle_red and (vr >= 2.0),
+        "operator_distribution": operator_distribution,
+        "below_vwap":       below_vwap,
         "vol_breakdown":    (p <= l10 * 1.005) and (vr >= 1.8),
         "lower_highs":      lower_highs,
         # Strategy: MA60 stop-loss broken
@@ -1051,6 +1118,16 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
         "above_ma60":        _strat["above_ma60"],
         "ma60_stop_triggered": ma60_stop_triggered,
         "today_chg_pct":     today_chg_pct,
+        "vwap":              vwap_now,
+        "above_vwap":        above_vwap,
+        "below_vwap":        below_vwap,
+        "vwap_support":      vwap_support,
+        "operator_score":    operator_score,
+        "operator_label":    operator_label,
+        "false_breakout":    false_breakout,
+        "gap_chase_risk":    gap_chase_risk,
+        "operator_distribution": operator_distribution,
+        "trap_risk_label":   trap_risk_label,
     }
     return long_signals, short_signals, raw
 
@@ -1827,6 +1904,13 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 long_sig.get("vol_surge_up", False)  # green candle + 2x vol + 1.5% up
             )
 
+            operator_score = int(raw.get("operator_score", 0))
+            operator_confirmed = operator_score >= 4
+            false_breakout = bool(raw.get("false_breakout", False))
+            gap_chase_risk = bool(raw.get("gap_chase_risk", False))
+            distribution_risk = bool(raw.get("operator_distribution", False))
+            trap_risk = false_breakout or gap_chase_risk or distribution_risk
+
             # ── HIGH-ACCURACY GATE ─────────────────────────────────────────────
             # This prevents the Bayesian score from becoming over-confident when
             # many correlated trend signals fire together. Only these setups are
@@ -1843,6 +1927,9 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 raw.get("not_chasing", False) and
                 raw.get("not_limit_up", False) and
                 raw.get("today_chg_pct", 99) < 6 and
+                operator_confirmed and
+                raw.get("vwap_support", False) and
+                not trap_risk and
                 long_sig.get("trend_daily", False) and
                 long_sig.get("weekly_trend", False) and
                 long_sig.get("rel_strength", False) and
@@ -1851,6 +1938,8 @@ def fetch_analysis(green_sectors, red_sectors, regime,
 
             if high_accuracy_long:
                 l_action = "STRONG BUY"
+            elif trap_risk:
+                l_action = "WATCH – TRAP RISK"
             elif l_score >= min_score_strong_long and l_prob >= min_prob_strong_long and l_top3:
                 l_action = "WATCH – HIGH QUALITY"
             elif l_score >= 4 and l_prob >= 0.62 and long_sig["trend_daily"]:
@@ -1964,6 +2053,10 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "Rise Prob":      f"{l_prob * 100:.1f}%",
                     "Prob Tier":      prob_label(l_prob),
                     "Score":          f"{l_score}/{len(long_sig)}",
+                    "Operator":       raw.get("operator_label", "–"),
+                    "Op Score":       str(raw.get("operator_score", 0)),
+                    "VWAP":           "ABOVE" if raw.get("above_vwap") else "BELOW",
+                    "Trap Risk":      raw.get("trap_risk_label", "–"),
                     "Today %":        f"{today_chg:+.2f}%",
                     "Price":          f"${p:.2f}",
                     "MA20":           f"${raw['ma20']:.2f}",
@@ -2080,7 +2173,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
 
                 if s_is_stopped or squeeze_flag:
                     s_entry_quality = "🚫 AVOID"
-                elif high_accuracy_short and s_is_ideal:
+                elif high_accuracy_short and (s_is_ideal or short_sig.get("operator_distribution", False)):
                     s_entry_quality = "✅ SELL"
                 elif s_is_chasing:
                     s_entry_quality = "⏳ WAIT"
@@ -2095,6 +2188,10 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "Fall Prob":      f"{s_prob * 100:.1f}%",
                     "Prob Tier":      prob_label(s_prob),
                     "Score":          f"{s_score}/{len(short_sig)}",
+                    "Operator":       raw.get("operator_label", "–"),
+                    "Op Score":       str(raw.get("operator_score", 0)),
+                    "VWAP":           "ABOVE" if raw.get("above_vwap") else "BELOW",
+                    "Trap Risk":      raw.get("trap_risk_label", "–"),
                     "Today %":        f"{today_chg:+.2f}%",
                     "Price":          f"${p:.2f}",
                     "Cover Stop":     f"${s_cover:.2f}",
@@ -2163,6 +2260,8 @@ def diagnose_ticker(ticker, regime):
             "MACD hist [-3,-2,-1]":     f"{rv['mh2']:.4f}→{rv['mh1']:.4f}→{rv['mh0']:.4f}",
             "MACD line / signal":       f"{rv['ml']:.4f} / {rv['ms']:.4f}",
             "ADX / Vol ratio":          f"{rv['adx']:.1f} / {rv['vr']:.2f}×",
+            "VWAP":                     f"${rv.get('vwap', rv['p']):.2f} · price {'ABOVE' if rv.get('above_vwap') else 'BELOW'} VWAP",
+            "Operator activity":        f"{rv.get('operator_label','–')} · score {rv.get('operator_score',0)} · trap {rv.get('trap_risk_label','–')}",
             "BB squeeze":               f"{'YES' if rv['bb_squeeze'] else 'NO'}  price {'ABOVE' if rv['p']>rv['bbm'] else 'BELOW'} midline",
             "Last swing low":           f"${rv['last_swing_low']:.2f}  ({rv['swing_lows_count']} lows detected)",
             "Last swing high":          f"${rv['last_swing_high']:.2f}  ({rv['swing_highs_count']} highs detected)",
@@ -2185,7 +2284,11 @@ def diagnose_ticker(ticker, regime):
                 f"price={rv['p']:.2f} 10dH={rv['h10']:.2f} vol={rv['vr']:.2f}×"),
             "10. Higher lows":          tick(long_sig["higher_lows"],
                 f"{rv['swing_lows_count']} swing lows in last 60 bars"),
-            "LONG score / prob":        f"{l_score}/10  →  {l_prob*100:.1f}%  ({prob_label(l_prob)})",
+            "11. Operator accumulation": tick(long_sig.get("operator_accumulation", False),
+                f"score={rv.get('operator_score',0)} label={rv.get('operator_label','–')}"),
+            "12. VWAP support":         tick(long_sig.get("vwap_support", False),
+                f"price={rv['p']:.2f} vwap={rv.get('vwap', rv['p']):.2f}"),
+            "LONG score / prob":        f"{l_score}/{len(long_sig)}  →  {l_prob*100:.1f}%  ({prob_label(l_prob)})",
             "── SHORT ──":             "",
             "1. Trend bearish":         tick(short_sig["trend_bearish"],
                 f"price={rv['p']:.2f} ema8={rv['e8']:.2f} ema21={rv['e21']:.2f}"),
@@ -2207,7 +2310,11 @@ def diagnose_ticker(ticker, regime):
                 f"price={rv['p']:.2f} 10dL={rv['l10']:.2f} vol={rv['vr']:.2f}×"),
             "10. Lower highs":          tick(short_sig["lower_highs"],
                 f"{rv['swing_highs_count']} swing highs in last 60 bars"),
-            "SHORT score / prob":       f"{s_score}/10  →  {s_prob*100:.1f}%  ({prob_label(s_prob)})",
+            "11. Operator distribution": tick(short_sig.get("operator_distribution", False),
+                f"trap={rv.get('trap_risk_label','–')} vol={rv['vr']:.2f}×"),
+            "12. Below VWAP":           tick(short_sig.get("below_vwap", False),
+                f"price={rv['p']:.2f} vwap={rv.get('vwap', rv['p']):.2f}"),
+            "SHORT score / prob":       f"{s_score}/{len(short_sig)}  →  {s_prob*100:.1f}%  ({prob_label(s_prob)})",
         }
     except Exception as e:
         return {"Error": str(e)}
@@ -2714,10 +2821,10 @@ with tab_long:
         )
     st.info(
         "📐 **Strategy** — Stop: MA60 · Targets: TP1 +10% · TP2 +15% · TP3 +20% | "
-        "**✅ BUY** = dip to MA with low vol · "
+        "**✅ BUY** = high-prob setup + operator accumulation + VWAP support + no trap risk · "
         "**⏳ WAIT** = price too extended · "
         "**👀 WATCH** = setup ok, no ideal dip yet · "
-        "**🚫 AVOID** = MA60 broken"
+        "**🚫 AVOID** = MA60 broken. New columns: Operator, Op Score, VWAP, Trap Risk."
     )
     if df_long.empty:
         st.info("Run the scan to see long setups.")
@@ -2759,10 +2866,10 @@ with tab_short:
         )
     st.info(
         "📐 **Strategy** — Stop: Cover Stop · Targets: T1 −10% · T2 −20% | "
-        "**✅ SELL** = confirmed downtrend with declining vol · "
+        "**✅ SELL** = confirmed downtrend + below VWAP + distribution/volume confirmation · "
         "**⏳ WAIT** = gapped down too far, wait for bounce · "
         "**👀 WATCH** = setup forming · "
-        "**🚫 AVOID** = above MA60, trend not confirmed"
+        "**🚫 AVOID** = above MA60, trend not confirmed. New columns: Operator, Op Score, VWAP, Trap Risk."
     )
     if df_short.empty:
         st.info("Run the scan to see short setups.")
@@ -4967,8 +5074,8 @@ with tab_backtest:
 # TAB 8 — HELP
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_help:
-    st.markdown("## ❓ How to Use the Swing/Long Term Scanner v11")
-    st.caption("Updated guide for v11: market-aware swing scans, earnings calendar, SG-focused long-term builder, corrected dividend logic, diagnostics, and compact searchable grids.")
+    st.markdown("## ❓ How to Use the Swing/Long Term Scanner v13")
+    st.caption("Updated guide for v13: operator/smart-money activity, VWAP confirmation, false-breakout/distribution trap filters, options enrichment, diagnostics, and compact searchable grids.")
 
     # ── QUICK START ───────────────────────────────────────────────────────────
     with st.expander("🚀 Quick Start — what to use each tab for", expanded=True):
@@ -5131,6 +5238,10 @@ The dividend logic was corrected so abnormal yfinance values do not make stocks 
 |---|---|
 | **Rise Prob / Fall Prob** | Bayesian probability estimate from active technical signals |
 | **Score** | Number of active long/short signals (denominator scales with the engine version) |
+| **Operator** | Smart-money/operator label based on volume expansion, strong close, OBV, VWAP and breakout quality |
+| **Op Score** | 0–9 operator-activity score. Prefer longs with 4+ and strong buys with 6+ |
+| **VWAP** | Whether price is above or below VWAP. Above VWAP supports longs; below VWAP supports shorts |
+| **Trap Risk** | Flags false breakout, gap-chase risk, or distribution risk |
 | **Entry Quality** | Practical entry label: BUY, WATCH, WAIT, AVOID |
 | **Today %** | Latest daily percentage change |
 | **MA60 Stop** | Stop reference based on 60-day moving average logic |
@@ -5145,6 +5256,41 @@ The dividend logic was corrected so abnormal yfinance values do not make stocks 
 | **Return Breakdown** | Shows how much comes from price vs dividend |
 | **Div Yield** | Normalised dividend yield estimate |
 | **Horizon** | Suggested long-term category: Core, Buy & Hold, Accumulate, Monitor |
+        """)
+
+    # ── OPERATOR / SMART MONEY LAYER ──────────────────────────────────────────
+    with st.expander("🧠 Operator / smart-money layer (v13) — how BUY/SELL accuracy is improved"):
+        st.markdown("""
+This version adds a confirmation layer for **operator / institutional footprints**.
+It does not blindly buy because probability is high. A cleaner BUY now needs
+technical strength **plus** smart-money confirmation and no trap warning.
+
+### Bullish operator clues
+
+| Clue | Meaning |
+|---|---|
+| Volume ≥2× on a green candle | Aggressive buying interest |
+| Volume ≥1.5× + strong close | Buyers controlled the close |
+| OBV rising | Accumulation before/with price movement |
+| Breakout near 10-day high with volume | More likely a real breakout |
+| Price above VWAP | Buyers are in control of average traded price |
+| Red high-volume day closing off lows | Possible absorption/accumulation |
+
+### Trap warnings
+
+| Trap Risk | Meaning | Action |
+|---|---|---|
+| **FALSE BO** | Price breaks 10-day high on volume but does not close strong | Downgrade to WATCH |
+| **GAP CHASE** | Price already jumped >7% with >2.5× volume | Wait for pullback |
+| **DISTRIB** | High volume but weak close / price cannot advance | Avoid fresh long; supports SELL/short watch |
+
+### Practical rule
+- Prefer **BUY** only when `Op Score >= 4`, price is **ABOVE VWAP**, and `Trap Risk = –`.
+- Treat `Op Score >= 6` as stronger smart-money confirmation.
+- For shorts, prefer **BELOW VWAP** plus `DISTRIB`, `VOL BREAKDOWN`, or `DIST DAY`.
+
+This reduces the number of BUY/SELL calls, but should improve quality by avoiding
+false breakouts, pump-chase entries, and weak probability-only signals.
         """)
 
     # ── OPTIONS LAYER ─────────────────────────────────────────────────────────
@@ -5234,7 +5380,8 @@ standalone reasons to enter.
         st.markdown("""
 ### Long trades
 - Prefer setups in green sectors and bullish/caution regime.
-- Avoid chasing if price is far above MA20.
+- Avoid chasing if price is far above MA20 or `Trap Risk` shows GAP CHASE / FALSE BO.
+- Prefer BUY only when price is above VWAP and operator score is 4+.
 - Use stop loss immediately after entry.
 - Take partial profit at first target when possible.
 
