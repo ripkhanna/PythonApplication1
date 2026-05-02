@@ -1,5 +1,5 @@
 """
-Swing Scanner v13.5 — Yahoo + Existing Tickers Operator Activity
+Swing Scanner v13.6 — Long Term Yahoo + Existing + ETF Universe
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -28,7 +28,7 @@ from datetime import datetime
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v13.5",
+    page_title="Swing Scanner v13.6",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -151,7 +151,7 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v13.5 — Live Market Operator Activity + Options Enrichment")
+st.title("📈 Swing/Long Term Scanner v13.6")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TICKER UNIVERSE  — v4 curated high-quality list (always scanned)
@@ -5235,13 +5235,18 @@ with tab_lt:
     ])
 
     # ── Shared scan function — shows ETF returns + stock results ─────────────
-    def run_lt_scan(etf_dict, session_key, default_etfs, min_score_key, search_key):
-        c1, c2 = st.columns([3, 1])
+    def run_lt_scan(etf_dict, session_key, default_etfs, min_score_key, search_key,
+                    existing_tickers=None, live_market_name=None, include_etf_tickers=True):
+        c1, c2, c3 = st.columns([3, 1, 1])
         with c1:
             search = st.text_input("🔍 Search stock", placeholder="e.g. NVDA, DBS, Keppel",
                                    key=search_key).strip().upper()
         with c2:
             min_sc = st.slider("Min quality score", 1, 10, 5, key=min_score_key)
+        with c3:
+            max_lt_scan = st.slider("Max LT scan", 50, 1000, 300, step=25,
+                                    key=f"{session_key}_max_scan",
+                                    help="Maximum combined long-term candidates to score: existing tickers + ETF tickers/holdings + Yahoo/live tickers.")
 
         horizon_f = st.multiselect(
             "Filter horizon",
@@ -5251,33 +5256,94 @@ with tab_lt:
         )
 
         if st.button("🔍 Find Long-Term Stocks", type="primary", key=f"btn_{session_key}"):
-            etfs = default_etfs
+            etfs = list(default_etfs)
+            existing_tickers = list(existing_tickers or [])
 
-            all_tickers = {}
+            # Long Term tab now scans a combined universe:
+            #   existing curated tickers + ETF tickers + ETF holdings + Yahoo/live tickers.
+            # Existing tickers are intentionally placed first so names such as UUUU/APP
+            # are not pushed out by the scan limit.
+            etf_holdings = {}
+            source_map = {}
+
+            def _add_symbol(sym, source_label, etf_label=None):
+                sym = _clean_symbol(sym)
+                if not sym:
+                    return
+                source_map.setdefault(sym, [])
+                if source_label not in source_map[sym]:
+                    source_map[sym].append(source_label)
+                if etf_label:
+                    etf_holdings.setdefault(sym, [])
+                    if etf_label not in etf_holdings[sym]:
+                        etf_holdings[sym].append(etf_label)
+
+            for t in existing_tickers:
+                _add_symbol(t, "Existing")
+
+            if include_etf_tickers:
+                for etf in etf_dict.keys():
+                    _add_symbol(etf, "ETF")
+
             p1 = st.progress(0, text="Loading ETF holdings…")
             for i, etf in enumerate(etfs):
                 for t in fetch_lt_holdings(etf):
-                    all_tickers.setdefault(t, []).append(etf)
-                p1.progress((i+1)/len(etfs))
+                    _add_symbol(t, "ETF holding", etf)
+                p1.progress((i+1)/max(1, len(etfs)))
             p1.empty()
 
-            unique = sorted(all_tickers.keys(),
-                            key=lambda t: len(all_tickers[t]), reverse=True)
+            live_tickers = []
+            live_source = "Yahoo/live disabled"
+            if use_live_universe and live_market_name:
+                with st.spinner("Fetching Yahoo/live long-term universe…"):
+                    live_tickers, live_source = fetch_live_market_universe(
+                        live_market_name, max_symbols=max_live_universe
+                    )
+                for t in live_tickers:
+                    _add_symbol(t, "Yahoo/live")
+
+            # Preserve priority order: existing → ETF tickers → ETF holdings → Yahoo/live.
+            combined = []
+            combined.extend([_clean_symbol(t) for t in existing_tickers])
+            if include_etf_tickers:
+                combined.extend([_clean_symbol(t) for t in etf_dict.keys()])
+            combined.extend(sorted(etf_holdings.keys(), key=lambda t: len(etf_holdings.get(t, [])), reverse=True))
+            combined.extend(list(live_tickers))
+            unique = [t for t in _unique_keep_order(combined) if t in source_map]
+            scan_list = unique[:max_lt_scan]
+
+            st.caption(
+                f"Long-term universe: Existing **{len(existing_tickers)}** · ETFs **{len(etf_dict)}** · "
+                f"ETF holdings **{len(etf_holdings)}** · Yahoo/live **{len(live_tickers)}** · "
+                f"Scoring **{len(scan_list)}** / {len(unique)} candidates · Source: {live_source}"
+            )
 
             results = []
             p2 = st.progress(0); st2 = st.empty()
-            for i, ticker in enumerate(unique[:120]):
-                st2.caption(f"Scoring {ticker} ({i+1}/{min(len(unique),120)})…")
+            total = max(1, len(scan_list))
+            for i, ticker in enumerate(scan_list):
+                st2.caption(f"Scoring {ticker} ({i+1}/{len(scan_list)})…")
                 row = score_lt_stock(ticker)
                 if row and row.get("_score",0) >= min_sc:
-                    row["In ETFs"]   = ", ".join(all_tickers[ticker][:4])
-                    row["ETF Count"] = len(all_tickers[ticker])
+                    row["In ETFs"]   = ", ".join(etf_holdings.get(ticker, [])[:4]) or "–"
+                    row["ETF Count"] = len(etf_holdings.get(ticker, []))
+                    row["Sources"]   = ", ".join(source_map.get(ticker, []))
                     results.append(row)
-                p2.progress((i+1)/min(len(unique),120))
+                p2.progress((i+1)/total)
             p2.empty(); st2.empty()
 
             results.sort(key=lambda x: (-x.get("ETF Count",0), -x.get("_score",0)))
             st.session_state[session_key] = results
+            st.session_state[f"{session_key}_universe_csv"] = ", ".join(scan_list)
+            st.session_state[f"{session_key}_universe_stats"] = {
+                "existing": len(existing_tickers),
+                "etfs": len(etf_dict),
+                "etf_holdings": len(etf_holdings),
+                "live": len(live_tickers),
+                "scored": len(scan_list),
+                "total_candidates": len(unique),
+                "live_source": live_source,
+            }
 
         results = st.session_state.get(session_key, [])
         if not results:
@@ -5320,18 +5386,20 @@ with tab_lt:
             except: pass
             return ""
 
-        disp = [c for c in ["Ticker","Name","Sector","ETF Count",
-                "Price","Mkt Cap","Exp 1Y Return","Return Breakdown",
+        disp = [c for c in ["Ticker","Name","Sector","Horizon","Exp 1Y Return",
+                "Price","Mkt Cap","Return Breakdown",
                 "Rev Growth","EPS Growth","ROE","Margin",
                 "Fwd PE","Div Yield","Beta","MA200","Target","Upside","Rec",
-                "Score","Horizon"] if c in df_lt.columns]
+                "Score","Sources","ETF Count","In ETFs"] if c in df_lt.columns]
         df_show = df_lt[disp].copy()
 
         col_cfg = {
             "Ticker":            st.column_config.TextColumn("Ticker",       width=62),
             "Name":              st.column_config.TextColumn("Name",         width=130),
             "Sector":            st.column_config.TextColumn("Sector",       width=95),
+            "Sources":           st.column_config.TextColumn("Sources",      width=105),
             "ETF Count":         st.column_config.NumberColumn("ETFs",       width=42),
+            "In ETFs":           st.column_config.TextColumn("In ETFs",      width=120),
             "Price":             st.column_config.TextColumn("Price",        width=60),
             "Mkt Cap":           st.column_config.TextColumn("Cap",          width=60),
             "Exp 1Y Return":     st.column_config.TextColumn("Exp 1Y Ret",   width=80),
@@ -5364,6 +5432,18 @@ with tab_lt:
                      column_config=cfg, height=min(40+len(df_show)*35, 600))
         st.caption("Score/10: RevGrw(+2) EPSGrw(+2) ROE(+1) Margin(+1) LowDebt(+1) AboveMA200(+1) Target(+1) BuyRated(+1) · "
                    "ETF Count = held by how many ETFs (higher = more institutional conviction)")
+        stats = st.session_state.get(f"{session_key}_universe_stats", {})
+        csv_tickers = st.session_state.get(f"{session_key}_universe_csv", "")
+        if stats:
+            st.caption(
+                f"Scanned universe: Existing {stats.get('existing',0)} · ETFs {stats.get('etfs',0)} · "
+                f"ETF holdings {stats.get('etf_holdings',0)} · Yahoo/live {stats.get('live',0)} · "
+                f"Scored {stats.get('scored',0)} / {stats.get('total_candidates',0)}"
+            )
+        if csv_tickers:
+            with st.expander("📋 Long-term scanned tickers", expanded=False):
+                st.text_area("Comma-separated tickers", value=csv_tickers, height=90,
+                             key=f"{session_key}_universe_text")
 
     # ── Shared fund table function ────────────────────────────────────────────
     def show_fund_table(fund_rows, search_key):
@@ -5412,7 +5492,7 @@ with tab_lt:
 
     # ─────────────────────────────────────────────────────────────────────────
     with lt_sub_us:
-        st.caption("🇺🇸 US stocks sourced from QQQ, SOXX, QUAL, MOAT, VGT and more · sorted by cross-ETF conviction")
+        st.caption("🇺🇸 US long-term universe = existing US tickers + ETF tickers/holdings + Yahoo/live tickers · sorted by cross-ETF conviction")
         with st.expander("📊 Source ETFs — 1Y / 3Y / 5Y Ann Returns (click column to sort)", expanded=False):
             df_etf_us = pd.DataFrame([
                 {"ETF":k, "Name":v["name"], "Theme":v["theme"],
@@ -5444,7 +5524,10 @@ with tab_lt:
             )
         run_lt_scan(LT_ETF_US, "lt_us",
                     ["QQQ","QUAL","MOAT","SOXX","VGT","INDA","SMIN"],
-                    "lt_us_min", "lt_us_search")
+                    "lt_us_min", "lt_us_search",
+                    existing_tickers=US_TICKERS,
+                    live_market_name="🇺🇸 US",
+                    include_etf_tickers=True)
 
     # ─────────────────────────────────────────────────────────────────────────
     with lt_sub_sg:
@@ -5532,22 +5615,78 @@ with tab_lt:
             default=[], key="hf_lt_sg", placeholder="All horizons"
         )
 
+        lt_sg_max_scan = st.slider("Max SG LT scan", 25, 1000, 250, step=25,
+                                  key="lt_sg_max_scan",
+                                  help="Maximum combined SG long-term candidates to score: SG curated/existing tickers + SG ETF tickers + SGX/live tickers.")
+
         if st.button("🔍 Score SGX Long-Term Stocks", type="primary", key="btn_lt_sg"):
+            live_sg_tickers = []
+            live_sg_source = "SGX/live disabled"
+            if use_live_universe:
+                with st.spinner("Fetching SGX/live long-term universe…"):
+                    live_sg_tickers, live_sg_source = fetch_live_market_universe(
+                        "🇸🇬 SGX", max_symbols=max_live_universe
+                    )
+
+            sg_sources = {}
+            def _add_sg(sym, src, force_sg_suffix=True):
+                suffix = ".SI" if force_sg_suffix and not str(sym).upper().endswith(".SI") and "." not in str(sym) else ""
+                sym = _clean_symbol(sym, suffix)
+                if not sym:
+                    return
+                sg_sources.setdefault(sym, [])
+                if src not in sg_sources[sym]:
+                    sg_sources[sym].append(src)
+
+            for t in SG_LT_TICKERS:
+                _add_sg(t, "LT curated")
+            for t in SG_TICKERS:
+                _add_sg(t, "Existing")
+            for t in LT_ETF_SG.keys():
+                _add_sg(t, "ETF", force_sg_suffix=False)
+            for t in live_sg_tickers:
+                _add_sg(t, "SGX/live")
+
+            sg_scan_list = _unique_keep_order(
+                [_clean_symbol(t, ".SI" if not str(t).upper().endswith(".SI") and "." not in str(t) else "") for t in SG_LT_TICKERS] +
+                [_clean_symbol(t, ".SI" if not str(t).upper().endswith(".SI") and "." not in str(t) else "") for t in SG_TICKERS] +
+                [_clean_symbol(t) for t in LT_ETF_SG.keys()] +
+                [_clean_symbol(t, ".SI" if not str(t).upper().endswith(".SI") and "." not in str(t) else "") for t in live_sg_tickers]
+            )[:lt_sg_max_scan]
+
+            st.caption(
+                f"SG long-term universe: LT curated {len(SG_LT_TICKERS)} · Existing {len(SG_TICKERS)} · "
+                f"ETFs {len(LT_ETF_SG)} · SGX/live {len(live_sg_tickers)} · "
+                f"Scoring {len(sg_scan_list)} / {len(sg_sources)} candidates · Source: {live_sg_source}"
+            )
+
             results = []
             p = st.progress(0); st_s = st.empty()
-            for i, ticker in enumerate(SG_LT_TICKERS):
-                st_s.caption(f"Scoring {ticker} ({i+1}/{len(SG_LT_TICKERS)})…")
+            total = max(1, len(sg_scan_list))
+            for i, ticker in enumerate(sg_scan_list):
+                st_s.caption(f"Scoring {ticker} ({i+1}/{len(sg_scan_list)})…")
                 row = score_lt_stock(ticker)
                 if row and row.get("_score", 0) >= sg_min_sc:
+                    row["Sources"] = ", ".join(sg_sources.get(ticker, []))
                     results.append(row)
-                p.progress((i+1)/len(SG_LT_TICKERS))
+                p.progress((i+1)/total)
             p.empty(); st_s.empty()
             results.sort(key=lambda x: -x.get("_score", 0))
             st.session_state["lt_sg"] = results
+            st.session_state["lt_sg_universe_csv"] = ", ".join(sg_scan_list)
+            st.session_state["lt_sg_universe_stats"] = {
+                "lt_curated": len(SG_LT_TICKERS),
+                "existing": len(SG_TICKERS),
+                "etfs": len(LT_ETF_SG),
+                "live": len(live_sg_tickers),
+                "scored": len(sg_scan_list),
+                "total_candidates": len(sg_sources),
+                "live_source": live_sg_source,
+            }
 
         results = st.session_state.get("lt_sg", [])
         if not results:
-            st.info(f"Click 🔍 Score SGX Long-Term Stocks. Scores {len(SG_LT_TICKERS)} curated SGX stocks on: "
+            st.info(f"Click 🔍 Score SGX Long-Term Stocks. Scores combined SGX universe: LT curated + existing tickers + SG ETFs + SGX/live tickers on: "
                     "revenue growth, EPS growth, ROE, margins, debt, price vs MA200, analyst target, Buy rating.")
         else:
             df_sg = pd.DataFrame(results)
@@ -5578,7 +5717,7 @@ with tab_lt:
                 except: pass
                 return ""
 
-            disp = [c for c in ["Ticker","Name","Sector","Price","Mkt Cap",
+            disp = [c for c in ["Ticker","Name","Sector","Sources","Price","Mkt Cap",
                     "Exp 1Y Return","Return Breakdown",
                     "Rev Growth","EPS Growth","ROE","Margin","Fwd PE",
                     "Div Yield","Beta","MA200","Target","Upside","Rec",
@@ -5589,6 +5728,7 @@ with tab_lt:
                 "Ticker":           st.column_config.TextColumn("Ticker",      width=70),
                 "Name":             st.column_config.TextColumn("Name",        width=150),
                 "Sector":           st.column_config.TextColumn("Sector",      width=95),
+                "Sources":          st.column_config.TextColumn("Sources",     width=105),
                 "Price":            st.column_config.TextColumn("Price",       width=62),
                 "Mkt Cap":          st.column_config.TextColumn("Cap",         width=62),
                 "Exp 1Y Return":    st.column_config.TextColumn("Exp 1Y Ret",  width=80),
@@ -5629,6 +5769,18 @@ with tab_lt:
                          column_config=cfg, height=min(40+len(df_show)*35, 600))
             st.caption("Score/10: RevGrw(+2) EPSGrw(+2) ROE>15%(+1) Margin>15%(+1) "
                        "LowDebt(+1) AboveMA200(+1) AnalystTarget(+1) BuyRated(+1)")
+            sg_stats = st.session_state.get("lt_sg_universe_stats", {})
+            sg_csv = st.session_state.get("lt_sg_universe_csv", "")
+            if sg_stats:
+                st.caption(
+                    f"Scanned universe: LT curated {sg_stats.get('lt_curated',0)} · Existing {sg_stats.get('existing',0)} · "
+                    f"ETFs {sg_stats.get('etfs',0)} · SGX/live {sg_stats.get('live',0)} · "
+                    f"Scored {sg_stats.get('scored',0)} / {sg_stats.get('total_candidates',0)}"
+                )
+            if sg_csv:
+                with st.expander("📋 SG long-term scanned tickers", expanded=False):
+                    st.text_area("Comma-separated tickers", value=sg_csv, height=90,
+                                 key="lt_sg_universe_text")
 
     # ─────────────────────────────────────────────────────────────────────────
     with lt_sub_sg_funds:
@@ -6011,7 +6163,7 @@ It checks:
     # ── LONG TERM ─────────────────────────────────────────────────────────────
     with st.expander("🌱 Long Term tab — SG stocks, funds, expected return logic"):
         st.markdown("""
-The Long Term tab is now focused on practical 1–3 year investing, especially for Singapore investors.
+The Long Term tab is now focused on practical 1–3 year investing, especially for Singapore investors. Its stock scans use a combined universe: existing curated tickers + ETF tickers/holdings + Yahoo/live market tickers when live universe is enabled.
 
 ### SG Stocks
 The SG stock list uses a curated universe of Singapore companies such as banks, REITs, industrials, telecom, transport, finance, property, and growth names.
