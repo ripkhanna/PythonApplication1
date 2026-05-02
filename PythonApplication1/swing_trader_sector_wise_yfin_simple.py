@@ -1,5 +1,5 @@
 """
-Swing Scanner v13.1 — Live Market Operator Activity + Options Enrichment
+Swing Scanner v13.5 — Yahoo + Existing Tickers Operator Activity
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -28,7 +28,7 @@ from datetime import datetime
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v13.1",
+    page_title="Swing Scanner v13.5",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -151,7 +151,7 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v13.1 — Live Market + Operator Activity")
+st.title("📈 Swing/Long Term Scanner v13.5 — Live Market Operator Activity + Options Enrichment")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TICKER UNIVERSE  — v4 curated high-quality list (always scanned)
@@ -1688,13 +1688,36 @@ def _unique_keep_order(items):
 
 
 @st.cache_data(ttl=30 * 60, show_spinner=False)
-def fetch_yahoo_market_movers(max_per_screener: int = 100) -> list:
+def fetch_yahoo_market_movers(max_per_screener: int = 250) -> list:
     """
-    Fetch live US market movers from Yahoo via yfinance when available.
-    This avoids limiting Operator Activity to only the hard-coded watchlist.
+    Fetch a broader LIVE Yahoo universe.
+
+    Why count may still be < Max live stocks:
+    - Max live stocks is only a cap, not a guaranteed count.
+    - Yahoo screeners return only the names currently available in each bucket.
+    - Duplicate symbols across screeners are removed before scanning.
+
+    This function uses two Yahoo paths:
+      1) yfinance.screen(...) when available
+      2) Yahoo Finance screener endpoint as a fallback / expansion path
+
+    The final scan step later merges these live tickers with the full existing
+    curated ticker list, so UUUU, APP, etc. remain included even if Yahoo does
+    not return them as current movers.
     """
     tickers = []
-    screen_names = ("most_actives", "day_gainers", "day_losers")
+
+    # A broad set of Yahoo predefined screeners. Some names may be unsupported
+    # depending on the yfinance/Yahoo version; failures are skipped safely.
+    screen_names = (
+        "most_actives", "day_gainers", "day_losers",
+        "undervalued_growth_stocks", "growth_technology_stocks",
+        "aggressive_small_caps", "small_cap_gainers", "most_shorted_stocks",
+        "portfolio_anchors", "undervalued_large_caps",
+        "solid_large_growth_funds", "high_yield_bond", "top_mutual_funds",
+    )
+
+    # Path 1: yfinance's built-in screener wrapper.
     try:
         if hasattr(yf, "screen"):
             for scr in screen_names:
@@ -1709,6 +1732,45 @@ def fetch_yahoo_market_movers(max_per_screener: int = 100) -> list:
                     continue
     except Exception:
         pass
+
+    # Path 2: Yahoo Finance public screener endpoint with pagination. This often
+    # returns more names than yfinance.screen alone.
+    try:
+        import requests
+        url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        per_page = min(max(int(max_per_screener), 25), 250)
+        for scr in screen_names:
+            for start in range(0, max_per_screener, per_page):
+                try:
+                    params = {
+                        "scrIds": scr,
+                        "count": per_page,
+                        "start": start,
+                        "formatted": "false",
+                        "lang": "en-US",
+                        "region": "US",
+                    }
+                    r = requests.get(url, params=params, headers=headers, timeout=12)
+                    if not r.ok:
+                        break
+                    result = (r.json().get("finance", {})
+                                      .get("result", [{}])[0])
+                    quotes = result.get("quotes", []) or []
+                    if not quotes:
+                        break
+                    for q in quotes:
+                        sym = _clean_symbol(q.get("symbol", ""))
+                        if sym:
+                            tickers.append(sym)
+                    # Stop early when Yahoo returned fewer than requested.
+                    if len(quotes) < per_page:
+                        break
+                except Exception:
+                    break
+    except Exception:
+        pass
+
     return _unique_keep_order(tickers)
 
 
@@ -1824,30 +1886,28 @@ def fetch_nse_market_universe(max_symbols: int = 220) -> list:
 @st.cache_data(ttl=30 * 60, show_spinner=False)
 def fetch_live_market_universe(market_name: str, max_symbols: int = 350) -> tuple:
     """
-    Build a live market universe for the scanner/operator tab.
-    Returns (tickers, source_label). Falls back to the curated list only if the
-    live source is unavailable, so the Operator Activity tab is no longer driven
-    by only hard-coded stocks.
+    Build the LIVE/Yahoo side of the scan universe.
+
+    Important: this function returns only the live-market tickers, capped by
+    max_symbols. The scan step later merges these with the full existing
+    curated ticker list, so names like UUUU and APP are not lost simply because
+    they are not in today's Yahoo movers/index response.
     """
     if market_name == "🇺🇸 US":
         movers = fetch_yahoo_market_movers(100)
         index_names = fetch_us_index_universe(max_symbols=max_symbols)
         tickers = _unique_keep_order(movers + index_names)
-        source = "Yahoo live movers + current US index constituents"
-        fallback = US_TICKERS
+        source = "Yahoo expanded live screeners + current US index constituents"
     elif market_name == "🇸🇬 SGX":
         tickers = fetch_sgx_market_universe(max_symbols=max_symbols)
         source = "SGX securities feed / current STI constituents"
-        fallback = SG_TICKERS
     else:
         tickers = fetch_nse_market_universe(max_symbols=max_symbols)
         source = "NSE live index constituents"
-        fallback = INDIA_TICKERS
 
-    # Keep universe practical for yfinance batch scans and avoid empty scans.
     tickers = _unique_keep_order(tickers)[:max_symbols]
     if len(tickers) < 10:
-        return _unique_keep_order(list(fallback))[:max_symbols], "fallback curated watchlist — live market universe unavailable"
+        return [], "live market universe unavailable"
     return tickers, source
 
 
@@ -2778,13 +2838,27 @@ use_live_universe = st.sidebar.checkbox(
     value=False,
     help="When ON, the scanner and Operator Activity tab fetch the market universe "
          "from live/public market sources first (Yahoo movers + index constituents, "
-         "SGX securities feed, NSE index API). The curated hard-coded list is used "
-         "only as a fallback if the live source is unavailable.",
+         "SGX securities feed, NSE index API), then merges them with the full existing "
+         "curated ticker list. Tickers in 'Always include tickers' are also forced in. "
+         "This means stocks like UUUU/APP remain scanned even if they are not in today's movers.",
 )
 max_live_universe = st.sidebar.slider(
-    "Max live stocks to scan", 50, 500, 250, step=25,
-    help="Higher values scan more of the market but take longer and may hit yfinance rate limits.",
+    "Max live stocks to scan", 50, 1000, 250, step=25,
+    help="Limits only the live/Yahoo side of the universe. Existing curated tickers "
+         "and always-include tickers are added on top of this limit.",
 )
+always_include_text = st.sidebar.text_area(
+    "Always include tickers",
+    value="",
+    height=68,
+    help="Comma- or line-separated tickers that are always scanned, even when "
+         "Use live market universe is ON. Example: UUUU, APP, NVDA, D05.SI",
+)
+always_include_tickers = [
+    t.strip().upper()
+    for t in always_include_text.replace("\n", ",").split(",")
+    if t.strip()
+]
 enable_options = st.sidebar.checkbox(
     "Use options data (US + India F&O, +30–60s)",
     value=False,
@@ -3100,10 +3174,11 @@ with col_info:
     if not sdf_preview.empty and "Today %" in sdf_preview.columns:
         gn = sdf_preview[sdf_preview["Today %"] >  0.1]["Sector"].tolist()
         rn = sdf_preview[sdf_preview["Today %"] < -0.1]["Sector"].tolist()
+        _always_note = f" + {len(always_include_tickers)} always-include" if always_include_tickers else ""
         universe_note = (
-            f"live market universe ON · up to {max_live_universe} stocks"
+            f"Yahoo/live up to {max_live_universe} + existing {len(_active_tickers)} stocks{_always_note}"
             if use_live_universe else
-            f"curated watchlist · {len(_active_tickers)} stocks"
+            f"existing curated watchlist · {len(_active_tickers)} stocks{_always_note}"
         )
         st.info(
             f"**{market_sel}** · {universe_note} · "
@@ -3156,25 +3231,35 @@ if run:
                         for sn, sd in live_sectors.items()]
                 st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
-        # Build active ticker list. Operator Activity now uses a live market
-        # universe first instead of being limited to hard-coded stock lists.
+        # Build active ticker list. In live mode this is deliberately:
+        #   Yahoo/live market tickers + the full existing curated ticker list
+        # Then forced tickers are added on top. This prevents existing names
+        # such as UUUU or APP from disappearing from the scan/Diagnostics tab.
         if use_live_universe:
-            with st.spinner("🌐 Fetching live market universe..."):
-                active_tickers, universe_source = fetch_live_market_universe(
+            with st.spinner("🌐 Fetching Yahoo/live market universe..."):
+                live_tickers, live_source = fetch_live_market_universe(
                     market_sel, max_symbols=max_live_universe
                 )
+            active_tickers = _unique_keep_order(list(live_tickers) + list(_active_tickers))
+            universe_source = (
+                f"{live_source} + existing curated watchlist"
+                if live_tickers else
+                "existing curated watchlist — live market universe unavailable"
+            )
         else:
+            live_tickers = []
             active_tickers = list(_active_tickers)
-            universe_source = "curated hard-coded watchlist"
+            universe_source = "existing curated watchlist"
 
-        if extra_tickers:
-            for t in extra_tickers:
-                if t not in active_tickers:
-                    active_tickers.insert(0, t)
+        forced_tickers = _unique_keep_order(always_include_tickers + extra_tickers)
+        if forced_tickers:
+            active_tickers = _unique_keep_order(forced_tickers + active_tickers)
+            universe_source = f"{universe_source} + always-include/extra tickers"
 
         st.info(
             f"📊 Scanning **{len(active_tickers)} {market_sel} stocks** for signals... "
-            f"Universe: **{universe_source}**"
+            f"Universe: **{universe_source}** · "
+            f"Live: **{len(live_tickers)}** · Existing: **{len(_active_tickers)}**"
         )
 
         with st.spinner(f"Scanning {len(active_tickers)} stocks..."):
@@ -3216,6 +3301,10 @@ if run:
         st.session_state["last_market"]        = market_sel
         st.session_state["last_universe_source"] = universe_source
         st.session_state["last_universe_count"]  = len(active_tickers)
+        st.session_state["last_live_ticker_count"] = len(live_tickers)
+        st.session_state["last_existing_ticker_count"] = len(_active_tickers)
+        st.session_state["last_scanned_tickers"] = list(active_tickers)
+        st.session_state["last_scanned_tickers_csv"] = ", ".join(active_tickers)
         # v12: record the options state at scan time + how many candidates
         # actually received option-chain data. Used by the banner below to
         # tell the user when their toggle differs from the displayed scan.
@@ -3233,6 +3322,10 @@ df_operator = st.session_state.get("df_operator", pd.DataFrame())
 last_market = st.session_state.get("last_market", market_sel)
 last_universe_source = st.session_state.get("last_universe_source", "curated hard-coded watchlist")
 last_universe_count = st.session_state.get("last_universe_count", len(_active_tickers))
+last_scanned_tickers = st.session_state.get("last_scanned_tickers", [])
+last_scanned_tickers_csv = st.session_state.get("last_scanned_tickers_csv", "")
+last_live_ticker_count = st.session_state.get("last_live_ticker_count", 0)
+last_existing_ticker_count = st.session_state.get("last_existing_ticker_count", len(_active_tickers))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # v12: Toggle-state banner
@@ -5597,6 +5690,29 @@ with tab_lt:
 
 with tab_diag:
     st.caption("🔍 Diagnostics")
+
+    st.markdown("**Stocks scanned in last scan**")
+    if last_scanned_tickers:
+        st.caption(
+            f"Market: **{last_market}** · Universe: **{last_universe_source}** · "
+            f"Count: **{len(last_scanned_tickers)}** · "
+            f"Live: **{last_live_ticker_count}** · Existing: **{last_existing_ticker_count}**"
+        )
+        if last_market == "🇺🇸 US":
+            st.caption(
+                f"UUUU included: **{'YES' if 'UUUU' in last_scanned_tickers else 'NO'}** · "
+                f"APP included: **{'YES' if 'APP' in last_scanned_tickers else 'NO'}**"
+            )
+        st.text_area(
+            "Comma-separated scanned tickers",
+            value=last_scanned_tickers_csv,
+            height=120,
+            key="diag_scanned_tickers_csv",
+            disabled=True,
+        )
+    else:
+        st.info("Run 🚀 Scan first to show the exact comma-separated list of stocks scanned.")
+
     diag_input = st.text_input("Enter ticker(s)", placeholder="NVDA, TSLA, AMD")
     for t in [x.strip().upper() for x in diag_input.split(",") if x.strip()]:
         with st.expander(f"{t} — full condition breakdown", expanded=True):
@@ -5771,7 +5887,7 @@ with tab_backtest:
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_help:
     st.markdown("## ❓ How to Use the Swing/Long Term Scanner v13.1")
-    st.caption("Updated guide for v13.1: live market universe for Operator Activity, operator/smart-money activity, VWAP confirmation, false-breakout/distribution trap filters, options enrichment, diagnostics, and compact searchable grids.")
+    st.caption("Updated guide for v13.5: Yahoo/live + existing ticker universe for Operator Activity, operator/smart-money activity, VWAP confirmation, false-breakout/distribution trap filters, options enrichment, diagnostics, and compact searchable grids.")
 
     # ── QUICK START ───────────────────────────────────────────────────────────
     with st.expander("🚀 Quick Start — what to use each tab for", expanded=True):
@@ -5788,7 +5904,7 @@ with tab_help:
 | Find strong 5–7 day buy setups | 📈 Long Setups | Shows bullish swing candidates after scan |
 | Find bearish / short setups | 📉 Short Setups | Shows breakdown / bearish setups |
 | Compare long and short lists | 🔄 Side by Side | Longs and shorts together |
-| Find operator/smart-money footprints | 🪤 Operator Activity | Uses latest scanned live market universe when enabled |
+| Find operator/smart-money footprints | 🪤 Operator Activity | Uses latest scanned Yahoo/live + existing ticker universe when enabled |
 | Check hot / weak sectors first | 🗂️ Sector Heatmap | Market-aware sector strength map |
 | Analyse one stock deeply | 🔬 Stock Analysis | Chart, indicators, stops, targets, notes |
 | Check upcoming earnings risk | 📅 Earnings | Upcoming earnings + verdict scoring |
@@ -5805,7 +5921,7 @@ After a ticker appears in Long/Short Setups, open **🔬 Stock Analysis** or **�
     # ── MARKET SELECTOR ───────────────────────────────────────────────────────
     with st.expander("🌍 Market selector — what changes per market"):
         st.markdown("""
-The market selector controls the heatmap source, currency formatting, and scan universe. When **Use live market universe** is ON in the sidebar, the scanner fetches tickers from market sources instead of relying only on the curated hard-coded list.
+The market selector controls the heatmap source, currency formatting, and scan universe. When **Use live market universe** is ON in the sidebar, the scanner uses **Yahoo expanded live screeners/index tickers plus the full existing curated ticker list**, then adds anything in **Always include tickers** on top. This keeps existing watchlist names such as UUUU and APP in the scan even when they are not in today's movers.
 
 | Feature | 🇺🇸 US | 🇸🇬 SGX | 🇮🇳 India |
 |---|---|---|---|
@@ -5959,7 +6075,7 @@ The dividend logic was corrected so abnormal yfinance values do not make stocks 
     # ── OPERATOR / SMART MONEY LAYER ──────────────────────────────────────────
     with st.expander("🧠 Operator / smart-money layer (v13.1) — live market scan + BUY/SELL accuracy"):
         st.markdown("""
-This version adds a confirmation layer for **operator / institutional footprints**. The Operator Activity tab now reads from the latest scanned market universe. With **Use live market universe** ON, the universe comes from Yahoo movers/current US index constituents, SGX market sources, or NSE live index constituents.
+This version adds a confirmation layer for **operator / institutional footprints**. The Operator Activity tab now reads from the latest scanned market universe. With **Use live market universe** ON, the universe is **Yahoo expanded live screeners/index tickers plus the existing curated ticker list**. Tickers in **Always include tickers** are also added even when they are not in today's live movers.
 
 It does not blindly buy because probability is high. A cleaner BUY now needs
 technical strength **plus** smart-money confirmation and no trap warning.
