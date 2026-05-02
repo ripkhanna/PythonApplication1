@@ -1,5 +1,5 @@
 """
-Swing Scanner v12 — Sector-Driven Long & Short + Options Enrichment
+Swing Scanner v13.1 — Live Market Operator Activity + Options Enrichment
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -14,7 +14,7 @@ v12 add-ons  : options-derived signals — call/put unusual flow, IV term
                  • SGX            → no options market exists, layer skipped
 
 Install:
-  pip install financedatabase ta streamlit yfinance pandas numpy nsepython
+  pip install financedatabase ta streamlit yfinance pandas numpy nsepython requests
 """
 
 import streamlit as st
@@ -28,7 +28,7 @@ from datetime import datetime
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v12",
+    page_title="Swing Scanner v13.1",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -151,7 +151,7 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v12 — Sector + Options Driven")
+st.title("📈 Swing/Long Term Scanner v13.1 — Live Market + Operator Activity")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TICKER UNIVERSE  — v4 curated high-quality list (always scanned)
@@ -1656,6 +1656,400 @@ def fetch_sector_constituents(target_per_sector: int = 25) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# LIVE MARKET UNIVERSE — used by Operator Activity / scan source
+# ─────────────────────────────────────────────────────────────────────────────
+def _clean_symbol(sym: str, suffix: str = "") -> str:
+    """Normalise symbols for yfinance and drop obvious non-equity junk."""
+    if sym is None:
+        return ""
+    s = str(sym).strip().upper()
+    if not s or s in ("NAN", "NONE", "-", "—"):
+        return ""
+    s = s.replace(" ", "")
+    # yfinance uses '-' for US class shares (BRK-B), not '.'
+    if suffix == "" and "." in s and not s.endswith((".SI", ".NS")):
+        s = s.replace(".", "-")
+    # Remove warrants/rights/preferreds that often break scans.
+    bad_fragments = ("-W", "-WT", "-WS", "-R", "-U", "^", "/")
+    if any(x in s for x in bad_fragments):
+        return ""
+    if suffix and not s.endswith(suffix):
+        s = f"{s}{suffix}"
+    return s
+
+
+def _unique_keep_order(items):
+    out, seen = [], set()
+    for item in items:
+        if item and item not in seen:
+            out.append(item)
+            seen.add(item)
+    return out
+
+
+@st.cache_data(ttl=30 * 60, show_spinner=False)
+def fetch_yahoo_market_movers(max_per_screener: int = 100) -> list:
+    """
+    Fetch live US market movers from Yahoo via yfinance when available.
+    This avoids limiting Operator Activity to only the hard-coded watchlist.
+    """
+    tickers = []
+    screen_names = ("most_actives", "day_gainers", "day_losers")
+    try:
+        if hasattr(yf, "screen"):
+            for scr in screen_names:
+                try:
+                    res = yf.screen(scr, count=max_per_screener)
+                    quotes = res.get("quotes", []) if isinstance(res, dict) else []
+                    for q in quotes:
+                        sym = _clean_symbol(q.get("symbol", ""))
+                        if sym:
+                            tickers.append(sym)
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return _unique_keep_order(tickers)
+
+
+@st.cache_data(ttl=12 * 60 * 60, show_spinner=False)
+def fetch_us_index_universe(max_symbols: int = 450) -> list:
+    """Fetch current US index constituents from public index tables."""
+    tickers = []
+    sources = [
+        ("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", ["Symbol", "Ticker symbol"]),
+        ("https://en.wikipedia.org/wiki/Nasdaq-100", ["Ticker", "Symbol"]),
+        ("https://en.wikipedia.org/wiki/Dow_Jones_Industrial_Average", ["Symbol", "Ticker"]),
+    ]
+    for url, cols in sources:
+        try:
+            for tbl in pd.read_html(url):
+                col = next((c for c in cols if c in tbl.columns), None)
+                if not col:
+                    continue
+                vals = [_clean_symbol(x) for x in tbl[col].dropna().astype(str).tolist()]
+                tickers.extend([v for v in vals if v])
+                break
+        except Exception:
+            continue
+    return _unique_keep_order(tickers)[:max_symbols]
+
+
+@st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
+def fetch_sgx_market_universe(max_symbols: int = 180) -> list:
+    """
+    Fetch Singapore-listed names from live/public market sources.
+    Primary source: SGX securities API. Fallback: current STI constituents table.
+    """
+    tickers = []
+
+    # SGX public securities endpoint changes occasionally; keep it best-effort.
+    try:
+        import requests
+        url = "https://api2.sgx.com/securities/v1.1"
+        params = {"excludetypes": "bonds", "params": "nc,cn,code"}
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, params=params, headers=headers, timeout=12)
+        if r.ok:
+            data = r.json()
+            rows = data.get("data", data if isinstance(data, list) else [])
+            for row in rows:
+                if isinstance(row, dict):
+                    code = row.get("code") or row.get("nc") or row.get("symbol") or row.get("ticker")
+                elif isinstance(row, (list, tuple)) and row:
+                    code = row[0]
+                else:
+                    code = None
+                sym = _clean_symbol(code, ".SI")
+                if sym:
+                    tickers.append(sym)
+    except Exception:
+        pass
+
+    # Fallback to STI constituents if SGX endpoint is unavailable.
+    if len(tickers) < 20:
+        try:
+            for tbl in pd.read_html("https://en.wikipedia.org/wiki/Straits_Times_Index"):
+                possible_cols = [c for c in tbl.columns if str(c).lower() in ("stock symbol", "symbol", "ticker")]
+                if not possible_cols:
+                    continue
+                vals = [_clean_symbol(x, ".SI") for x in tbl[possible_cols[0]].dropna().astype(str).tolist()]
+                tickers.extend([v for v in vals if v])
+                break
+        except Exception:
+            pass
+
+    return _unique_keep_order(tickers)[:max_symbols]
+
+
+@st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
+def fetch_nse_market_universe(max_symbols: int = 220) -> list:
+    """Fetch current NSE index constituents from NSE's live index API."""
+    tickers = []
+    indices = ["NIFTY 50", "NIFTY NEXT 50", "NIFTY MIDCAP 50", "NIFTY SMALLCAP 50"]
+    try:
+        import requests
+        sess = requests.Session()
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept": "application/json,text/plain,*/*",
+            "Referer": "https://www.nseindia.com/market-data/live-equity-market",
+        }
+        # Warm the NSE session/cookies.
+        try:
+            sess.get("https://www.nseindia.com", headers=headers, timeout=10)
+        except Exception:
+            pass
+        for idx in indices:
+            try:
+                url = "https://www.nseindia.com/api/equity-stockIndices"
+                r = sess.get(url, params={"index": idx}, headers=headers, timeout=12)
+                if not r.ok:
+                    continue
+                data = r.json().get("data", [])
+                for row in data:
+                    sym = row.get("symbol")
+                    if sym and sym not in ("NIFTY 50", "NIFTY NEXT 50"):
+                        t = _clean_symbol(sym, ".NS")
+                        if t:
+                            tickers.append(t)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return _unique_keep_order(tickers)[:max_symbols]
+
+
+@st.cache_data(ttl=30 * 60, show_spinner=False)
+def fetch_live_market_universe(market_name: str, max_symbols: int = 350) -> tuple:
+    """
+    Build a live market universe for the scanner/operator tab.
+    Returns (tickers, source_label). Falls back to the curated list only if the
+    live source is unavailable, so the Operator Activity tab is no longer driven
+    by only hard-coded stocks.
+    """
+    if market_name == "🇺🇸 US":
+        movers = fetch_yahoo_market_movers(100)
+        index_names = fetch_us_index_universe(max_symbols=max_symbols)
+        tickers = _unique_keep_order(movers + index_names)
+        source = "Yahoo live movers + current US index constituents"
+        fallback = US_TICKERS
+    elif market_name == "🇸🇬 SGX":
+        tickers = fetch_sgx_market_universe(max_symbols=max_symbols)
+        source = "SGX securities feed / current STI constituents"
+        fallback = SG_TICKERS
+    else:
+        tickers = fetch_nse_market_universe(max_symbols=max_symbols)
+        source = "NSE live index constituents"
+        fallback = INDIA_TICKERS
+
+    # Keep universe practical for yfinance batch scans and avoid empty scans.
+    tickers = _unique_keep_order(tickers)[:max_symbols]
+    if len(tickers) < 10:
+        return _unique_keep_order(list(fallback))[:max_symbols], "fallback curated watchlist — live market universe unavailable"
+    return tickers, source
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OPERATOR + TRAP DETECTOR — reusable across Stock Analysis and main scan
+# ─────────────────────────────────────────────────────────────────────────────
+def detect_traps(open_, high_, low_, close_, vol_, atr, swing_high, swing_low):
+    """
+    Detect classic operator manipulation patterns.
+
+    Returns a list of tuples:
+        (severity, label, detail, long_dir, short_dir)
+    where severity ∈ {"high","med","low"} and *_dir ∈ {-1, 0, +1}.
+    long_dir = +1 means the pattern supports going long; -1 contradicts long.
+    short_dir is the mirror for shorts. 0 means neutral / informational.
+    """
+    traps = []
+    try:
+        N = 20
+        if len(close_) < N + 5:
+            return traps
+
+        body_size  = (close_ - open_).abs()
+        day_range  = (high_ - low_).replace(0, np.nan)
+        body_top   = close_.combine(open_, max)
+        body_bot   = close_.combine(open_, min)
+        upper_wick = high_ - body_top
+        lower_wick = body_bot - low_
+        close_pos  = (close_ - low_) / day_range
+        vol_avg20  = vol_.rolling(20).mean()
+        vol_rat    = vol_ / vol_avg20
+
+        p_now   = float(close_.iloc[-1])
+        atr_now = float(atr)
+        sw_hi   = float(swing_high)
+        sw_lo   = float(swing_low)
+
+        # 1) BULL TRAP — find highest-vol breakout in last 7d, check if trapped
+        best_k = None; best_vr = 0; best_hi = 0
+        for k in range(-min(7, len(high_) - N - 1), 0):
+            pre_window = high_.iloc[k - N : k]
+            if len(pre_window) < N:
+                continue
+            pre_hi = float(pre_window.max())
+            if float(high_.iloc[k]) > pre_hi * 1.001:
+                vk = float(vol_rat.iloc[k]) if pd.notna(vol_rat.iloc[k]) else 1.0
+                if vk > best_vr:
+                    best_vr = vk
+                    best_k  = k
+                    best_hi = float(high_.iloc[k])
+        if best_k is not None and best_vr >= 1.3 and p_now < best_hi * 0.99:
+            traps.append(("high",
+                "🚨 BULL TRAP — failed breakout",
+                f"Broke above ${best_hi:.2f} on {best_vr:.1f}× volume {abs(best_k)} session(s) ago, "
+                f"now back below at ${p_now:.2f}.",
+                -1, +1))
+
+        # 2) BEAR TRAP — strongest-vol breakdown in last 7d, check if trapped
+        best_k = None; best_vr = 0; best_lo = 0
+        for k in range(-min(7, len(low_) - N - 1), 0):
+            pre_window = low_.iloc[k - N : k]
+            if len(pre_window) < N:
+                continue
+            pre_lo = float(pre_window.min())
+            if float(low_.iloc[k]) < pre_lo * 0.999:
+                vk = float(vol_rat.iloc[k]) if pd.notna(vol_rat.iloc[k]) else 1.0
+                if vk > best_vr:
+                    best_vr = vk
+                    best_k  = k
+                    best_lo = float(low_.iloc[k])
+        if best_k is not None and best_vr >= 1.3 and p_now > best_lo * 1.01:
+            traps.append(("high",
+                "🚨 BEAR TRAP — failed breakdown",
+                f"Broke below ${best_lo:.2f} on {best_vr:.1f}× volume {abs(best_k)} session(s) ago, "
+                f"now back above at ${p_now:.2f}.",
+                +1, -1))
+
+        # 3) STOP HUNT — wick beyond swing on volume
+        for k in [-1, -2, -3]:
+            if -k > len(close_):
+                continue
+            uw = float(upper_wick.iloc[k]) if pd.notna(upper_wick.iloc[k]) else 0
+            lw = float(lower_wick.iloc[k]) if pd.notna(lower_wick.iloc[k]) else 0
+            bd = float(body_size.iloc[k])  if pd.notna(body_size.iloc[k])  else 0
+            vk = float(vol_rat.iloc[k])    if pd.notna(vol_rat.iloc[k])    else 1.0
+            hi_k = float(high_.iloc[k]); lo_k = float(low_.iloc[k]); cl_k = float(close_.iloc[k])
+
+            if uw > 2 * bd and uw > 0.6 * atr_now and vk >= 1.3 \
+                    and hi_k > sw_hi * 0.998 and cl_k < sw_hi:
+                traps.append(("med",
+                    "🎯 UPSIDE stop hunt",
+                    f"{abs(k)} session(s) ago: long upper wick (${uw:.2f}) on {vk:.1f}× volume "
+                    f"probed swing high ${sw_hi:.2f} and rejected.",
+                    -1, +1))
+                break
+            if lw > 2 * bd and lw > 0.6 * atr_now and vk >= 1.3 \
+                    and lo_k < sw_lo * 1.002 and cl_k > sw_lo:
+                traps.append(("med",
+                    "🎯 DOWNSIDE stop hunt",
+                    f"{abs(k)} session(s) ago: long lower wick (${lw:.2f}) on {vk:.1f}× volume "
+                    f"probed swing low ${sw_lo:.2f} and rejected.",
+                    +1, -1))
+                break
+
+        cp10 = float(close_pos.iloc[-10:].mean()) if pd.notna(close_pos.iloc[-10:].mean()) else 0.5
+        vr10 = float(vol_rat.iloc[-10:].mean())   if pd.notna(vol_rat.iloc[-10:].mean())   else 1.0
+        ret10 = float((close_.iloc[-1] - close_.iloc[-10]) / close_.iloc[-10])
+
+        # 4) DISTRIBUTION at top
+        high20 = float(high_.iloc[-20:].max())
+        if p_now > high20 * 0.95 and cp10 < 0.45 and vr10 > 1.15 and abs(ret10) < 0.04:
+            traps.append(("high",
+                "📤 DISTRIBUTION at top",
+                f"Within 5% of recent high but last 10d: avg close in lower {cp10*100:.0f}% "
+                f"of daily range, volume {vr10:.1f}× avg, net move {ret10*100:+.1f}%.",
+                -1, +1))
+
+        # 5) ACCUMULATION at bottom
+        low20 = float(low_.iloc[-20:].min())
+        if p_now < low20 * 1.05 and cp10 > 0.55 and vr10 > 1.15 and abs(ret10) < 0.04:
+            traps.append(("high",
+                "📥 ACCUMULATION at bottom",
+                f"Within 5% of recent low but last 10d: avg close in upper {cp10*100:.0f}% "
+                f"of daily range, volume {vr10:.1f}× avg, net move {ret10*100:+.1f}%.",
+                +1, -1))
+
+        # 6) GAP & REVERSE
+        for k in [-1, -2]:
+            if -k > len(close_) - 1:
+                continue
+            op_k = float(open_.iloc[k]); cl_k = float(close_.iloc[k]); pc_k = float(close_.iloc[k-1])
+            gap  = (op_k - pc_k) / pc_k if pc_k else 0
+            vk   = float(vol_rat.iloc[k]) if pd.notna(vol_rat.iloc[k]) else 1.0
+            if gap > 0.012 and cl_k < pc_k and vk >= 1.2:
+                traps.append(("med",
+                    "🪤 GAP-UP and reverse",
+                    f"{abs(k)}d ago: gapped up {gap*100:+.1f}%, closed {(cl_k-pc_k)/pc_k*100:+.1f}% "
+                    f"on {vk:.1f}× volume.",
+                    -1, +1))
+                break
+            if gap < -0.012 and cl_k > pc_k and vk >= 1.2:
+                traps.append(("med",
+                    "🪤 GAP-DOWN and reverse",
+                    f"{abs(k)}d ago: gapped down {gap*100:+.1f}%, closed {(cl_k-pc_k)/pc_k*100:+.1f}% "
+                    f"on {vk:.1f}× volume.",
+                    +1, -1))
+                break
+
+        # 7) CLIMAX / EXHAUSTION
+        vr_today  = float(vol_rat.iloc[-1])  if pd.notna(vol_rat.iloc[-1])  else 1.0
+        cp_today  = float(close_pos.iloc[-1]) if pd.notna(close_pos.iloc[-1]) else 0.5
+        ret_today = float((close_.iloc[-1] - close_.iloc[-2]) / close_.iloc[-2])
+        if vr_today >= 2.5 and ret_today > 0.02 and cp_today < 0.4:
+            traps.append(("med",
+                "🌋 BUY climax (exhaustion)",
+                f"Today: +{ret_today*100:.1f}% on {vr_today:.1f}× volume, closed in lower "
+                f"{cp_today*100:.0f}% of range.",
+                -1, +1))
+        elif vr_today >= 2.5 and ret_today < -0.02 and cp_today > 0.6:
+            traps.append(("med",
+                "🌋 SELL climax (capitulation)",
+                f"Today: {ret_today*100:.1f}% on {vr_today:.1f}× volume, closed in upper "
+                f"{cp_today*100:.0f}% of range.",
+                +1, -1))
+
+        # 8) CHURN
+        range10_pct = float((close_.iloc[-10:].max() - close_.iloc[-10:].min()) / close_.iloc[-10])
+        if range10_pct < 0.04 and vr10 > 1.30:
+            traps.append(("low",
+                "🔄 CHURN — sideways heavy volume",
+                f"Last 10d: only {range10_pct*100:.1f}% range, volume {vr10:.1f}× avg.",
+                0, 0))
+
+    except Exception:
+        pass
+    return traps
+
+
+def summarize_traps(traps):
+    """Summarize a traps list into compact strings for display in tables."""
+    if not traps:
+        return {"count": 0, "high": 0, "med": 0, "low": 0,
+                "patterns": "–", "bias": "–", "bias_score": 0}
+    high = sum(1 for t in traps if t[0] == "high")
+    med  = sum(1 for t in traps if t[0] == "med")
+    low  = sum(1 for t in traps if t[0] == "low")
+    # Direction bias: positive = bullish operator activity (accumulation/bear traps)
+    # Negative = bearish operator activity (distribution/bull traps)
+    sev_w = {"high": 3, "med": 2, "low": 1}
+    bias_score = sum(sev_w[t[0]] * t[3] for t in traps)  # use long_dir
+    if   bias_score >=  4: bias = "🟢 BULLISH"
+    elif bias_score >=  1: bias = "🟢 mild bull"
+    elif bias_score <= -4: bias = "🔴 BEARISH"
+    elif bias_score <= -1: bias = "🔴 mild bear"
+    else:                  bias = "⚪ NEUTRAL"
+    # Compact pattern list — just labels, comma-joined
+    patterns = " · ".join(t[1].split(" — ")[0].split(" (")[0] for t in traps)
+    return {"count": len(traps), "high": high, "med": med, "low": low,
+            "patterns": patterns, "bias": bias, "bias_score": bias_score}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MAIN SCANNER  — v5 signal logic + v7 batch OHLCV pre-fetch
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600)
@@ -1678,7 +2072,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
 
     total = len(all_tickers)
     if total == 0:
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
     green_set = set(green_sectors[:top_n_sectors])
     red_set   = set(red_sectors[:top_n_sectors])
@@ -1691,6 +2085,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
 
     long_results  = []
     short_results = []
+    operator_results = []
     progress_bar  = st.progress(0)
     status_text   = st.empty()
 
@@ -1827,6 +2222,44 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             today_chg = float(
                 (close.iloc[-1] - close.iloc[-2]) / close.iloc[-2] * 100
             ) if len(close) >= 2 else 0.0
+
+            # ── Operator + Trap detection (universe-wide) ─────────────────────
+            # Runs for every scanned ticker so the Operator Activity tab can
+            # surface stocks with manipulation patterns even when they don't
+            # show a long/short setup.
+            try:
+                open_s = df["Open"].squeeze().ffill()
+                _traps = detect_traps(
+                    open_s, high, low, close, vol,
+                    atrv, raw["last_swing_high"], raw["last_swing_low"]
+                )
+                _tsum = summarize_traps(_traps)
+                _op_score = int(raw.get("operator_score", 0))
+                # Include any ticker with meaningful operator/trap activity:
+                # operator_score ≥ 2, OR any pattern detected, OR a trap-risk flag.
+                if _op_score >= 2 or _tsum["count"] >= 1 or raw.get("false_breakout") \
+                        or raw.get("gap_chase_risk") or raw.get("operator_distribution"):
+                    operator_results.append({
+                        "Ticker":       ticker,
+                        "Sector":       sector_label(ticker),
+                        "Price":        f"${p:.2f}",
+                        "Today %":      f"{today_chg:+.2f}%",
+                        "Op Score":     _op_score,
+                        "Op Label":     raw.get("operator_label", "–"),
+                        "Trap Bias":    _tsum["bias"],
+                        "Patterns":     f"{_tsum['count']} ({_tsum['high']}H · {_tsum['med']}M · {_tsum['low']}L)" if _tsum["count"] else "–",
+                        "Detected":     _tsum["patterns"],
+                        "Trap Risk":    raw.get("trap_risk_label", "–"),
+                        "Vol Ratio":    round(vr, 2),
+                        "VWAP":         "ABOVE" if raw.get("above_vwap") else "BELOW",
+                        "RSI":          round(raw["rsi0"], 1),
+                        "_bias_score":  _tsum["bias_score"],
+                        "_op_score":    _op_score,
+                        "_trap_count":  _tsum["count"],
+                        "_high_count":  _tsum["high"],
+                    })
+            except Exception:
+                pass
 
             # ── v12: OPTIONS ENRICHMENT ───────────────────────────────────────
             # Run only on US tickers that already show technical interest, so
@@ -2225,7 +2658,17 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         df_out["_s"] = df_out[prob_col].str.rstrip("%").astype(float)
         return df_out.sort_values("_s", ascending=False).drop(columns="_s")
 
-    return make_df(long_results, "Rise Prob"), make_df(short_results, "Fall Prob")
+    def make_op_df(rows):
+        if not rows:
+            return pd.DataFrame()
+        return pd.DataFrame(rows).sort_values(
+            ["_high_count", "_trap_count", "_op_score"],
+            ascending=[False, False, False]
+        )
+
+    return (make_df(long_results, "Rise Prob"),
+            make_df(short_results, "Fall Prob"),
+            make_op_df(operator_results))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2330,6 +2773,18 @@ top_n_sectors  = st.sidebar.slider("Top N green/red sectors to scan", 1, 6, 3)
 min_prob_long  = st.sidebar.slider("Min LONG rise prob (%)",  40, 95, 62)
 min_prob_short = st.sidebar.slider("Min SHORT fall prob (%)", 40, 95, 60)
 skip_earnings  = st.sidebar.checkbox("Skip earnings within 7 days", False)
+use_live_universe = st.sidebar.checkbox(
+    "Use live market universe",
+    value=False,
+    help="When ON, the scanner and Operator Activity tab fetch the market universe "
+         "from live/public market sources first (Yahoo movers + index constituents, "
+         "SGX securities feed, NSE index API). The curated hard-coded list is used "
+         "only as a fallback if the live source is unavailable.",
+)
+max_live_universe = st.sidebar.slider(
+    "Max live stocks to scan", 50, 500, 250, step=25,
+    help="Higher values scan more of the market but take longer and may hit yfinance rate limits.",
+)
 enable_options = st.sidebar.checkbox(
     "Use options data (US + India F&O, +30–60s)",
     value=False,
@@ -2534,10 +2989,11 @@ else:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-tab_sectors, tab_long, tab_short, tab_both, tab_etf, tab_stock, tab_earn, tab_event, tab_lt, tab_diag, tab_backtest, tab_help = st.tabs([
+tab_sectors, tab_long, tab_short, tab_operator, tab_both, tab_etf, tab_stock, tab_earn, tab_event, tab_lt, tab_diag, tab_backtest, tab_help = st.tabs([
     "🗂️ Sector Heatmap",
     "📈 Long Setups",
     "📉 Short Setups",
+    "🪤 Operator Activity",
     "🔄 Side by Side",
     "📊 ETF Holdings",
     "🔬 Stock Analysis",
@@ -2644,8 +3100,13 @@ with col_info:
     if not sdf_preview.empty and "Today %" in sdf_preview.columns:
         gn = sdf_preview[sdf_preview["Today %"] >  0.1]["Sector"].tolist()
         rn = sdf_preview[sdf_preview["Today %"] < -0.1]["Sector"].tolist()
+        universe_note = (
+            f"live market universe ON · up to {max_live_universe} stocks"
+            if use_live_universe else
+            f"curated watchlist · {len(_active_tickers)} stocks"
+        )
         st.info(
-            f"**{market_sel}** · {len(_active_tickers)} stocks · "
+            f"**{market_sel}** · {universe_note} · "
             f"Top **{top_n_sectors} green** → longs: {', '.join(gn[:top_n_sectors]) or 'none'} · "
             f"Top **{top_n_sectors} red** → shorts: {', '.join(rn[:top_n_sectors]) or 'none'}"
         )
@@ -2695,17 +3156,29 @@ if run:
                         for sn, sd in live_sectors.items()]
                 st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
-        # Build active ticker list (market-specific + custom)
-        active_tickers = list(_active_tickers)
+        # Build active ticker list. Operator Activity now uses a live market
+        # universe first instead of being limited to hard-coded stock lists.
+        if use_live_universe:
+            with st.spinner("🌐 Fetching live market universe..."):
+                active_tickers, universe_source = fetch_live_market_universe(
+                    market_sel, max_symbols=max_live_universe
+                )
+        else:
+            active_tickers = list(_active_tickers)
+            universe_source = "curated hard-coded watchlist"
+
         if extra_tickers:
             for t in extra_tickers:
                 if t not in active_tickers:
                     active_tickers.insert(0, t)
 
-        st.info(f"📊 Scanning **{len(active_tickers)} {market_sel} stocks** for signals...")
+        st.info(
+            f"📊 Scanning **{len(active_tickers)} {market_sel} stocks** for signals... "
+            f"Universe: **{universe_source}**"
+        )
 
         with st.spinner(f"Scanning {len(active_tickers)} stocks..."):
-            df_long, df_short = fetch_analysis(
+            df_long, df_short, df_operator = fetch_analysis(
                 tuple(green_sectors), tuple(red_sectors),
                 regime, skip_earnings, top_n_sectors,
                 live_sectors if live_sectors else None,
@@ -2738,8 +3211,11 @@ if run:
 
         st.session_state["df_long"]            = df_long
         st.session_state["df_short"]           = df_short
+        st.session_state["df_operator"]        = df_operator
         st.session_state["live_sectors_cache"] = live_sectors
         st.session_state["last_market"]        = market_sel
+        st.session_state["last_universe_source"] = universe_source
+        st.session_state["last_universe_count"]  = len(active_tickers)
         # v12: record the options state at scan time + how many candidates
         # actually received option-chain data. Used by the banner below to
         # tell the user when their toggle differs from the displayed scan.
@@ -2753,7 +3229,10 @@ if run:
 
 df_long  = st.session_state.get("df_long",  pd.DataFrame())
 df_short = st.session_state.get("df_short", pd.DataFrame())
+df_operator = st.session_state.get("df_operator", pd.DataFrame())
 last_market = st.session_state.get("last_market", market_sel)
+last_universe_source = st.session_state.get("last_universe_source", "curated hard-coded watchlist")
+last_universe_count = st.session_state.get("last_universe_count", len(_active_tickers))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # v12: Toggle-state banner
@@ -2912,6 +3391,141 @@ with tab_short:
 `VOL BREAKDOWN` — 10-day low on above-average volume  
 `LOWER HIGHS` — two consecutive lower swing highs
             """)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 3b — OPERATOR ACTIVITY (universe-wide manipulation footprint scan)
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_operator:
+    st.caption("🪤 Operator Activity — every stock from the latest scanned market universe with manipulation footprints")
+    st.warning(
+        "⚠️ Operator activity is a **directional bias signal**, not a trade trigger. "
+        "Use it alongside the Long/Short scorecards. Pattern-based detection produces "
+        "false positives in volatile but legitimate trends — confirm with the chart "
+        "before entering."
+    )
+
+    if df_operator.empty:
+        st.info(
+            "Run the scan first. With **Use live market universe** ON, this tab fetches "
+            "stocks from the selected market source instead of only using the hard-coded "
+            "watchlist. Every stock with operator activity (op-score ≥ 2 or any trap "
+            "pattern) will appear here."
+        )
+    else:
+        df_op = df_operator.copy()
+
+        # ── Headline metrics ─────────────────────────────────────────────────
+        n_total   = len(df_op)
+        n_high    = int((df_op["_high_count"] > 0).sum())
+        n_bull    = int((df_op["_bias_score"] >  0).sum())
+        n_bear    = int((df_op["_bias_score"] <  0).sum())
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("🪤 Total active",   n_total)
+        m2.metric("🚨 High severity",  n_high)
+        m3.metric("🟢 Bullish ops",    n_bull)
+        m4.metric("🔴 Bearish ops",    n_bear)
+
+        st.caption(
+            f"Results for **{last_market}** · {n_total} of "
+            f"{last_universe_count} scanned stocks show operator activity. "
+            f"Universe: **{last_universe_source}**."
+        )
+
+        # ── Filters ──────────────────────────────────────────────────────────
+        f1, f2, f3 = st.columns([2, 2, 1])
+        with f1:
+            bias_filter = st.selectbox(
+                "Direction bias",
+                ["All", "🟢 Bullish only", "🔴 Bearish only", "⚪ Neutral only"],
+                key="op_bias_filter",
+            )
+        with f2:
+            sev_filter = st.selectbox(
+                "Severity",
+                ["All", "High severity only", "Med+ severity",
+                 "Op Score ≥ 4 (accumulation+)", "Op Score ≥ 6 (strong)"],
+                key="op_sev_filter",
+            )
+        with f3:
+            search = st.text_input("🔎 Ticker", key="op_search",
+                                   placeholder="search…").strip().upper()
+
+        df_view = df_op.copy()
+        if bias_filter == "🟢 Bullish only":
+            df_view = df_view[df_view["_bias_score"] > 0]
+        elif bias_filter == "🔴 Bearish only":
+            df_view = df_view[df_view["_bias_score"] < 0]
+        elif bias_filter == "⚪ Neutral only":
+            df_view = df_view[df_view["_bias_score"] == 0]
+
+        if   sev_filter == "High severity only":
+            df_view = df_view[df_view["_high_count"] >= 1]
+        elif sev_filter == "Med+ severity":
+            df_view = df_view[df_view["_trap_count"] >= 1]
+        elif sev_filter == "Op Score ≥ 4 (accumulation+)":
+            df_view = df_view[df_view["_op_score"] >= 4]
+        elif sev_filter == "Op Score ≥ 6 (strong)":
+            df_view = df_view[df_view["_op_score"] >= 6]
+
+        if search:
+            df_view = df_view[df_view["Ticker"].str.contains(search, na=False)]
+
+        # ── Tier split: bullish vs bearish operator activity ─────────────────
+        df_bull = df_view[df_view["_bias_score"] >  0].sort_values(
+            ["_bias_score", "_op_score"], ascending=[False, False])
+        df_bear = df_view[df_view["_bias_score"] <  0].sort_values(
+            ["_bias_score", "_op_score"], ascending=[True, False])
+        df_neut = df_view[df_view["_bias_score"] == 0].sort_values(
+            "_op_score", ascending=False)
+
+        display_cols = [c for c in df_view.columns if not c.startswith("_")]
+
+        st.markdown(f"**Filtered: {len(df_view)} stocks**")
+
+        if not df_bull.empty:
+            st.markdown(f"### 🟢 Bullish operator activity ({len(df_bull)})")
+            st.caption(
+                "Accumulation, bear traps, downside stop hunts, sell-climax — operators "
+                "appear to be loading up. Consider these as long candidates."
+            )
+            st.dataframe(df_bull[display_cols], width="stretch", hide_index=True)
+
+        if not df_bear.empty:
+            st.markdown(f"### 🔴 Bearish operator activity ({len(df_bear)})")
+            st.caption(
+                "Distribution, bull traps, upside stop hunts, buy-climax — operators "
+                "appear to be unloading. Consider these as short candidates."
+            )
+            st.dataframe(df_bear[display_cols], width="stretch", hide_index=True)
+
+        if not df_neut.empty:
+            st.markdown(f"### ⚪ Neutral / churn ({len(df_neut)})")
+            st.caption(
+                "Operator footprint without a clear directional bias — usually churn "
+                "or stop hunts in both directions. Wait for a directional break."
+            )
+            st.dataframe(df_neut[display_cols], width="stretch", hide_index=True)
+
+        if df_view.empty:
+            st.info("No stocks match the current filters.")
+
+        # ── Column reference ─────────────────────────────────────────────────
+        with st.expander("📋 Column reference"):
+            st.markdown("""
+- **Op Score** — the existing in-engine accumulation score (0–10ish). ≥4 = accumulation, ≥6 = strong operator buying.
+- **Op Label** — text tier of the op-score (`🔥 STRONG OPERATOR`, `🟢 ACCUMULATION`, `🟡 WEAK SIGNS`, `⚪ NONE`).
+- **Trap Bias** — net direction of detected trap patterns. 🟢 BULLISH = accumulation/bear traps dominate; 🔴 BEARISH = distribution/bull traps dominate.
+- **Patterns** — count of active trap patterns, broken down by severity (`H` high · `M` medium · `L` low).
+- **Detected** — comma-separated labels of the actual patterns (BULL TRAP, DISTRIBUTION, etc.).
+- **Trap Risk** — single-flag fast-fail label from the engine: `FALSE BO` (failed breakout), `GAP CHASE`, `DISTRIB`.
+- **VWAP** — close above or below today's VWAP (a quick proxy for institutional control).
+- **Vol Ratio** — today's volume vs 20-day average. Anything ≥ 1.5 is meaningful; ≥ 2.5 is climactic.
+
+### How to use
+Open the **🔬 Stock Analysis** tab and search any ticker shown here for the full pattern explanations, the chart, and the trade plan. The bias here is a *screening* signal — it tells you where to look, not what to do.
+            """)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 4 — SIDE BY SIDE
@@ -3289,160 +3903,16 @@ with tab_stock:
                     st.markdown("---")
 
                     # ── Operator + Trap detection (consumed by scorecards) ───
-                    # Each trap is (severity, label, detail, long_dir, short_dir)
-                    # where dir = +1 (supports), -1 (contradicts), 0 (neutral).
-                    traps = []
+                    # Uses the shared detect_traps() helper — same logic that
+                    # powers the universe-wide Operator Activity tab.
                     try:
                         open_sa = raw_sa["Open"].squeeze().ffill()
-                        N_LOOK = 20
-
-                        if len(close_sa) >= N_LOOK + 5:
-                            body_size  = (close_sa - open_sa).abs()
-                            day_range  = (high_sa - low_sa).replace(0, np.nan)
-                            body_top   = close_sa.combine(open_sa, max)
-                            body_bot   = close_sa.combine(open_sa, min)
-                            upper_wick = high_sa - body_top
-                            lower_wick = body_bot - low_sa
-                            close_pos  = (close_sa - low_sa) / day_range
-                            vol_avg20  = vol_sa.rolling(20).mean()
-                            vol_rat    = vol_sa / vol_avg20
-
-                            p_now   = float(close_sa.iloc[-1])
-                            atr_now = float(rv_sa["atr"])
-                            sw_hi   = float(rv_sa["last_swing_high"])
-                            sw_lo   = float(rv_sa["last_swing_low"])
-
-                            # 1) BULL TRAP — failed breakout above 20d high
-                            recent20_hi = float(high_sa.iloc[-N_LOOK-1:-1].max())
-                            for k in range(-min(7, len(high_sa)-1), 0):
-                                if float(high_sa.iloc[k]) > recent20_hi * 1.001:
-                                    bk_hi = float(high_sa.iloc[k])
-                                    bk_vr = float(vol_rat.iloc[k]) if pd.notna(vol_rat.iloc[k]) else 1.0
-                                    if p_now < bk_hi * 0.99 and bk_vr >= 1.3:
-                                        traps.append(("high",
-                                            "🚨 BULL TRAP — failed breakout",
-                                            f"Broke above ${bk_hi:.2f} on {bk_vr:.1f}× volume {abs(k)} session(s) "
-                                            f"ago, now back below at ${p_now:.2f}. Operator induced retail buying, "
-                                            f"then dumped.",
-                                            -1, +1))
-                                    break
-
-                            # 2) BEAR TRAP — failed breakdown below 20d low
-                            recent20_lo = float(low_sa.iloc[-N_LOOK-1:-1].min())
-                            for k in range(-min(7, len(low_sa)-1), 0):
-                                if float(low_sa.iloc[k]) < recent20_lo * 0.999:
-                                    bk_lo = float(low_sa.iloc[k])
-                                    bk_vr = float(vol_rat.iloc[k]) if pd.notna(vol_rat.iloc[k]) else 1.0
-                                    if p_now > bk_lo * 1.01 and bk_vr >= 1.3:
-                                        traps.append(("high",
-                                            "🚨 BEAR TRAP — failed breakdown",
-                                            f"Broke below ${bk_lo:.2f} on {bk_vr:.1f}× volume {abs(k)} session(s) "
-                                            f"ago, now back above at ${p_now:.2f}. Operator triggered retail "
-                                            f"stops, then ran it up.",
-                                            +1, -1))
-                                    break
-
-                            # 3) STOP HUNT — wick beyond swing on volume
-                            for k in [-1, -2, -3]:
-                                if -k > len(close_sa):
-                                    continue
-                                uw = float(upper_wick.iloc[k]) if pd.notna(upper_wick.iloc[k]) else 0
-                                lw = float(lower_wick.iloc[k]) if pd.notna(lower_wick.iloc[k]) else 0
-                                bd = float(body_size.iloc[k])  if pd.notna(body_size.iloc[k])  else 0
-                                vk = float(vol_rat.iloc[k])    if pd.notna(vol_rat.iloc[k])    else 1.0
-                                hi_k = float(high_sa.iloc[k]); lo_k = float(low_sa.iloc[k]); cl_k = float(close_sa.iloc[k])
-
-                                if uw > 2 * bd and uw > 0.6 * atr_now and vk >= 1.3 \
-                                        and hi_k > sw_hi * 0.998 and cl_k < sw_hi:
-                                    traps.append(("med",
-                                        "🎯 UPSIDE stop hunt",
-                                        f"{abs(k)} session(s) ago: long upper wick (${uw:.2f}) on {vk:.1f}× volume "
-                                        f"probed swing high ${sw_hi:.2f} and rejected. Buy-side stops hunted.",
-                                        -1, +1))
-                                    break
-                                if lw > 2 * bd and lw > 0.6 * atr_now and vk >= 1.3 \
-                                        and lo_k < sw_lo * 1.002 and cl_k > sw_lo:
-                                    traps.append(("med",
-                                        "🎯 DOWNSIDE stop hunt",
-                                        f"{abs(k)} session(s) ago: long lower wick (${lw:.2f}) on {vk:.1f}× volume "
-                                        f"probed swing low ${sw_lo:.2f} and rejected. Sell-side stops hunted.",
-                                        +1, -1))
-                                    break
-
-                            cp10  = float(close_pos.iloc[-10:].mean()) if pd.notna(close_pos.iloc[-10:].mean()) else 0.5
-                            vr10  = float(vol_rat.iloc[-10:].mean())   if pd.notna(vol_rat.iloc[-10:].mean())   else 1.0
-                            ret10 = float((close_sa.iloc[-1] - close_sa.iloc[-10]) / close_sa.iloc[-10])
-
-                            # 4) DISTRIBUTION at top
-                            high20 = float(high_sa.iloc[-20:].max())
-                            if p_now > high20 * 0.95 and cp10 < 0.45 and vr10 > 1.15 and abs(ret10) < 0.04:
-                                traps.append(("high",
-                                    "📤 DISTRIBUTION at top",
-                                    f"Within 5% of recent high but last 10 sessions: avg close in lower "
-                                    f"{cp10*100:.0f}% of daily range, volume {vr10:.1f}× avg, net move only "
-                                    f"{ret10*100:+.1f}%. Smart money distributing to retail.",
-                                    -1, +1))
-
-                            # 5) ACCUMULATION at bottom
-                            low20 = float(low_sa.iloc[-20:].min())
-                            if p_now < low20 * 1.05 and cp10 > 0.55 and vr10 > 1.15 and abs(ret10) < 0.04:
-                                traps.append(("high",
-                                    "📥 ACCUMULATION at bottom",
-                                    f"Within 5% of recent low but last 10 sessions: avg close in upper "
-                                    f"{cp10*100:.0f}% of daily range, volume {vr10:.1f}× avg, net move only "
-                                    f"{ret10*100:+.1f}%. Smart money accumulating from retail.",
-                                    +1, -1))
-
-                            # 6) GAP & REVERSE
-                            for k in [-1, -2]:
-                                if -k > len(close_sa) - 1:
-                                    continue
-                                op_k = float(open_sa.iloc[k]); cl_k = float(close_sa.iloc[k]); pc_k = float(close_sa.iloc[k-1])
-                                gap  = (op_k - pc_k) / pc_k if pc_k else 0
-                                vk   = float(vol_rat.iloc[k]) if pd.notna(vol_rat.iloc[k]) else 1.0
-                                if gap > 0.012 and cl_k < pc_k and vk >= 1.2:
-                                    traps.append(("med",
-                                        "🪤 GAP-UP and reverse",
-                                        f"{abs(k)} session(s) ago: gapped up {gap*100:+.1f}% but closed "
-                                        f"{(cl_k-pc_k)/pc_k*100:+.1f}% below prior close on {vk:.1f}× volume. "
-                                        f"Bullish gap was sold into.",
-                                        -1, +1))
-                                    break
-                                if gap < -0.012 and cl_k > pc_k and vk >= 1.2:
-                                    traps.append(("med",
-                                        "🪤 GAP-DOWN and reverse",
-                                        f"{abs(k)} session(s) ago: gapped down {gap*100:+.1f}% but closed "
-                                        f"{(cl_k-pc_k)/pc_k*100:+.1f}% above prior close on {vk:.1f}× volume. "
-                                        f"Bearish gap was bought up.",
-                                        +1, -1))
-                                    break
-
-                            # 7) CLIMAX / EXHAUSTION
-                            vr_today = float(vol_rat.iloc[-1])  if pd.notna(vol_rat.iloc[-1])  else 1.0
-                            cp_today = float(close_pos.iloc[-1]) if pd.notna(close_pos.iloc[-1]) else 0.5
-                            ret_today = float((close_sa.iloc[-1] - close_sa.iloc[-2]) / close_sa.iloc[-2])
-                            if vr_today >= 2.5 and ret_today > 0.02 and cp_today < 0.4:
-                                traps.append(("med",
-                                    "🌋 BUY climax (exhaustion)",
-                                    f"Today: +{ret_today*100:.1f}% on {vr_today:.1f}× volume but closed in lower "
-                                    f"{cp_today*100:.0f}% of daily range. Late retail buyers filled at the top.",
-                                    -1, +1))
-                            elif vr_today >= 2.5 and ret_today < -0.02 and cp_today > 0.6:
-                                traps.append(("med",
-                                    "🌋 SELL climax (capitulation)",
-                                    f"Today: {ret_today*100:.1f}% on {vr_today:.1f}× volume but closed in upper "
-                                    f"{cp_today*100:.0f}% of daily range. Capitulation; possible bounce.",
-                                    +1, -1))
-
-                            # 8) CHURN — neutral warning
-                            range10_pct = float((close_sa.iloc[-10:].max() - close_sa.iloc[-10:].min()) / close_sa.iloc[-10])
-                            if range10_pct < 0.04 and vr10 > 1.30:
-                                traps.append(("low",
-                                    "🔄 CHURN — sideways heavy volume",
-                                    f"Last 10 sessions: only {range10_pct*100:.1f}% range but volume averaging "
-                                    f"{vr10:.1f}× normal. Heavy hands changing — direction will resolve soon.",
-                                    0, 0))
+                        traps = detect_traps(
+                            open_sa, high_sa, low_sa, close_sa, vol_sa,
+                            rv_sa["atr"], rv_sa["last_swing_high"], rv_sa["last_swing_low"]
+                        )
                     except Exception as trap_err:
+                        traps = []
                         st.caption(f"_trap detector skipped: {trap_err}_")
 
                     # Helper: classify recommendation based on traps + base tier
@@ -5300,8 +5770,8 @@ with tab_backtest:
 # TAB 8 — HELP
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_help:
-    st.markdown("## ❓ How to Use the Swing/Long Term Scanner v13")
-    st.caption("Updated guide for v13: operator/smart-money activity, VWAP confirmation, false-breakout/distribution trap filters, options enrichment, diagnostics, and compact searchable grids.")
+    st.markdown("## ❓ How to Use the Swing/Long Term Scanner v13.1")
+    st.caption("Updated guide for v13.1: live market universe for Operator Activity, operator/smart-money activity, VWAP confirmation, false-breakout/distribution trap filters, options enrichment, diagnostics, and compact searchable grids.")
 
     # ── QUICK START ───────────────────────────────────────────────────────────
     with st.expander("🚀 Quick Start — what to use each tab for", expanded=True):
@@ -5318,6 +5788,7 @@ with tab_help:
 | Find strong 5–7 day buy setups | 📈 Long Setups | Shows bullish swing candidates after scan |
 | Find bearish / short setups | 📉 Short Setups | Shows breakdown / bearish setups |
 | Compare long and short lists | 🔄 Side by Side | Longs and shorts together |
+| Find operator/smart-money footprints | 🪤 Operator Activity | Uses latest scanned live market universe when enabled |
 | Check hot / weak sectors first | 🗂️ Sector Heatmap | Market-aware sector strength map |
 | Analyse one stock deeply | 🔬 Stock Analysis | Chart, indicators, stops, targets, notes |
 | Check upcoming earnings risk | 📅 Earnings | Upcoming earnings + verdict scoring |
@@ -5334,11 +5805,11 @@ After a ticker appears in Long/Short Setups, open **🔬 Stock Analysis** or **�
     # ── MARKET SELECTOR ───────────────────────────────────────────────────────
     with st.expander("🌍 Market selector — what changes per market"):
         st.markdown("""
-The market selector controls the active ticker list, heatmap source, currency formatting, and scan universe.
+The market selector controls the heatmap source, currency formatting, and scan universe. When **Use live market universe** is ON in the sidebar, the scanner fetches tickers from market sources instead of relying only on the curated hard-coded list.
 
 | Feature | 🇺🇸 US | 🇸🇬 SGX | 🇮🇳 India |
 |---|---|---|---|
-| Swing ticker universe | US stocks + ETFs | Singapore `.SI` stocks | NSE `.NS` stocks |
+| Swing ticker universe | Yahoo movers + US index constituents | SGX securities feed / STI fallback | NSE live index constituents |
 | Sector heatmap | US sector ETFs | SG stock-group averages | NSE sector indices |
 | Currency shown | USD `$` | SGD `S$` | INR `₹` |
 | Short setup usefulness | High | Limited | Limited for retail |
@@ -5356,12 +5827,13 @@ The market selector controls the active ticker list, heatmap source, currency fo
 | 📈 **Long Setups** | 5–7 day bullish swing ideas | Uses Bayesian probability + signal score |
 | 📉 **Short Setups** | Bearish setups / breakdowns | Best for US market; use caution elsewhere |
 | 🔄 **Side by Side** | Compare long and short results | Helps spot sector concentration |
+| 🪤 **Operator Activity** | Scan manipulation footprints | Uses the latest scanned live market universe when enabled |
 | 📊 **ETF Holdings** | Pull US ETF holdings into scan universe | Mainly useful for US sector/thematic ETFs |
 | 🔬 **Stock Analysis** | Detailed chart and trade plan for one ticker | Use this before entry |
 | 📅 **Earnings** | Upcoming earnings scanner | Uses EPS trend, MA50/MA200, analyst target/rec |
 | 🌱 **Long Term** | 1–3 year portfolio ideas | SG Stocks + SG Funds/ETFs + US Funds/ETFs |
 | 🔍 **Diagnostics** | Debug signal logic | Shows every pass/fail condition |
-| ❓ **Help** | This guide | Updated for v11 |
+| ❓ **Help** | This guide | Updated for v13.1 |
         """)
 
     # ── SWING LOGIC ───────────────────────────────────────────────────────────
@@ -5485,9 +5957,10 @@ The dividend logic was corrected so abnormal yfinance values do not make stocks 
         """)
 
     # ── OPERATOR / SMART MONEY LAYER ──────────────────────────────────────────
-    with st.expander("🧠 Operator / smart-money layer (v13) — how BUY/SELL accuracy is improved"):
+    with st.expander("🧠 Operator / smart-money layer (v13.1) — live market scan + BUY/SELL accuracy"):
         st.markdown("""
-This version adds a confirmation layer for **operator / institutional footprints**.
+This version adds a confirmation layer for **operator / institutional footprints**. The Operator Activity tab now reads from the latest scanned market universe. With **Use live market universe** ON, the universe comes from Yahoo movers/current US index constituents, SGX market sources, or NSE live index constituents.
+
 It does not blindly buy because probability is high. A cleaner BUY now needs
 technical strength **plus** smart-money confirmation and no trap warning.
 
