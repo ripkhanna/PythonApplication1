@@ -504,17 +504,19 @@ def show_table(df, label, prob_col="Rise Prob"):
     # ── Column selection ──────────────────────────────────────────────────────
     if prob_col == "Rise Prob":
         display_cols = [c for c in [
-            "Ticker", "Entry Quality", "Today %", "Rise Prob", "Score",
-            "Operator", "Op Score", "VWAP", "Trap Risk",
+            "Ticker", "Entry Quality", "Today %", "Rise Prob", 
+            "Operator", "VWAP", "Trap Risk",
             "Price", "MA60 Stop", "TP1 +10%", "TP2 +15%", "TP3 +20%",
             "Sector", "Action",
+            "Score","Op Score",
         ] if c in df.columns]
     else:
         display_cols = [c for c in [
-            "Ticker", "Entry Quality", "Today %", "Fall Prob", "Score",
-            "Operator", "Op Score", "VWAP", "Trap Risk",
+            "Ticker", "Entry Quality", "Today %", "Fall Prob", 
+            "Operator", "VWAP", "Trap Risk",
             "Price", "Cover Stop", "Target 1:1", "Target 1:2",
             "Sector", "Action",
+            "Score","Op Score",
         ] if c in df.columns]
 
     df_disp = df[display_cols] if display_cols else df
@@ -526,9 +528,7 @@ def show_table(df, label, prob_col="Rise Prob"):
         "Today %":       st.column_config.TextColumn("Today%",        width=58),
         "Rise Prob":     st.column_config.TextColumn("Rise%",         width=55),
         "Fall Prob":     st.column_config.TextColumn("Fall%",         width=55),
-        "Score":         st.column_config.TextColumn("Score",         width=50),
         "Operator":      st.column_config.TextColumn("Operator",      width=120),
-        "Op Score":      st.column_config.TextColumn("Op",            width=45),
         "VWAP":          st.column_config.TextColumn("VWAP",          width=60),
         "Trap Risk":     st.column_config.TextColumn("Trap",          width=80),
         "Price":         st.column_config.TextColumn("Price",         width=60),
@@ -541,6 +541,8 @@ def show_table(df, label, prob_col="Rise Prob"):
         "Target 1:2":    st.column_config.TextColumn("T2",            width=62),
         "Sector":        st.column_config.TextColumn("Sector",        width=90),
         "Action":        st.column_config.TextColumn("Action",        width=80),
+        "Op Score":      st.column_config.TextColumn("Op",            width=45),
+        "Score":         st.column_config.TextColumn("Score",         width=50),
     }
     # keep only configs for columns that exist
     cfg = {k: v for k, v in col_cfg.items() if k in df_disp.columns}
@@ -3286,7 +3288,185 @@ with tab_stock:
 
                     st.markdown("---")
 
-                    # ── Signal scorecard ──────────────────────────────────────
+                    # ── Operator + Trap detection (consumed by scorecards) ───
+                    # Each trap is (severity, label, detail, long_dir, short_dir)
+                    # where dir = +1 (supports), -1 (contradicts), 0 (neutral).
+                    traps = []
+                    try:
+                        open_sa = raw_sa["Open"].squeeze().ffill()
+                        N_LOOK = 20
+
+                        if len(close_sa) >= N_LOOK + 5:
+                            body_size  = (close_sa - open_sa).abs()
+                            day_range  = (high_sa - low_sa).replace(0, np.nan)
+                            body_top   = close_sa.combine(open_sa, max)
+                            body_bot   = close_sa.combine(open_sa, min)
+                            upper_wick = high_sa - body_top
+                            lower_wick = body_bot - low_sa
+                            close_pos  = (close_sa - low_sa) / day_range
+                            vol_avg20  = vol_sa.rolling(20).mean()
+                            vol_rat    = vol_sa / vol_avg20
+
+                            p_now   = float(close_sa.iloc[-1])
+                            atr_now = float(rv_sa["atr"])
+                            sw_hi   = float(rv_sa["last_swing_high"])
+                            sw_lo   = float(rv_sa["last_swing_low"])
+
+                            # 1) BULL TRAP — failed breakout above 20d high
+                            recent20_hi = float(high_sa.iloc[-N_LOOK-1:-1].max())
+                            for k in range(-min(7, len(high_sa)-1), 0):
+                                if float(high_sa.iloc[k]) > recent20_hi * 1.001:
+                                    bk_hi = float(high_sa.iloc[k])
+                                    bk_vr = float(vol_rat.iloc[k]) if pd.notna(vol_rat.iloc[k]) else 1.0
+                                    if p_now < bk_hi * 0.99 and bk_vr >= 1.3:
+                                        traps.append(("high",
+                                            "🚨 BULL TRAP — failed breakout",
+                                            f"Broke above ${bk_hi:.2f} on {bk_vr:.1f}× volume {abs(k)} session(s) "
+                                            f"ago, now back below at ${p_now:.2f}. Operator induced retail buying, "
+                                            f"then dumped.",
+                                            -1, +1))
+                                    break
+
+                            # 2) BEAR TRAP — failed breakdown below 20d low
+                            recent20_lo = float(low_sa.iloc[-N_LOOK-1:-1].min())
+                            for k in range(-min(7, len(low_sa)-1), 0):
+                                if float(low_sa.iloc[k]) < recent20_lo * 0.999:
+                                    bk_lo = float(low_sa.iloc[k])
+                                    bk_vr = float(vol_rat.iloc[k]) if pd.notna(vol_rat.iloc[k]) else 1.0
+                                    if p_now > bk_lo * 1.01 and bk_vr >= 1.3:
+                                        traps.append(("high",
+                                            "🚨 BEAR TRAP — failed breakdown",
+                                            f"Broke below ${bk_lo:.2f} on {bk_vr:.1f}× volume {abs(k)} session(s) "
+                                            f"ago, now back above at ${p_now:.2f}. Operator triggered retail "
+                                            f"stops, then ran it up.",
+                                            +1, -1))
+                                    break
+
+                            # 3) STOP HUNT — wick beyond swing on volume
+                            for k in [-1, -2, -3]:
+                                if -k > len(close_sa):
+                                    continue
+                                uw = float(upper_wick.iloc[k]) if pd.notna(upper_wick.iloc[k]) else 0
+                                lw = float(lower_wick.iloc[k]) if pd.notna(lower_wick.iloc[k]) else 0
+                                bd = float(body_size.iloc[k])  if pd.notna(body_size.iloc[k])  else 0
+                                vk = float(vol_rat.iloc[k])    if pd.notna(vol_rat.iloc[k])    else 1.0
+                                hi_k = float(high_sa.iloc[k]); lo_k = float(low_sa.iloc[k]); cl_k = float(close_sa.iloc[k])
+
+                                if uw > 2 * bd and uw > 0.6 * atr_now and vk >= 1.3 \
+                                        and hi_k > sw_hi * 0.998 and cl_k < sw_hi:
+                                    traps.append(("med",
+                                        "🎯 UPSIDE stop hunt",
+                                        f"{abs(k)} session(s) ago: long upper wick (${uw:.2f}) on {vk:.1f}× volume "
+                                        f"probed swing high ${sw_hi:.2f} and rejected. Buy-side stops hunted.",
+                                        -1, +1))
+                                    break
+                                if lw > 2 * bd and lw > 0.6 * atr_now and vk >= 1.3 \
+                                        and lo_k < sw_lo * 1.002 and cl_k > sw_lo:
+                                    traps.append(("med",
+                                        "🎯 DOWNSIDE stop hunt",
+                                        f"{abs(k)} session(s) ago: long lower wick (${lw:.2f}) on {vk:.1f}× volume "
+                                        f"probed swing low ${sw_lo:.2f} and rejected. Sell-side stops hunted.",
+                                        +1, -1))
+                                    break
+
+                            cp10  = float(close_pos.iloc[-10:].mean()) if pd.notna(close_pos.iloc[-10:].mean()) else 0.5
+                            vr10  = float(vol_rat.iloc[-10:].mean())   if pd.notna(vol_rat.iloc[-10:].mean())   else 1.0
+                            ret10 = float((close_sa.iloc[-1] - close_sa.iloc[-10]) / close_sa.iloc[-10])
+
+                            # 4) DISTRIBUTION at top
+                            high20 = float(high_sa.iloc[-20:].max())
+                            if p_now > high20 * 0.95 and cp10 < 0.45 and vr10 > 1.15 and abs(ret10) < 0.04:
+                                traps.append(("high",
+                                    "📤 DISTRIBUTION at top",
+                                    f"Within 5% of recent high but last 10 sessions: avg close in lower "
+                                    f"{cp10*100:.0f}% of daily range, volume {vr10:.1f}× avg, net move only "
+                                    f"{ret10*100:+.1f}%. Smart money distributing to retail.",
+                                    -1, +1))
+
+                            # 5) ACCUMULATION at bottom
+                            low20 = float(low_sa.iloc[-20:].min())
+                            if p_now < low20 * 1.05 and cp10 > 0.55 and vr10 > 1.15 and abs(ret10) < 0.04:
+                                traps.append(("high",
+                                    "📥 ACCUMULATION at bottom",
+                                    f"Within 5% of recent low but last 10 sessions: avg close in upper "
+                                    f"{cp10*100:.0f}% of daily range, volume {vr10:.1f}× avg, net move only "
+                                    f"{ret10*100:+.1f}%. Smart money accumulating from retail.",
+                                    +1, -1))
+
+                            # 6) GAP & REVERSE
+                            for k in [-1, -2]:
+                                if -k > len(close_sa) - 1:
+                                    continue
+                                op_k = float(open_sa.iloc[k]); cl_k = float(close_sa.iloc[k]); pc_k = float(close_sa.iloc[k-1])
+                                gap  = (op_k - pc_k) / pc_k if pc_k else 0
+                                vk   = float(vol_rat.iloc[k]) if pd.notna(vol_rat.iloc[k]) else 1.0
+                                if gap > 0.012 and cl_k < pc_k and vk >= 1.2:
+                                    traps.append(("med",
+                                        "🪤 GAP-UP and reverse",
+                                        f"{abs(k)} session(s) ago: gapped up {gap*100:+.1f}% but closed "
+                                        f"{(cl_k-pc_k)/pc_k*100:+.1f}% below prior close on {vk:.1f}× volume. "
+                                        f"Bullish gap was sold into.",
+                                        -1, +1))
+                                    break
+                                if gap < -0.012 and cl_k > pc_k and vk >= 1.2:
+                                    traps.append(("med",
+                                        "🪤 GAP-DOWN and reverse",
+                                        f"{abs(k)} session(s) ago: gapped down {gap*100:+.1f}% but closed "
+                                        f"{(cl_k-pc_k)/pc_k*100:+.1f}% above prior close on {vk:.1f}× volume. "
+                                        f"Bearish gap was bought up.",
+                                        +1, -1))
+                                    break
+
+                            # 7) CLIMAX / EXHAUSTION
+                            vr_today = float(vol_rat.iloc[-1])  if pd.notna(vol_rat.iloc[-1])  else 1.0
+                            cp_today = float(close_pos.iloc[-1]) if pd.notna(close_pos.iloc[-1]) else 0.5
+                            ret_today = float((close_sa.iloc[-1] - close_sa.iloc[-2]) / close_sa.iloc[-2])
+                            if vr_today >= 2.5 and ret_today > 0.02 and cp_today < 0.4:
+                                traps.append(("med",
+                                    "🌋 BUY climax (exhaustion)",
+                                    f"Today: +{ret_today*100:.1f}% on {vr_today:.1f}× volume but closed in lower "
+                                    f"{cp_today*100:.0f}% of daily range. Late retail buyers filled at the top.",
+                                    -1, +1))
+                            elif vr_today >= 2.5 and ret_today < -0.02 and cp_today > 0.6:
+                                traps.append(("med",
+                                    "🌋 SELL climax (capitulation)",
+                                    f"Today: {ret_today*100:.1f}% on {vr_today:.1f}× volume but closed in upper "
+                                    f"{cp_today*100:.0f}% of daily range. Capitulation; possible bounce.",
+                                    +1, -1))
+
+                            # 8) CHURN — neutral warning
+                            range10_pct = float((close_sa.iloc[-10:].max() - close_sa.iloc[-10:].min()) / close_sa.iloc[-10])
+                            if range10_pct < 0.04 and vr10 > 1.30:
+                                traps.append(("low",
+                                    "🔄 CHURN — sideways heavy volume",
+                                    f"Last 10 sessions: only {range10_pct*100:.1f}% range but volume averaging "
+                                    f"{vr10:.1f}× normal. Heavy hands changing — direction will resolve soon.",
+                                    0, 0))
+                    except Exception as trap_err:
+                        st.caption(f"_trap detector skipped: {trap_err}_")
+
+                    # Helper: classify recommendation based on traps + base tier
+                    def _trap_adjust(base_rec, base_col, my_dir_idx):
+                        """my_dir_idx: 3 for long_dir field, 4 for short_dir."""
+                        contra = [t for t in traps if t[my_dir_idx] == -1]
+                        supp   = [t for t in traps if t[my_dir_idx] == +1]
+                        high_c = sum(1 for t in contra if t[0] == "high")
+                        med_c  = sum(1 for t in contra if t[0] == "med")
+                        high_s = sum(1 for t in supp   if t[0] == "high")
+
+                        if high_c >= 1 and "STRONG" in base_rec:
+                            return "⚠️ TRAP DOWNGRADE — capped at WATCH", "warning", contra, supp
+                        if high_c >= 1:
+                            return f"⚠️ {base_rec} · trap warning", "warning", contra, supp
+                        if med_c >= 2 and "STRONG" in base_rec:
+                            return f"⚠️ {base_rec} · multiple trap warnings", "warning", contra, supp
+                        if high_s >= 1 and "STRONG" in base_rec:
+                            return "💎 STRONG + trap confluence", "success", contra, supp
+                        if high_s >= 1 and ("WATCH" in base_rec or "DEVELOPING" in base_rec):
+                            return f"⭐ {base_rec} · trap support", base_col, contra, supp
+                        return base_rec, base_col, contra, supp
+
+                    # ── Signal scorecard (trap-aware) ────────────────────────
                     col_long_sc, col_short_sc = st.columns(2)
 
                     with col_long_sc:
@@ -3310,25 +3490,48 @@ with tab_stock:
                             icon = "✅" if sig_val else "❌"
                             st.markdown(f"{icon} {sig_name}")
 
-                        # Long action
+                        # Long action — base tier
                         l_bonus_sa = (0.06 if rv_sa["bb_very_tight"] else 0) + (0.05 if rv_sa["vr"] >= 2.5 else 0)
                         l_top3_sa  = long_sig_sa["stoch_confirmed"] or long_sig_sa["bb_bull_squeeze"] or long_sig_sa["macd_accel"]
                         regime_cur = get_market_regime()["regime"]
                         min_score_l = 6 if regime_cur == "BULL" else 7
                         min_prob_l  = 0.72 if regime_cur == "BULL" else 0.78
                         if l_score_sa >= min_score_l and l_prob_sa >= min_prob_l and l_top3_sa:
-                            l_rec = "🔥 STRONG BUY"
-                            l_col = "success"
+                            l_rec_base = "🔥 STRONG BUY"
+                            l_col_base = "success"
                         elif l_score_sa >= 4 and l_prob_sa >= 0.62 and long_sig_sa["trend_daily"]:
-                            l_rec = "👀 WATCH – HIGH QUALITY"
-                            l_col = "info"
+                            l_rec_base = "👀 WATCH – HIGH QUALITY"
+                            l_col_base = "info"
                         elif l_score_sa >= 3 and long_sig_sa["trend_daily"]:
-                            l_rec = "📋 WATCH – DEVELOPING"
-                            l_col = "info"
+                            l_rec_base = "📋 WATCH – DEVELOPING"
+                            l_col_base = "info"
                         else:
-                            l_rec = "⏸️ NO LONG SETUP"
-                            l_col = "warning"
+                            l_rec_base = "⏸️ NO LONG SETUP"
+                            l_col_base = "warning"
+
+                        # Apply trap adjustment (long_dir = field index 3)
+                        l_rec, l_col, l_contra, l_supp = _trap_adjust(l_rec_base, l_col_base, 3)
                         getattr(st, l_col)(f"**Long: {l_rec}**")
+                        if l_rec != l_rec_base:
+                            st.caption(f"_base tier was: {l_rec_base}_")
+
+                        # Trap evidence affecting LONG side — always shown
+                        n_supp_l, n_contra_l = len(l_supp), len(l_contra)
+                        if n_supp_l == 0 and n_contra_l == 0:
+                            st.caption("🪤 **Operator patterns:** ✅ none detected")
+                        else:
+                            parts = []
+                            if n_supp_l:
+                                parts.append(f"⭐ {n_supp_l} supporting")
+                            if n_contra_l:
+                                parts.append(f"⚠️ {n_contra_l} contradicting")
+                            st.markdown(f"🪤 **Operator patterns:** {' · '.join(parts)}")
+                            for sev, label, detail, _, _ in l_supp:
+                                with st.expander(f"⭐ {label}  _(supports long)_", expanded=(sev == "high")):
+                                    st.markdown(detail)
+                            for sev, label, detail, _, _ in l_contra:
+                                with st.expander(f"⚠️ {label}  _(contradicts long)_", expanded=(sev == "high")):
+                                    st.markdown(detail)
 
                     with col_short_sc:
                         st.markdown("#### 📉 Short Signal Scorecard")
@@ -3355,18 +3558,41 @@ with tab_stock:
                         min_prob_s  = 0.68 if regime_cur in ("BEAR","CAUTION") else 0.72
                         s_top3_sa   = short_sig_sa["stoch_overbought"] or short_sig_sa["bb_bear_squeeze"] or short_sig_sa["macd_decel"]
                         if s_score_sa >= min_score_s and s_prob_sa >= min_prob_s and s_top3_sa:
-                            s_rec = "🔥 STRONG SHORT"
-                            s_col = "error"
+                            s_rec_base = "🔥 STRONG SHORT"
+                            s_col_base = "error"
                         elif s_score_sa >= 4 and s_prob_sa >= 0.60 and short_sig_sa["trend_bearish"]:
-                            s_rec = "👀 WATCH SHORT – HQ"
-                            s_col = "warning"
+                            s_rec_base = "👀 WATCH SHORT – HQ"
+                            s_col_base = "warning"
                         elif s_score_sa >= 3 and short_sig_sa["trend_bearish"]:
-                            s_rec = "📋 WATCH SHORT – DEV"
-                            s_col = "warning"
+                            s_rec_base = "📋 WATCH SHORT – DEV"
+                            s_col_base = "warning"
                         else:
-                            s_rec = "⏸️ NO SHORT SETUP"
-                            s_col = "info"
+                            s_rec_base = "⏸️ NO SHORT SETUP"
+                            s_col_base = "info"
+
+                        # Apply trap adjustment (short_dir = field index 4)
+                        s_rec, s_col, s_contra, s_supp = _trap_adjust(s_rec_base, s_col_base, 4)
                         getattr(st, s_col)(f"**Short: {s_rec}**")
+                        if s_rec != s_rec_base:
+                            st.caption(f"_base tier was: {s_rec_base}_")
+
+                        # Trap evidence affecting SHORT side — always shown
+                        n_supp_s, n_contra_s = len(s_supp), len(s_contra)
+                        if n_supp_s == 0 and n_contra_s == 0:
+                            st.caption("🪤 **Operator patterns:** ✅ none detected")
+                        else:
+                            parts = []
+                            if n_supp_s:
+                                parts.append(f"⭐ {n_supp_s} supporting")
+                            if n_contra_s:
+                                parts.append(f"⚠️ {n_contra_s} contradicting")
+                            st.markdown(f"🪤 **Operator patterns:** {' · '.join(parts)}")
+                            for sev, label, detail, _, _ in s_supp:
+                                with st.expander(f"⭐ {label}  _(supports short)_", expanded=(sev == "high")):
+                                    st.markdown(detail)
+                            for sev, label, detail, _, _ in s_contra:
+                                with st.expander(f"⚠️ {label}  _(contradicts short)_", expanded=(sev == "high")):
+                                    st.markdown(detail)
 
                     st.markdown("---")
 
