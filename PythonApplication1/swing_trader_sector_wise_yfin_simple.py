@@ -6549,6 +6549,7 @@ Fixed Bayesian signal weights
 - earnings risk
 - trap risk such as false breakout, gap chase, distribution
 ```
+        """)
 
 # ── QUICK START ─────────────────────────────────────────────────────────
     with st.expander("🚀 Quick Start — what to do first"):
