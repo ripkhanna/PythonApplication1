@@ -1,5 +1,5 @@
 """
-Swing Scanner v13.23 — Bayesian Ensemble
+Swing Scanner v13.26 — Bayesian Ensemble
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -22,13 +22,16 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import ta
-from datetime import datetime
+import json
+from pathlib import Path
+import streamlit.components.v1 as components
+from datetime import datetime, timedelta
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing/Long Term Scanner v13.23",
+    page_title="Swing Scanner v13.26",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -171,8 +174,134 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v13.23")
+st.title("📈 Swing Scanner v13.26")
 st.caption("Swing/Long Term Scanner — Bayesian Ensemble")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CSV RESULT CACHE — load previous scan instantly; refresh on demand / interval
+# ─────────────────────────────────────────────────────────────────────────────
+SCAN_CACHE_DIR = Path("scanner_cache")
+SCAN_CACHE_DIR.mkdir(exist_ok=True)
+
+
+def _market_cache_key(market: str) -> str:
+    if "US" in market:
+        return "us"
+    if "SGX" in market:
+        return "sgx"
+    if "India" in market:
+        return "india"
+    return "market"
+
+
+def _scan_cache_paths(market: str) -> dict:
+    key = _market_cache_key(market)
+    return {
+        "long": SCAN_CACHE_DIR / f"{key}_long_setups.csv",
+        "short": SCAN_CACHE_DIR / f"{key}_short_setups.csv",
+        "operator": SCAN_CACHE_DIR / f"{key}_operator_activity.csv",
+        "meta": SCAN_CACHE_DIR / f"{key}_scan_meta.json",
+    }
+
+
+def _read_csv_if_exists(path: Path) -> pd.DataFrame:
+    try:
+        if path.exists() and path.stat().st_size > 0:
+            return pd.read_csv(path, keep_default_na=False)
+    except Exception:
+        pass
+    return pd.DataFrame()
+
+
+def _save_scan_cache(market: str, df_long: pd.DataFrame, df_short: pd.DataFrame,
+                     df_operator: pd.DataFrame, meta: dict):
+    """Persist latest scan results so the next app start can load instantly.
+    Returns the saved metadata so Diagnostics can show cache timing immediately.
+    """
+    try:
+        paths = _scan_cache_paths(market)
+        df_long.to_csv(paths["long"], index=False)
+        df_short.to_csv(paths["short"], index=False)
+        df_operator.to_csv(paths["operator"], index=False)
+        meta = dict(meta or {})
+        meta.update({
+            "market": market,
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            "long_rows": int(len(df_long)),
+            "short_rows": int(len(df_short)),
+            "operator_rows": int(len(df_operator)),
+        })
+        paths["meta"].write_text(json.dumps(meta, indent=2, default=str), encoding="utf-8")
+        return meta
+    except Exception as e:
+        st.session_state["scan_cache_warning"] = f"CSV cache save failed: {type(e).__name__}: {e}"
+        return None
+
+
+def _load_scan_cache(market: str):
+    """Load the latest cached CSV scan for the selected market, if available."""
+    paths = _scan_cache_paths(market)
+    try:
+        if not paths["meta"].exists():
+            return None
+        meta = json.loads(paths["meta"].read_text(encoding="utf-8"))
+        return {
+            "df_long": _read_csv_if_exists(paths["long"]),
+            "df_short": _read_csv_if_exists(paths["short"]),
+            "df_operator": _read_csv_if_exists(paths["operator"]),
+            "meta": meta,
+        }
+    except Exception as e:
+        st.session_state["scan_cache_warning"] = f"CSV cache load failed: {type(e).__name__}: {e}"
+        return None
+
+
+def _cache_age_minutes(meta: dict):
+    try:
+        saved = datetime.fromisoformat(str(meta.get("saved_at", "")))
+        return max(0.0, (datetime.now() - saved).total_seconds() / 60.0)
+    except Exception:
+        return None
+
+
+def _cache_timing_info(meta: dict, refresh_minutes: int = 0) -> dict:
+    """Return human-readable cache timing status for Diagnostics."""
+    info = {
+        "saved_at_raw": "",
+        "saved_at": "No cache yet",
+        "age_minutes": None,
+        "age_text": "–",
+        "refresh_interval": "Off",
+        "next_refresh_at": "Auto refresh off",
+        "next_refresh_in": "Auto refresh off",
+        "is_due": False,
+    }
+    try:
+        if not meta:
+            return info
+        saved_raw = str(meta.get("saved_at", ""))
+        saved = datetime.fromisoformat(saved_raw)
+        now = datetime.now()
+        age = max(0.0, (now - saved).total_seconds() / 60.0)
+        info["saved_at_raw"] = saved_raw
+        info["saved_at"] = saved.strftime("%Y-%m-%d %H:%M:%S")
+        info["age_minutes"] = age
+        info["age_text"] = f"{age:.1f} min old" if age < 60 else f"{age/60:.1f} hr old"
+        if refresh_minutes and int(refresh_minutes) > 0:
+            refresh_minutes = int(refresh_minutes)
+            next_at = saved + timedelta(minutes=refresh_minutes)
+            remaining = (next_at - now).total_seconds() / 60.0
+            info["refresh_interval"] = f"Every {refresh_minutes} min"
+            info["next_refresh_at"] = next_at.strftime("%Y-%m-%d %H:%M:%S")
+            if remaining <= 0:
+                info["next_refresh_in"] = "Due now / on next reload"
+                info["is_due"] = True
+            else:
+                info["next_refresh_in"] = f"in {remaining:.1f} min"
+        return info
+    except Exception as e:
+        info["saved_at"] = f"Could not parse cache time: {e}"
+        return info
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TICKER UNIVERSE  — v4 curated high-quality list (always scanned)
@@ -2971,7 +3100,7 @@ min_prob_short = st.sidebar.slider("Min SHORT fall prob (%)", 40, 95, 60)
 skip_earnings  = st.sidebar.checkbox("Skip earnings within 7 days", False)
 use_live_universe = st.sidebar.checkbox(
     "Use live market universe",
-    value=False,
+    value=True,
     help="When ON, the scanner and Operator Activity tab fetch the market universe "
          "from live/public market sources first (Yahoo movers + index constituents, "
          "SGX securities feed, NSE index API), then merges them with the full existing "
@@ -2979,7 +3108,7 @@ use_live_universe = st.sidebar.checkbox(
          "This means stocks like UUUU/APP remain scanned even if they are not in today's movers.",
 )
 max_live_universe = st.sidebar.slider(
-    "Max live stocks to scan", 50, 1000, 250, step=25,
+    "Max live stocks to scan", 50, 1000, 1000, step=25,
     help="Limits only the live/Yahoo side of the universe. Existing curated tickers "
          "and always-include tickers are added on top of this limit.",
 )
@@ -3076,6 +3205,27 @@ req_s_decel = st.sidebar.checkbox("Must have MACD deceleration", False)
 st.sidebar.markdown("---")
 st.sidebar.header("Custom tickers")
 extra_input = st.sidebar.text_input("Add tickers (comma-separated)", placeholder="HIMS, NVTS")
+
+st.sidebar.markdown("---")
+st.sidebar.header("CSV result cache")
+load_csv_on_start = st.sidebar.checkbox(
+    "Load latest CSV results on app start",
+    value=True,
+    help="Shows the last completed scan immediately from scanner_cache/*.csv so the UI does not stay blank while a new scan runs.",
+)
+refresh_choice = st.sidebar.radio(
+    "Auto refresh scan",
+    ["Off", "5 min","15 min", "30 min"],
+    index=1,
+    horizontal=True,
+    help="When enabled, the browser reloads on this interval. If the cached scan is older than the interval, the app runs a fresh scan and then writes new CSV files.",
+)
+refresh_minutes = 0 if refresh_choice == "Off" else int(refresh_choice.split()[0])
+if refresh_minutes:
+    components.html(
+        f"<script>setTimeout(function(){{window.parent.location.reload();}}, {refresh_minutes * 60 * 1000});</script>",
+        height=0,
+    )
 
 st.sidebar.markdown("---")
 st.sidebar.markdown(
@@ -3224,7 +3374,67 @@ else:
     _active_tickers = INDIA_TICKERS; _active_sectors = INDIA_SECTOR_ETFS
     _currency_sym = "₹";            _price_fmt = lambda p: f"₹{p:,.2f}"
 
+# ── Load cached CSV results immediately for the selected market ──────────────
+_cache_loaded_note = ""
+_cache_refresh_due = False
+_loaded_cache = None
+if load_csv_on_start:
+    _loaded_cache = _load_scan_cache(market_sel)
+    if _loaded_cache is not None:
+        _meta = _loaded_cache.get("meta", {})
+        _cache_age = _cache_age_minutes(_meta)
+        _cache_timing = _cache_timing_info(_meta, refresh_minutes)
+        st.session_state["scan_cache_meta"] = _meta
+        st.session_state["scan_cache_timing"] = _cache_timing
+        st.session_state["scan_cache_refresh_minutes"] = refresh_minutes
+        st.session_state["scan_cache_refresh_due"] = bool(_cache_timing.get("is_due", False))
+        _cache_market_key = f"{market_sel}:{_meta.get('saved_at','')}"
+        # Only replace session data when this market/cache is new, or when the
+        # selected market differs from the data currently in session.
+        if (st.session_state.get("_loaded_csv_cache_key") != _cache_market_key
+                or st.session_state.get("last_market") != market_sel):
+            st.session_state["df_long"] = _loaded_cache.get("df_long", pd.DataFrame())
+            st.session_state["df_short"] = _loaded_cache.get("df_short", pd.DataFrame())
+            st.session_state["df_operator"] = _loaded_cache.get("df_operator", pd.DataFrame())
+            st.session_state["last_market"] = market_sel
+            st.session_state["last_universe_source"] = _meta.get("universe_source", "CSV cached scan")
+            st.session_state["last_universe_count"] = int(_meta.get("universe_count", 0) or 0)
+            st.session_state["last_live_ticker_count"] = int(_meta.get("live_ticker_count", 0) or 0)
+            st.session_state["last_existing_ticker_count"] = int(_meta.get("existing_ticker_count", len(_active_tickers)) or len(_active_tickers))
+            _tickers_csv = _meta.get("scanned_tickers_csv", "")
+            st.session_state["last_scanned_tickers_csv"] = _tickers_csv
+            st.session_state["last_scanned_tickers"] = [t.strip() for t in _tickers_csv.split(",") if t.strip()]
+            st.session_state["last_scan_opt_enabled"] = bool(_meta.get("options_enabled", False))
+            st.session_state["last_scan_opt_count"] = int(_meta.get("options_count", 0) or 0)
+            st.session_state["last_scan_market"] = market_sel
+            st.session_state["_loaded_csv_cache_key"] = _cache_market_key
+        if _cache_age is not None:
+            _cache_loaded_note = (
+                f"📦 Loaded cached CSV scan from {_meta.get('saved_at','unknown')} "
+                f"({ _cache_age:.0f} min old) · Long {int(_meta.get('long_rows',0))} · "
+                f"Short {int(_meta.get('short_rows',0))}"
+            )
+            if refresh_minutes and _cache_age >= refresh_minutes:
+                _cache_refresh_due = True
+    else:
+        st.session_state["scan_cache_meta"] = {}
+        st.session_state["scan_cache_timing"] = _cache_timing_info({}, refresh_minutes)
+        st.session_state["scan_cache_refresh_minutes"] = refresh_minutes
+        st.session_state["scan_cache_refresh_due"] = False
+        if refresh_minutes:
+            _cache_loaded_note = "📦 No CSV cache found yet. Click Scan once to create it."
+
+if st.session_state.get("scan_cache_warning"):
+    st.warning(st.session_state.get("scan_cache_warning"))
+elif _cache_loaded_note:
+    st.caption(_cache_loaded_note)
+
 # ─────────────────────────────────────────────────────────────────────────────
+# TOP SCAN STATUS PLACEHOLDER
+# Shows loading / scan progress near the top of the page, before tab content.
+# This avoids scan messages appearing below the Sector Heatmap on mobile.
+# ─────────────────────────────────────────────────────────────────────────────
+_top_scan_status = st.empty()
 
 
 tab_sectors, tab_trade_desk, tab_long, tab_swing_picks, tab_short, tab_operator, tab_both, tab_etf, tab_stock, tab_earn, tab_event, tab_lt, tab_diag, tab_backtest, tab_strategy, tab_help = st.tabs([
@@ -3327,7 +3537,12 @@ with tab_sectors:
 col_btn, col_info = st.columns([1, 3])
 
 with col_btn:
-        run = st.button(f"🚀 Scan {market_sel} Stocks", type="primary")
+    _manual_scan = st.button(f"🚀 Scan {market_sel} Stocks", type="primary")
+run = _manual_scan or _cache_refresh_due
+if _cache_refresh_due and not _manual_scan:
+    _top_scan_status.info(
+        f"⏱️ Cached CSV is older than {refresh_minutes} min — refreshing scan and updating CSV files..."
+    )
 with col_info:
     # Show sector preview for the active market
     if market_sel == "🇺🇸 US":
@@ -3381,7 +3596,7 @@ if run:
         # Fetch live ETF holdings only for US (India/SGX use static ticker lists)
         live_sectors = {}
         if market_sel == "🇺🇸 US":
-            st.info("📡 Fetching live US ETF holdings...")
+            _top_scan_status.info("📡 Fetching live US ETF holdings...")
             live_sectors = fetch_sector_constituents(target_per_sector=25)
             if extra_tickers and green_sectors:
                 first_green = green_sectors[0]
@@ -3423,7 +3638,7 @@ if run:
             active_tickers = _unique_keep_order(forced_tickers + active_tickers)
             universe_source = f"{universe_source} + always-include/extra tickers"
 
-        st.info(
+        _top_scan_status.info(
             f"📊 Scanning **{len(active_tickers)} {market_sel} stocks** for signals... "
             f"Universe: **{universe_source}** · "
             f"Live: **{len(live_tickers)}** · Existing: **{len(_active_tickers)}**"
@@ -3437,6 +3652,11 @@ if run:
                 market_tickers=tuple(active_tickers),
                 enable_options=enable_options,
             )
+
+        _top_scan_status.success(
+            f"✅ Scan complete for **{len(active_tickers)} {market_sel} stocks** · "
+            f"Long: **{len(df_long)}** · Short: **{len(df_short)}** · Operator: **{len(df_operator)}**"
+        )
 
         # Apply sidebar filters
         if not df_long.empty:
@@ -3482,6 +3702,33 @@ if run:
         st.session_state["last_scan_opt_enabled"] = enable_options
         st.session_state["last_scan_opt_count"]   = _opt_count_l + _opt_count_s
         st.session_state["last_scan_market"]      = market_sel
+
+        # Persist completed scan to CSV so future app starts load instantly.
+        _saved_cache_meta = _save_scan_cache(
+            market_sel,
+            df_long,
+            df_short,
+            df_operator,
+            {
+                "universe_source": universe_source,
+                "universe_count": len(active_tickers),
+                "live_ticker_count": len(live_tickers),
+                "existing_ticker_count": len(_active_tickers),
+                "scanned_tickers_csv": ", ".join(active_tickers),
+                "options_enabled": bool(enable_options),
+                "options_count": int(_opt_count_l + _opt_count_s),
+                "bucket_cap": bool(use_bucket_cap),
+                "top_n_sectors": int(top_n_sectors),
+                "min_prob_long": int(min_prob_long),
+                "min_prob_short": int(min_prob_short),
+                "skip_earnings": bool(skip_earnings),
+            },
+        )
+        if _saved_cache_meta:
+            st.session_state["scan_cache_meta"] = _saved_cache_meta
+            st.session_state["scan_cache_timing"] = _cache_timing_info(_saved_cache_meta, refresh_minutes)
+            st.session_state["scan_cache_refresh_minutes"] = refresh_minutes
+            st.session_state["scan_cache_refresh_due"] = False
 
 df_long  = st.session_state.get("df_long",  pd.DataFrame())
 df_short = st.session_state.get("df_short", pd.DataFrame())
@@ -5228,7 +5475,7 @@ def _td_score_setup(row, side="BUY"):
     return int(max(0, breakout_score)), b_label, int(max(0, pullback_score)), p_label
 
 
-def _td_make_trade_plan(df, side="BUY", account_size=50000.0, risk_pct=1.0, max_cap_pct=20.0, default_stop_pct=5.0):
+def _td_make_trade_plan(df, side="BUY", account_size=10000.0, risk_pct=1.0, max_cap_pct=20.0, default_stop_pct=5.0):
     """Build execution plans for BUY or SELL/SHORT candidates.
     For SELL, risk is stop above entry and target below entry.
     """
@@ -5447,7 +5694,7 @@ with tab_trade_desk:
         st.markdown("### Trade Plan Generator")
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            td_account = st.number_input("Account size", min_value=1000.0, value=50000.0, step=1000.0, key="td_account")
+            td_account = st.number_input("Account size", min_value=1000.0, value=10000.0, step=1000.0, key="td_account")
         with c2:
             td_risk = st.slider("Risk per trade %", 0.25, 5.0, 1.0, step=0.25, key="td_risk")
         with c3:
@@ -5467,7 +5714,7 @@ with tab_trade_desk:
         st.markdown("### Position Size Calculator")
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            calc_account = st.number_input("Account", min_value=1000.0, value=float(st.session_state.get("td_account", 50000.0)), step=1000.0, key="td_calc_account")
+            calc_account = st.number_input("Account", min_value=1000.0, value=float(st.session_state.get("td_account", 10000.0)), step=1000.0, key="td_calc_account")
         with c2:
             calc_risk = st.slider("Risk %", 0.25, 5.0, float(st.session_state.get("td_risk", 1.0)), step=0.25, key="td_calc_risk")
         with c3:
@@ -7067,6 +7314,25 @@ with tab_lt:
 with tab_diag:
     st.caption("🔍 Diagnostics")
 
+    st.markdown("**CSV cache refresh status**")
+    _diag_meta = st.session_state.get("scan_cache_meta", {})
+    _diag_timing = _cache_timing_info(_diag_meta, refresh_minutes) if _diag_meta else st.session_state.get("scan_cache_timing", _cache_timing_info({}, refresh_minutes))
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Last cache refreshed", _diag_timing.get("saved_at", "No cache yet"))
+    c2.metric("Cache age", _diag_timing.get("age_text", "–"))
+    c3.metric("Refresh interval", _diag_timing.get("refresh_interval", "Off"))
+    c4.metric("Next refresh", _diag_timing.get("next_refresh_in", "Auto refresh off"))
+    st.caption(
+        f"Next expected refresh/check time: **{_diag_timing.get('next_refresh_at', 'Auto refresh off')}** · "
+        f"Cache folder: `{SCAN_CACHE_DIR}`"
+    )
+    if _diag_timing.get("is_due"):
+        st.warning("Cache is due for refresh. With auto refresh ON, the next page reload will run a fresh scan and write new CSV files.")
+    elif refresh_minutes:
+        st.success("Cache refresh timer is active. The app reloads on the selected interval and refreshes if the cache is old enough.")
+    else:
+        st.info("Auto refresh is Off. Use 🚀 Scan to refresh the CSV cache manually, or enable 15/30 min refresh in the sidebar.")
+
     st.markdown("**Stocks scanned in last scan**")
     if last_scanned_tickers:
         st.caption(
@@ -7102,6 +7368,11 @@ with tab_diag:
         diag_logs.append(f"Long setups shown: {len(df_long) if isinstance(df_long, pd.DataFrame) else 0}")
         diag_logs.append(f"Short setups shown: {len(df_short) if isinstance(df_short, pd.DataFrame) else 0}")
         diag_logs.append(f"Operator activity rows: {len(df_operator) if isinstance(df_operator, pd.DataFrame) else 0}")
+        _lt = st.session_state.get("scan_cache_timing", _cache_timing_info(st.session_state.get("scan_cache_meta", {}), refresh_minutes))
+        diag_logs.append(f"Cache last refreshed: {_lt.get('saved_at', 'No cache yet')}")
+        diag_logs.append(f"Cache age: {_lt.get('age_text', '–')}")
+        diag_logs.append(f"Auto refresh interval: {_lt.get('refresh_interval', 'Off')}")
+        diag_logs.append(f"Next refresh/check: {_lt.get('next_refresh_in', 'Auto refresh off')} at {_lt.get('next_refresh_at', 'Auto refresh off')}")
         diag_logs.append(f"Bucket-cap Bayesian: {'ON' if st.session_state.get('use_bucket_cap', True) else 'OFF'}")
         diag_logs.append("Trade Journal: removed from Trade Desk in v13.19")
     except Exception as e:
