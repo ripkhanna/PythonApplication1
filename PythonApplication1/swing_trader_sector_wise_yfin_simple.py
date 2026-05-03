@@ -213,7 +213,7 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing Scanner v13.27")
+st.title("📈 Swing/Long Term Scanner v13.27")
 st.caption("Swing/Long Term Scanner — Bayesian Ensemble")
 
 # ─────────────────────────────────────────────────────────────────────────────
