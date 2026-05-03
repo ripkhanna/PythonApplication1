@@ -1,5 +1,5 @@
 """
-Swing Scanner v13.22 — Bayesian Ensemble
+Swing Scanner v13.23 — Bayesian Ensemble
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -28,7 +28,7 @@ from datetime import datetime
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v13.22",
+    page_title="Swing/Long Term Scanner v13.23",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -43,7 +43,7 @@ st.markdown("""
 
 /* ── Top padding: give room for title ─────────────────────────── */
 .block-container {
-    padding-top: 2.5rem !important;
+    padding-top: 3.0rem !important;
     padding-bottom: 0.5rem !important;
     padding-left: 1rem !important;
     padding-right: 1rem !important;
@@ -143,7 +143,24 @@ div[data-testid="stVerticalBlock"] > div {
 
 /* ── Mobile ───────────────────────────────────────────────────── */
 @media (max-width: 768px) {
-    .block-container { padding: 0.3rem 0.4rem !important; }
+    /* Mobile browser + Streamlit toolbar can cover the first lines.
+       Keep a larger top padding so the title is never hidden. */
+    .block-container {
+        padding-top: 4.2rem !important;
+        padding-left: 0.4rem !important;
+        padding-right: 0.4rem !important;
+        padding-bottom: 0.3rem !important;
+    }
+    h1 {
+        font-size: 1.05rem !important;
+        line-height: 1.25 !important;
+        white-space: normal !important;
+        overflow: visible !important;
+        text-align: left !important;
+        margin-top: 0 !important;
+        margin-bottom: 0.15rem !important;
+    }
+    [data-testid="stCaptionContainer"] { font-size: 0.78rem !important; }
     .stTabs [data-baseweb="tab"] { font-size: 9px !important; padding: 2px 5px !important; }
     .stButton button { width: 100% !important; }
     [data-testid="metric-container"] [data-testid="stMetricValue"] { font-size: 12px !important; }
@@ -154,7 +171,7 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing Scanner v13.22")
+st.title("📈 Swing Scanner v13.23")
 st.caption("Swing/Long Term Scanner — Bayesian Ensemble")
 
 # ─────────────────────────────────────────────────────────────────────────────
