@@ -1,5 +1,5 @@
 """
-Swing Scanner v13.15 — Bayesian Ensemble
+Swing Scanner v13.21 — Bayesian Ensemble
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -28,7 +28,7 @@ from datetime import datetime
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v13.15",
+    page_title="Swing Scanner v13.21",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -148,10 +148,38 @@ div[data-testid="stVerticalBlock"] > div {
     .stButton button { width: 100% !important; }
     [data-testid="metric-container"] [data-testid="stMetricValue"] { font-size: 12px !important; }
 }
+
+/* ── Responsive app title: prevents cut-off on mobile ─────────── */
+.app-title {
+    text-align: center;
+    font-size: clamp(0.95rem, 4vw, 1.35rem);
+    font-weight: 700;
+    line-height: 1.15;
+    margin: 0 0 6px 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: normal;
+}
+.app-title .desktop-title { display: inline; }
+.app-title .mobile-title { display: none; }
+@media (max-width: 480px) {
+    .app-title { font-size: 0.95rem; line-height: 1.2; margin-bottom: 4px; }
+    .app-title .desktop-title { display: none; }
+    .app-title .mobile-title { display: inline; }
+}
+
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v13.15 — Bayesian Ensemble")
+st.markdown(
+    """
+    <div class="app-title">
+      <span class="desktop-title">📈 Swing/Long Term Scanner v13.21 — Bayesian Ensemble</span>
+      <span class="mobile-title">📈 Swing Scanner v13.21</span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TICKER UNIVERSE  — v4 curated high-quality list (always scanned)
@@ -5207,7 +5235,7 @@ def _td_score_setup(row, side="BUY"):
     return int(max(0, breakout_score)), b_label, int(max(0, pullback_score)), p_label
 
 
-def _td_make_trade_plan(df, side="BUY", account_size=10000.0, risk_pct=1.0, max_cap_pct=20.0, default_stop_pct=5.0):
+def _td_make_trade_plan(df, side="BUY", account_size=50000.0, risk_pct=1.0, max_cap_pct=20.0, default_stop_pct=5.0):
     """Build execution plans for BUY or SELL/SHORT candidates.
     For SELL, risk is stop above entry and target below entry.
     """
@@ -5426,7 +5454,7 @@ with tab_trade_desk:
         st.markdown("### Trade Plan Generator")
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            td_account = st.number_input("Account size", min_value=1000.0, value=10000.0, step=1000.0, key="td_account")
+            td_account = st.number_input("Account size", min_value=1000.0, value=50000.0, step=1000.0, key="td_account")
         with c2:
             td_risk = st.slider("Risk per trade %", 0.25, 5.0, 1.0, step=0.25, key="td_risk")
         with c3:
@@ -5446,7 +5474,7 @@ with tab_trade_desk:
         st.markdown("### Position Size Calculator")
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            calc_account = st.number_input("Account", min_value=1000.0, value=float(st.session_state.get("td_account", 10000.0)), step=1000.0, key="td_calc_account")
+            calc_account = st.number_input("Account", min_value=1000.0, value=float(st.session_state.get("td_account", 50000.0)), step=1000.0, key="td_calc_account")
         with c2:
             calc_risk = st.slider("Risk %", 0.25, 5.0, float(st.session_state.get("td_risk", 1.0)), step=0.25, key="td_calc_risk")
         with c3:
@@ -7343,7 +7371,6 @@ Sector Heatmap → Long Setups → Swing Picks → Stock Analysis → Earnings /
 | Tab | Use it for | Latest behavior |
 |---|---|---|
 | 🗂️ **Sector Heatmap** | Check strongest / weakest sectors first | US uses sector ETFs; SGX uses stock-group averages; India uses NSE sector indices |
-| 📋 **Trade Desk** | Execution workflow | Buy/Sell trade plans, position sizing, breakout/pullback or breakdown quality, and market breadth risk mode |
 | 📈 **Long Setups** | Bullish swing candidates | Uses fixed Bayesian bucket-capped probability + operator/VWAP/trap columns |
 | 🎯 **Swing Picks** | Final actionable shortlist | Ranks Long Setups using Final Swing Score: Bayes + operator + news + sector - earnings/trap risk |
 | 📉 **Short Setups** | Bearish / breakdown candidates | Best suited to US market; SGX/India shorting may be limited by broker/product access |
@@ -7356,6 +7383,7 @@ Sector Heatmap → Long Setups → Swing Picks → Stock Analysis → Earnings /
 | 🌱 **Long Term** | 1–3 year stock/fund ideas | Uses existing tickers + ETF tickers + ETF holdings + Yahoo/live tickers |
 | 🔍 **Diagnostics** | Debug and verify scan logic | Shows market, universe source, counts, comma-separated scanned ticker list, and latest UI logs |
 | 🧪 **Accuracy Lab** | Backtest / validation notes | Quick walk-forward validation of signal behavior and swing-target logic |
+| 📋 **Trade Desk** | Execution workflow | Buy/Sell trade plans, position sizing, breakout/pullback or breakdown quality, and market breadth risk mode |
 | 🧠 **Strategy Lab** | Optional ML quality filter | Trains LightGBM/sklearn model on +6% before -4% target; use only if it beats baseline |
 | ❓ **Help** | This guide | Updated for latest tabs and changes |
         """)
