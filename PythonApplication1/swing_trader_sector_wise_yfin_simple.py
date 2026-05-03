@@ -1,5 +1,5 @@
 """
-Swing Scanner v13.26 — Bayesian Ensemble
+Swing Scanner v13.27 — Bayesian Ensemble
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -31,7 +31,7 @@ from datetime import datetime, timedelta
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v13.26",
+    page_title="Swing Scanner v13.27",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -169,12 +169,51 @@ div[data-testid="stVerticalBlock"] > div {
     [data-testid="metric-container"] [data-testid="stMetricValue"] { font-size: 12px !important; }
 }
 
+
+
+/* ── Top scan-status spinner ───────────────────────────────────── */
+.top-scan-box {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    margin: 4px 0 8px 0;
+    border-radius: 8px;
+    background: rgba(49, 130, 206, 0.12);
+    border: 1px solid rgba(49, 130, 206, 0.35);
+    color: inherit;
+    font-size: 12px;
+    line-height: 1.35;
+}
+.top-scan-spinner {
+    width: 15px;
+    height: 15px;
+    min-width: 15px;
+    border: 2px solid rgba(49, 130, 206, 0.25);
+    border-top-color: #3182ce;
+    border-radius: 50%;
+    animation: topScanSpin 0.8s linear infinite;
+}
+@keyframes topScanSpin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+@media (max-width: 768px) {
+    .top-scan-box {
+        position: sticky;
+        top: 0;
+        z-index: 999;
+        font-size: 11px;
+        padding: 7px 8px;
+    }
+}
+
 /* Title uses native Streamlit elements so it remains visible on mobile. */
 
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing Scanner v13.26")
+st.title("📈 Swing Scanner v13.27")
 st.caption("Swing/Long Term Scanner — Bayesian Ensemble")
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3216,7 +3255,7 @@ load_csv_on_start = st.sidebar.checkbox(
 refresh_choice = st.sidebar.radio(
     "Auto refresh scan",
     ["Off", "5 min","15 min", "30 min"],
-    index=1,
+    index=2,
     horizontal=True,
     help="When enabled, the browser reloads on this interval. If the cached scan is older than the interval, the app runs a fresh scan and then writes new CSV files.",
 )
@@ -3437,6 +3476,24 @@ elif _cache_loaded_note:
 _top_scan_status = st.empty()
 
 
+def _show_top_spinner(message: str):
+    """Render a lightweight spinner in the top scan-status placeholder.
+    This stays visible above the tabs, unlike normal st.spinner lower in the page.
+    """
+    try:
+        _top_scan_status.markdown(
+            f"""
+            <div class="top-scan-box">
+                <span class="top-scan-spinner"></span>
+                <span>{message}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    except Exception:
+        _top_scan_status.info(message)
+
+
 tab_sectors, tab_trade_desk, tab_long, tab_swing_picks, tab_short, tab_operator, tab_both, tab_etf, tab_stock, tab_earn, tab_event, tab_lt, tab_diag, tab_backtest, tab_strategy, tab_help = st.tabs([
     "🗂️ Sector Heatmap",
     "📋 Trade Desk",
@@ -3540,7 +3597,7 @@ with col_btn:
     _manual_scan = st.button(f"🚀 Scan {market_sel} Stocks", type="primary")
 run = _manual_scan or _cache_refresh_due
 if _cache_refresh_due and not _manual_scan:
-    _top_scan_status.info(
+    _show_top_spinner(
         f"⏱️ Cached CSV is older than {refresh_minutes} min — refreshing scan and updating CSV files..."
     )
 with col_info:
@@ -3596,7 +3653,7 @@ if run:
         # Fetch live ETF holdings only for US (India/SGX use static ticker lists)
         live_sectors = {}
         if market_sel == "🇺🇸 US":
-            _top_scan_status.info("📡 Fetching live US ETF holdings...")
+            _show_top_spinner("📡 Fetching live US ETF holdings...")
             live_sectors = fetch_sector_constituents(target_per_sector=25)
             if extra_tickers and green_sectors:
                 first_green = green_sectors[0]
@@ -3618,6 +3675,7 @@ if run:
         # Then forced tickers are added on top. This prevents existing names
         # such as UUUU or APP from disappearing from the scan/Diagnostics tab.
         if use_live_universe:
+            _show_top_spinner("🌐 Fetching Yahoo/live market universe...")
             with st.spinner("🌐 Fetching Yahoo/live market universe..."):
                 live_tickers, live_source = fetch_live_market_universe(
                     market_sel, max_symbols=max_live_universe
@@ -3638,10 +3696,10 @@ if run:
             active_tickers = _unique_keep_order(forced_tickers + active_tickers)
             universe_source = f"{universe_source} + always-include/extra tickers"
 
-        _top_scan_status.info(
-            f"📊 Scanning **{len(active_tickers)} {market_sel} stocks** for signals... "
-            f"Universe: **{universe_source}** · "
-            f"Live: **{len(live_tickers)}** · Existing: **{len(_active_tickers)}**"
+        _show_top_spinner(
+            f"📊 Scanning <b>{len(active_tickers)} {market_sel} stocks</b> for signals... "
+            f"Universe: <b>{universe_source}</b> · "
+            f"Live: <b>{len(live_tickers)}</b> · Existing: <b>{len(_active_tickers)}</b>"
         )
 
         with st.spinner(f"Scanning {len(active_tickers)} stocks..."):
