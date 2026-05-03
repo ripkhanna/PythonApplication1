@@ -1,0 +1,21 @@
+# Swing Scanner v13.15 dependencies
+# Install with: pip install -r requirements.txt
+
+streamlit>=1.36.0
+pandas>=2.2.0
+numpy>=1.26.0,<3.0.0
+yfinance>=0.2.40
+ta>=0.11.0
+financedatabase>=2.3.0
+requests>=2.31.0
+nsepython>=2.97
+
+# Strategy Lab / ML backend
+scikit-learn>=1.4.0
+lightgbm>=4.3.0
+
+# Helpful for pandas/yfinance data handling
+lxml>=5.2.0
+html5lib>=1.1
+beautifulsoup4>=4.12.0
+openpyxl>=3.1.2
