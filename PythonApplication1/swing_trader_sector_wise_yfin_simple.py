@@ -3206,8 +3206,9 @@ else:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-tab_sectors, tab_long, tab_swing_picks, tab_short, tab_operator, tab_both, tab_etf, tab_stock, tab_earn, tab_event, tab_lt, tab_diag, tab_backtest, tab_strategy, tab_help = st.tabs([
+tab_sectors, tab_trade_desk, tab_long, tab_swing_picks, tab_short, tab_operator, tab_both, tab_etf, tab_stock, tab_earn, tab_event, tab_lt, tab_diag, tab_backtest, tab_strategy, tab_help = st.tabs([
     "🗂️ Sector Heatmap",
+    "📋 Trade Desk",
     "📈 Long Setups",
     "🎯 Swing Picks",
     "📉 Short Setups",
@@ -5096,6 +5097,418 @@ with tab_swing_picks:
                     st.text_area(label, value=tickers_txt or "–", height=70, key=f"swing_copy_{prefix}")
 
 # ─────────────────────────────────────────────────────────────────────────────
+# TAB — TRADE DESK / EXECUTION TOOLS
+# Adds practical swing-trading workflow tools without changing scanner logic:
+# trade plans, position sizing, setup quality, market breadth/risk mode, journal.
+# ─────────────────────────────────────────────────────────────────────────────
+def _td_num(x, default=0.0):
+    try:
+        if x is None:
+            return default
+        if isinstance(x, (int, float, np.integer, np.floating)):
+            return float(x)
+        s = str(x).replace("%", "").replace("$", "").replace("S$", "").replace("₹", "").replace(",", "").strip()
+        if s in ("", "–", "nan", "None"):
+            return default
+        return float(s)
+    except Exception:
+        return default
+
+
+def _td_score_setup(row, side="BUY"):
+    """Return setup-quality labels from existing row columns only.
+    BUY uses breakout/pullback language. SELL uses breakdown/rally-fade language.
+    This is Trade Desk only; it does not change scanner signals.
+    """
+    side = str(side or "BUY").upper()
+    prob_key = "Fall Prob" if side == "SELL" else "Rise Prob"
+    alt_key = "Bayes Score"
+    prob = _td_num(row.get(prob_key, row.get(alt_key, 0)), 0)
+    if prob <= 1:
+        prob *= 100
+    op = _td_num(row.get("Op Score", row.get("Operator Score", 0)), 0)
+    today = _td_num(row.get("Today %", 0), 0)
+    trap = str(row.get("Trap Risk", "–")).upper()
+    vwap = str(row.get("VWAP", "")).upper()
+    entry_q = str(row.get("Entry Quality", ""))
+    action = str(row.get("Action", "")).upper()
+
+    if side == "SELL":
+        breakdown_score = 0
+        breakdown_score += 2 if prob >= 72 else 1 if prob >= 62 else 0
+        breakdown_score += 2 if op >= 2 else 0   # bearish operator/distribution signs can still appear here
+        breakdown_score += 1 if "BELOW" in vwap else 0
+        breakdown_score += 1 if today < 0 else 0
+        breakdown_score += 1 if "BREAK" in action or "SELL" in action or "SHORT" in action else 0
+        breakdown_score -= 2 if trap == "GAP CHASE" else 0
+
+        fade_score = 0
+        fade_score += 2 if prob >= 68 else 1 if prob >= 58 else 0
+        fade_score += 2 if "DISTRIB" in trap or "FALSE BO" in trap else 0
+        fade_score += 1 if "BELOW" in vwap else 0
+        fade_score += 1 if today <= 0 else 0
+        fade_score += 1 if "WATCH" in entry_q or "AVOID" not in entry_q else 0
+
+        if breakdown_score >= 6:
+            b_label = "A+ Breakdown"
+        elif breakdown_score >= 4:
+            b_label = "Valid Breakdown"
+        elif breakdown_score >= 2:
+            b_label = "Weak Breakdown"
+        else:
+            b_label = "No Breakdown"
+
+        if fade_score >= 5:
+            p_label = "A+ Rally Fade"
+        elif fade_score >= 3:
+            p_label = "Valid Fade"
+        elif fade_score >= 2:
+            p_label = "Early Fade"
+        else:
+            p_label = "No Fade"
+        return int(max(0, breakdown_score)), b_label, int(max(0, fade_score)), p_label
+
+    # BUY side
+    breakout_score = 0
+    breakout_score += 2 if prob >= 72 else 1 if prob >= 62 else 0
+    breakout_score += 2 if op >= 4 else 1 if op >= 2 else 0
+    breakout_score += 1 if "ABOVE" in vwap else 0
+    breakout_score += 1 if today > 0 else 0
+    breakout_score -= 3 if trap in ("FALSE BO", "GAP CHASE", "DISTRIB") else 0
+    breakout_score -= 1 if today > 7 else 0
+
+    pullback_score = 0
+    pullback_score += 2 if prob >= 68 else 1 if prob >= 58 else 0
+    pullback_score += 2 if op >= 4 else 1 if op >= 2 else 0
+    pullback_score += 2 if "PULLBACK" in action or "DIP" in action or "WATCH" in entry_q else 0
+    pullback_score += 1 if "ABOVE" in vwap else 0
+    pullback_score -= 2 if trap in ("FALSE BO", "GAP CHASE", "DISTRIB") else 0
+
+    if breakout_score >= 6:
+        b_label = "A+ Breakout"
+    elif breakout_score >= 4:
+        b_label = "A/B Breakout"
+    elif breakout_score >= 2:
+        b_label = "Weak Breakout"
+    else:
+        b_label = "No Breakout"
+    if trap in ("FALSE BO", "GAP CHASE", "DISTRIB"):
+        b_label = "Trap Risk"
+
+    if pullback_score >= 6:
+        p_label = "A+ Pullback"
+    elif pullback_score >= 4:
+        p_label = "Valid Pullback"
+    elif pullback_score >= 2:
+        p_label = "Early Pullback"
+    else:
+        p_label = "No Pullback"
+
+    return int(max(0, breakout_score)), b_label, int(max(0, pullback_score)), p_label
+
+
+def _td_make_trade_plan(df, side="BUY", account_size=10000.0, risk_pct=1.0, max_cap_pct=20.0, default_stop_pct=5.0):
+    """Build execution plans for BUY or SELL/SHORT candidates.
+    For SELL, risk is stop above entry and target below entry.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+    side = str(side or "BUY").upper()
+    rows = []
+    risk_amount = float(account_size) * float(risk_pct) / 100.0
+    max_capital = float(account_size) * float(max_cap_pct) / 100.0
+    for _, row in df.iterrows():
+        r = row.to_dict()
+        price = _td_num(r.get("Price", 0), 0)
+        if price <= 0:
+            continue
+
+        if side == "SELL":
+            stop = _td_num(r.get("Cover Stop", r.get("MA60 Stop", 0)), 0)
+            if stop <= price:
+                stop = price * (1.0 + float(default_stop_pct) / 100.0)
+            target = _td_num(r.get("Target 1:1", r.get("Target 1:2", 0)), 0)
+            if target <= 0 or target >= price:
+                target = price * 0.92
+            risk_per_share = max(stop - price, 0.01)
+            reward_per_share = max(price - target, 0.0)
+            entry_zone = f"{price*0.995:.2f} - {price*1.005:.2f}"
+            invalidation = f"Close above {stop:.2f} or short squeeze / bullish reversal appears"
+            target_name = "Cover Target"
+        else:
+            stop = _td_num(r.get("MA60 Stop", r.get("Cover Stop", 0)), 0)
+            if stop <= 0 or stop >= price:
+                stop = price * (1.0 - float(default_stop_pct) / 100.0)
+            target = _td_num(r.get("TP1 +10%", r.get("Target 1:1", 0)), 0)
+            if target <= price:
+                target = price * 1.08
+            risk_per_share = max(price - stop, 0.01)
+            reward_per_share = max(target - price, 0.0)
+            entry_zone = f"{price*0.995:.2f} - {price*1.005:.2f}"
+            invalidation = f"Close below {stop:.2f} or trap risk appears"
+            target_name = "Target 1"
+
+        qty_by_risk = int(risk_amount // risk_per_share) if risk_per_share > 0 else 0
+        qty_by_cap = int(max_capital // price) if price > 0 else 0
+        qty = max(0, min(qty_by_risk, qty_by_cap))
+        capital = qty * price
+        max_loss = qty * risk_per_share
+        rr = reward_per_share / risk_per_share if risk_per_share else 0
+        b_score, b_label, p_score, p_label = _td_score_setup(r, side=side)
+        verdict = str(r.get("Swing Verdict", r.get("Entry Quality", "")))
+        trap = str(r.get("Trap Risk", "–")).upper()
+        if side == "BUY" and trap in ("FALSE BO", "GAP CHASE", "DISTRIB"):
+            allowed_size = "Avoid"
+        elif side == "SELL" and trap == "GAP CHASE":
+            allowed_size = "Avoid"
+        elif verdict.startswith("✅") and rr >= 1.5:
+            allowed_size = "Normal"
+        elif verdict.startswith(("✅", "👀")) and rr >= 1.0:
+            allowed_size = "Half"
+        else:
+            allowed_size = "Watch only"
+
+        rows.append({
+            "Side": "SELL/SHORT" if side == "SELL" else "BUY/LONG",
+            "Ticker": r.get("Ticker", ""),
+            "Plan Verdict": verdict or "–",
+            "Entry Zone": entry_zone,
+            "Entry": round(price, 3),
+            "Stop": round(stop, 3),
+            target_name: round(target, 3),
+            "Risk %": round((risk_per_share / price) * 100.0, 2),
+            "R:R": round(rr, 2),
+            "Suggested Qty": qty,
+            "Capital Needed": round(capital, 2),
+            "Max Loss": round(max_loss, 2),
+            "Allowed Size": allowed_size,
+            "Primary Quality": b_label,
+            "Secondary Quality": p_label,
+            "Operator": r.get("Operator", "–"),
+            "Trap Risk": r.get("Trap Risk", "–"),
+            "Invalidation": invalidation,
+        })
+    return pd.DataFrame(rows)
+
+
+def _td_sort_trade_plans(plan_df, side="BUY"):
+    """Sort Trade Desk plans so executable BUY/SELL verdicts appear first.
+    This is display-only and does not change scanner signals.
+    """
+    if plan_df is None or plan_df.empty or "Plan Verdict" not in plan_df.columns:
+        return plan_df
+    side = str(side or "BUY").upper()
+
+    def _rank_verdict(v):
+        s = str(v).upper()
+        # Put the true action for the selected side first.
+        if side == "SELL":
+            if "SELL" in s or "SHORT" in s or s.startswith("✅"):
+                return 0
+            if "WATCH" in s or s.startswith("👀"):
+                return 1
+            if "WAIT" in s or s.startswith("⏳"):
+                return 2
+            if "AVOID" in s or s.startswith("🚫"):
+                return 4
+            return 3
+        else:
+            if "BUY" in s or "LONG" in s or s.startswith("✅"):
+                return 0
+            if "WATCH" in s or s.startswith("👀"):
+                return 1
+            if "WAIT" in s or s.startswith("⏳"):
+                return 2
+            if "AVOID" in s or s.startswith("🚫"):
+                return 4
+            return 3
+
+    out = plan_df.copy()
+    out["_plan_rank"] = out["Plan Verdict"].apply(_rank_verdict)
+    sort_cols = ["_plan_rank"]
+    asc = [True]
+    for c in ["Allowed Size", "R:R", "Primary Quality", "Risk %"]:
+        if c in out.columns:
+            sort_cols.append(c)
+            # R:R should be high first; Risk % low first; text columns stable enough.
+            asc.append(False if c in ("R:R", "Primary Quality") else True)
+    out = out.sort_values(sort_cols, ascending=asc, kind="mergesort")
+    return out.drop(columns=["_plan_rank"], errors="ignore")
+
+
+def _td_market_breadth(df_long, df_short, df_operator, regime_dict):
+    long_n = 0 if df_long is None or df_long.empty else len(df_long)
+    short_n = 0 if df_short is None or df_short.empty else len(df_short)
+    op_strong = 0
+    if df_operator is not None and not df_operator.empty and "Operator" in df_operator.columns:
+        op_strong = int(df_operator["Operator"].astype(str).str.contains("STRONG|ACCUMULATION", case=False, na=False).sum())
+    total = max(long_n + short_n, 1)
+    long_pct = long_n / total * 100.0
+    short_pct = short_n / total * 100.0
+    regime = str(regime_dict.get("regime", "UNKNOWN")) if isinstance(regime_dict, dict) else "UNKNOWN"
+    vix = float(regime_dict.get("vix", 0) or 0) if isinstance(regime_dict, dict) else 0
+    if regime == "BULL" and long_pct >= 60 and vix < 22:
+        mode = "Aggressive"
+        max_size = "Normal size allowed"
+    elif regime in ("BULL", "CAUTION") and long_pct >= 50 and vix < 25:
+        mode = "Normal"
+        max_size = "Normal / half size"
+    elif regime == "BEAR" or short_pct > long_pct or vix >= 25:
+        mode = "Defensive"
+        max_size = "Half size or cash; shorts allowed if liquid"
+    else:
+        mode = "Selective"
+        max_size = "Only A+ setups"
+    return pd.DataFrame([{
+        "Regime": regime,
+        "VIX": round(vix, 2),
+        "Long Setups": long_n,
+        "Short Setups": short_n,
+        "Long % of Setups": round(long_pct, 1),
+        "Short % of Setups": round(short_pct, 1),
+        "Strong Operator Count": op_strong,
+        "Risk Mode": mode,
+        "Position Guidance": max_size,
+    }])
+
+
+with tab_trade_desk:
+    st.caption("📋 Trade Desk — execution tools added without changing scanner signals")
+    st.info("Trade Desk supports both BUY/LONG and SELL/SHORT planning. By default it mirrors Long Setups for BUY and Short Setups for SELL; filters only reduce rows when you apply them.")
+
+    # ── Top controls: side + filters before any grid ───────────────────────
+    tc1, tc2, tc3, tc4, tc5 = st.columns([1.1, 1.1, 1.1, 1.1, 1.4])
+    with tc1:
+        td_side = st.radio("Buy / Sell", ["BUY", "SELL"], horizontal=True, key="td_side_top")
+    with tc2:
+        td_min_prob = st.slider("Min probability %", 0, 95, 0, step=5, key="td_min_prob")
+    with tc3:
+        td_entry_filter = st.selectbox("Entry filter", ["All", "✅ BUY", "👀 WATCH", "⏳ WAIT", "🚫 AVOID"], key="td_entry_filter")
+    with tc4:
+        td_trap_filter = st.selectbox("Trap filter", ["All", "No trap only", "Trap only"], key="td_trap_filter")
+    with tc5:
+        td_ticker_filter = st.text_input("Ticker contains", "", key="td_ticker_filter").upper().strip()
+
+    if td_side == "SELL":
+        # Trade Desk SELL must mirror the Short Setups tab by default.
+        # Filters below are optional and default to showing everything.
+        source_df = df_short.copy() if isinstance(df_short, pd.DataFrame) else pd.DataFrame()
+        source_label = "Short Setups"
+        prob_col = "Fall Prob"
+    else:
+        # Trade Desk BUY must mirror the Long Setups tab by default.
+        # Swing Picks is a stricter shortlist, so using it here made Trade Desk
+        # show fewer trades than the Long Setups tab. Keep Trade Desk execution
+        # plans based on df_long and let the user filter down manually.
+        source_df = df_long.copy() if isinstance(df_long, pd.DataFrame) else pd.DataFrame()
+        source_label = "Long Setups"
+        prob_col = "Rise Prob"
+
+    filtered_source_df = source_df.copy() if isinstance(source_df, pd.DataFrame) else pd.DataFrame()
+    if filtered_source_df is not None and not filtered_source_df.empty:
+        if prob_col in filtered_source_df.columns:
+            _p = filtered_source_df[prob_col].astype(str).str.replace("%", "", regex=False).replace("", np.nan)
+            filtered_source_df = filtered_source_df[pd.to_numeric(_p, errors="coerce").fillna(0) >= td_min_prob]
+        if td_entry_filter != "All" and "Entry Quality" in filtered_source_df.columns:
+            filtered_source_df = filtered_source_df[filtered_source_df["Entry Quality"].astype(str).str.startswith(td_entry_filter.split()[0], na=False)]
+        if td_trap_filter != "All" and "Trap Risk" in filtered_source_df.columns:
+            trap_series = filtered_source_df["Trap Risk"].astype(str).str.strip()
+            no_trap = trap_series.isin(["–", "-", "", "None", "nan"])
+            filtered_source_df = filtered_source_df[no_trap] if td_trap_filter == "No trap only" else filtered_source_df[~no_trap]
+        if td_ticker_filter and "Ticker" in filtered_source_df.columns:
+            filtered_source_df = filtered_source_df[filtered_source_df["Ticker"].astype(str).str.upper().str.contains(td_ticker_filter, na=False)]
+
+    st.caption(f"Side: {td_side} · Source: {source_label} · Filtered candidates: {0 if filtered_source_df is None else len(filtered_source_df)}")
+
+    td_tabs = st.tabs(["🧾 Trade Plans", "⚖️ Position Sizing", "⭐ Setup Quality", "🌊 Market Breadth"])
+
+    with td_tabs[0]:
+        st.markdown("### Trade Plan Generator")
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            td_account = st.number_input("Account size", min_value=1000.0, value=10000.0, step=1000.0, key="td_account")
+        with c2:
+            td_risk = st.slider("Risk per trade %", 0.25, 5.0, 1.0, step=0.25, key="td_risk")
+        with c3:
+            td_cap = st.slider("Max capital per trade %", 2.0, 50.0, 20.0, step=1.0, key="td_cap")
+        with c4:
+            td_stop = st.slider("Fallback stop %", 2.0, 12.0, 5.0, step=0.5, key="td_stop")
+        if filtered_source_df is None or filtered_source_df.empty:
+            st.warning("Run 🚀 Scan or relax the top filters to build trade plans.")
+        else:
+            plan_df = _td_make_trade_plan(filtered_source_df, side=td_side, account_size=td_account, risk_pct=td_risk, max_cap_pct=td_cap, default_stop_pct=td_stop)
+            plan_df = _td_sort_trade_plans(plan_df, side=td_side)
+            st.caption(f"Side: {td_side} · Source: {source_label} · {len(plan_df)} planned candidates · Action verdicts sorted first")
+            st.dataframe(plan_df, width="stretch", hide_index=True, height=min(460, 38 + 35 * len(plan_df)))
+            st.download_button("Download trade plans CSV", plan_df.to_csv(index=False).encode("utf-8"), "trade_plans.csv", "text/csv", key="td_plan_download")
+
+    with td_tabs[1]:
+        st.markdown("### Position Size Calculator")
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            calc_account = st.number_input("Account", min_value=1000.0, value=float(st.session_state.get("td_account", 10000.0)), step=1000.0, key="td_calc_account")
+        with c2:
+            calc_risk = st.slider("Risk %", 0.25, 5.0, float(st.session_state.get("td_risk", 1.0)), step=0.25, key="td_calc_risk")
+        with c3:
+            calc_entry = st.number_input("Entry price", min_value=0.0001, value=100.0, step=1.0, key="td_calc_entry")
+        with c4:
+            calc_stop = st.number_input("Stop price", min_value=0.0001, value=95.0, step=1.0, key="td_calc_stop")
+        risk_amt = calc_account * calc_risk / 100.0
+        risk_per_share = abs(calc_entry - calc_stop)
+        if risk_per_share <= 0:
+            risk_per_share = 0.0001
+        qty = int(risk_amt // risk_per_share)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Risk amount", f"{risk_amt:,.2f}")
+        c2.metric("Risk/share", f"{risk_per_share:,.2f}")
+        c3.metric("Suggested Qty", f"{qty:,}")
+        c4.metric("Capital needed", f"{qty * calc_entry:,.2f}")
+        st.caption(f"Side: {td_side}. Formula: quantity = account risk amount / absolute entry-stop risk.")
+
+    with td_tabs[2]:
+        st.markdown("### Breakout / Pullback Quality Score")
+        if filtered_source_df is None or filtered_source_df.empty:
+            st.warning("No setup data after filters.")
+        else:
+            rows = []
+            for _, r in filtered_source_df.iterrows():
+                b_score, b_label, p_score, p_label = _td_score_setup(r, side=td_side)
+                rows.append({
+                    "Side": "SELL/SHORT" if td_side == "SELL" else "BUY/LONG",
+                    "Ticker": r.get("Ticker", ""),
+                    "Primary Score": b_score,
+                    "Primary Quality": b_label,
+                    "Secondary Score": p_score,
+                    "Secondary Quality": p_label,
+                    prob_col: r.get(prob_col, r.get("Bayes Score", "–")),
+                    "Operator": r.get("Operator", "–"),
+                    "Op Score": r.get("Op Score", r.get("Operator Score", "–")),
+                    "VWAP": r.get("VWAP", "–"),
+                    "Trap Risk": r.get("Trap Risk", "–"),
+                    "Today %": r.get("Today %", "–"),
+                    "Entry Quality": r.get("Entry Quality", "–"),
+                })
+            qdf = pd.DataFrame(rows).sort_values(["Primary Score", "Secondary Score"], ascending=False)
+            st.dataframe(qdf, width="stretch", hide_index=True, height=min(460, 38 + 35 * len(qdf)))
+
+    with td_tabs[3]:
+        st.markdown("### Market Breadth + Risk Mode")
+        regime_info = get_market_regime() if market_sel == "🇺🇸 US" else {"regime": "LOCAL", "vix": 0}
+        breadth_df = _td_market_breadth(df_long, df_short, df_operator, regime_info)
+        st.dataframe(breadth_df, width="stretch", hide_index=True)
+        mode = str(breadth_df.iloc[0].get("Risk Mode", "Selective")) if not breadth_df.empty else "Selective"
+        if mode == "Aggressive":
+            st.success("Market breadth supports taking the best long setups with normal risk controls.")
+        elif mode == "Normal":
+            st.info("Market breadth is acceptable. Prefer high-quality setups and avoid trap-risk names.")
+        elif mode == "Defensive":
+            st.warning("Defensive mode: reduce size, avoid marginal longs, and consider short setups only if liquid/borrowable.")
+        else:
+            st.warning("Selective mode: only trade A+ setups with strong operator confirmation.")
+        st.caption("Breadth uses current scan counts plus SPY/VIX regime for US. It is a risk overlay, not a signal replacement.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # TAB — STRATEGY LAB / OPTIONAL ML QUALITY FILTER
 # ─────────────────────────────────────────────────────────────────────────────
 def _strategy_auc(y_true, scores):
@@ -6655,6 +7068,32 @@ with tab_diag:
     else:
         st.info("Run 🚀 Scan first to show the exact comma-separated list of stocks scanned.")
 
+    st.markdown("**Logs / scan notes**")
+    st.caption("These are UI-level diagnostics from the latest scan/session. They are not a separate file log.")
+    diag_logs = []
+    try:
+        diag_logs.append(f"Market selected: {market_sel}")
+        diag_logs.append(f"Market regime: {regime}")
+        diag_logs.append(f"Universe source: {last_universe_source if last_universe_source else 'No scan yet'}")
+        diag_logs.append(f"Scanned tickers: {len(last_scanned_tickers) if last_scanned_tickers else 0}")
+        diag_logs.append(f"Live tickers used: {last_live_ticker_count}")
+        diag_logs.append(f"Existing tickers used: {last_existing_ticker_count}")
+        diag_logs.append(f"Long setups shown: {len(df_long) if isinstance(df_long, pd.DataFrame) else 0}")
+        diag_logs.append(f"Short setups shown: {len(df_short) if isinstance(df_short, pd.DataFrame) else 0}")
+        diag_logs.append(f"Operator activity rows: {len(df_operator) if isinstance(df_operator, pd.DataFrame) else 0}")
+        diag_logs.append(f"Bucket-cap Bayesian: {'ON' if st.session_state.get('use_bucket_cap', True) else 'OFF'}")
+        diag_logs.append("Trade Journal: removed from Trade Desk in v13.19")
+    except Exception as e:
+        diag_logs.append(f"Diagnostics log build error: {e}")
+    st.text_area(
+        "Latest UI logs",
+        value="\n".join(diag_logs),
+        height=190,
+        key="diag_latest_logs",
+        disabled=True,
+    )
+    st.info("To see these logs in the UI: run Scan, open 🔍 Diagnostics, then read the 'Logs / scan notes' box above. For ticker-level reasons, enter a ticker below.")
+
     diag_input = st.text_input("Enter ticker(s)", placeholder="NVDA, TSLA, AMD")
     for t in [x.strip().upper() for x in diag_input.split(",") if x.strip()]:
         with st.expander(f"{t} — full condition breakdown", expanded=True):
@@ -6856,9 +7295,9 @@ This is more realistic than the old binary label: `price is higher after N days`
 # TAB 8 — HELP
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_help:
-    st.markdown("## ❓ How to Use the Swing/Long Term Scanner v13.14")
+    st.markdown("## ❓ How to Use the Swing/Long Term Scanner v13.19")
     st.caption(
-        "Latest guide: fixed bucket-capped Bayesian scoring, Bayesian ensemble ranking, optional Strategy Lab ML filter, "
+        "Latest guide: fixed bucket-capped Bayesian scoring, Bayesian ensemble ranking, Trade Desk execution tools, optional Strategy Lab ML filter, "
         "Yahoo/live + existing ticker universe, operator/smart-money activity, earnings/news "
         "risk checks, Swing Picks, Long Term combined universe, Diagnostics scanned ticker list, "
         "and compact searchable grids. Old simple ML and calibration tools have been removed; Strategy Lab adds optional LightGBM/sklearn quality filtering only when it beats the Bayesian baseline."
@@ -6904,6 +7343,7 @@ Sector Heatmap → Long Setups → Swing Picks → Stock Analysis → Earnings /
 | Tab | Use it for | Latest behavior |
 |---|---|---|
 | 🗂️ **Sector Heatmap** | Check strongest / weakest sectors first | US uses sector ETFs; SGX uses stock-group averages; India uses NSE sector indices |
+| 📋 **Trade Desk** | Execution workflow | Buy/Sell trade plans, position sizing, breakout/pullback or breakdown quality, and market breadth risk mode |
 | 📈 **Long Setups** | Bullish swing candidates | Uses fixed Bayesian bucket-capped probability + operator/VWAP/trap columns |
 | 🎯 **Swing Picks** | Final actionable shortlist | Ranks Long Setups using Final Swing Score: Bayes + operator + news + sector - earnings/trap risk |
 | 📉 **Short Setups** | Bearish / breakdown candidates | Best suited to US market; SGX/India shorting may be limited by broker/product access |
@@ -6914,7 +7354,7 @@ Sector Heatmap → Long Setups → Swing Picks → Stock Analysis → Earnings /
 | 📅 **Earnings** | Earnings date and earnings-risk review | Helps avoid fresh swing buys just before earnings |
 | 📰 **Event Predictor** | News / event catalyst scan | Uses news headlines, sentiment, order/contract/catalyst keywords where available |
 | 🌱 **Long Term** | 1–3 year stock/fund ideas | Uses existing tickers + ETF tickers + ETF holdings + Yahoo/live tickers |
-| 🔍 **Diagnostics** | Debug and verify scan logic | Shows market, universe source, counts, and comma-separated scanned ticker list |
+| 🔍 **Diagnostics** | Debug and verify scan logic | Shows market, universe source, counts, comma-separated scanned ticker list, and latest UI logs |
 | 🧪 **Accuracy Lab** | Backtest / validation notes | Quick walk-forward validation of signal behavior and swing-target logic |
 | 🧠 **Strategy Lab** | Optional ML quality filter | Trains LightGBM/sklearn model on +6% before -4% target; use only if it beats baseline |
 | ❓ **Help** | This guide | Updated for latest tabs and changes |
