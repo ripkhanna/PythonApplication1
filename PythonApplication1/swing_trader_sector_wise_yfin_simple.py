@@ -381,6 +381,64 @@ SHORT_WEIGHTS = {
 BASE_RATE = 0.50
 
 # ─────────────────────────────────────────────────────────────────────────────
+# v13.7: SIGNAL CORRELATION BUCKETS
+# Bayesian probability assumes independent evidence. Many of our signals are
+# heavily correlated — `trend_daily`, `weekly_trend`, `full_ma_stack`,
+# `near_52w_high`, `golden_cross` all measure the same latent "uptrend"
+# factor. When five correlated signals fire, the engine multiplies the odds
+# ratio as if we had five independent witnesses, when really we have one
+# witness shouting five times. This pegs probability at 95% on setups that
+# historically win ~60%.
+#
+# Fix: group signals into categories. Within each bucket, sort by weight
+# desc and shrink the k-th signal's contribution toward base rate by
+# BUCKET_DECAY^k. So the strongest signal in a bucket counts in full, the
+# next at half-strength, the third at quarter, etc. This preserves the
+# Bayesian update math but stops correlated evidence from double-counting.
+# ─────────────────────────────────────────────────────────────────────────────
+SIGNAL_BUCKETS = {
+    # ── Long buckets ──────────────────────────────────────────────────────────
+    # Trend / structure of the prevailing direction
+    "trend_daily":     "trend", "weekly_trend":   "trend",
+    "full_ma_stack":   "trend", "golden_cross":   "trend",
+    "near_52w_high":   "trend", "higher_lows":    "trend",
+    # Momentum oscillators / acceleration
+    "macd_accel":      "momentum", "macd_cross":      "momentum",
+    "momentum_3d":     "momentum", "rsi_confirmed":   "momentum",
+    "stoch_confirmed": "momentum", "atr_expansion":   "momentum",
+    # Volume / accumulation footprints
+    "volume":          "volume", "vol_surge_up":   "volume",
+    "vol_breakout":    "volume", "pocket_pivot":   "volume",
+    "obv_rising":      "volume", "operator_accumulation": "volume",
+    # Volatility regime
+    "bb_bull_squeeze": "volatility", "vcp_tightness": "volatility",
+    # Intra-day / candle / VWAP structure
+    "strong_close":    "structure", "vwap_support":  "structure",
+    "bull_candle":     "structure",
+    # Relative strength vs market / sector
+    "rel_strength":    "relative", "rs_momentum":   "relative",
+    "sector_leader":   "relative",
+    # Forward-looking options layer
+    "opt_unusual_call_flow": "options", "opt_call_skew_bullish": "options",
+    "opt_pc_volume_low":     "options", "opt_iv_cheap":          "options",
+    # Trend-strength regulator (single-signal bucket — never decayed)
+    "adx":             "adx_long",
+
+    # ── Short buckets (parallel categories) ───────────────────────────────────
+    "trend_bearish":   "trend",    "lower_highs":    "trend",
+    "macd_decel":      "momentum", "macd_cross_bear":"momentum",
+    "rsi_cross_bear":  "momentum", "stoch_overbought":"momentum",
+    "vol_breakdown":   "volume",   "high_volume_down":"volume",
+    "operator_distribution": "volume",
+    "bb_bear_squeeze": "volatility",
+    "below_vwap":      "structure",
+    "opt_unusual_put_flow":  "options", "opt_put_skew_bearish": "options",
+    "opt_term_inversion":    "options", "opt_pc_volume_high":   "options",
+    "adx_bear":        "adx_short",
+}
+BUCKET_DECAY = 0.5   # 1st in bucket: full · 2nd: half · 3rd: quarter · ...
+
+# ─────────────────────────────────────────────────────────────────────────────
 # FinanceDatabase
 # ─────────────────────────────────────────────────────────────────────────────
 try:
@@ -429,15 +487,74 @@ def find_swing_highs(high_series, lookback_bars=60, n_side=3):
     return highs
 
 
-def bayesian_prob(weights_dict, active_signals, bonus=0.0):
-    """Exact v5 Bayesian probability engine."""
+def bayesian_prob(weights_dict, active_signals, bonus=0.0, use_buckets=True):
+    """
+    Bayesian-style probability with two v13.7 fixes layered transparently:
+
+      1. CALIBRATED WEIGHTS (session-scoped):
+         If the caller passed the module-level LONG_WEIGHTS or SHORT_WEIGHTS
+         object AND the user has run "Calibrate weights" in the Backtest tab,
+         we substitute the measured per-signal hit rates (clipped to a sane
+         range) for the hand-set defaults. Other call sites that pass a
+         custom dict are unaffected.
+
+      2. BUCKET-CAP for correlated signals (default ON):
+         Many signals are statistically dependent ("trend_daily" + "weekly_trend"
+         + "full_ma_stack" all measure the same uptrend). Naive Bayesian update
+         multiplies their odds ratios as if independent, which over-counts
+         evidence and pegs probability at 95% on setups that win ~60%.
+         Group active signals by SIGNAL_BUCKETS, sort within bucket by weight
+         desc, and shrink the k-th signal's distance from BASE_RATE by
+         BUCKET_DECAY**k. Pure cosmetic to evidence weight — Bayesian update
+         math itself is unchanged.
+    """
+    # ── 1. Calibrated-weights override ─────────────────────────────────────
+    try:
+        if weights_dict is LONG_WEIGHTS:
+            cal = st.session_state.get("calibrated_long_weights")
+            if cal: weights_dict = cal
+        elif weights_dict is SHORT_WEIGHTS:
+            cal = st.session_state.get("calibrated_short_weights")
+            if cal: weights_dict = cal
+    except Exception:
+        pass
+
+    # Allow runtime kill-switch from sidebar (debugging / A-B comparison)
+    try:
+        if not st.session_state.get("use_bucket_cap", True):
+            use_buckets = False
+    except Exception:
+        pass
+
+    # ── 2. Build effective (key, weight) list with optional bucket-cap ────
+    eff = []
+    if use_buckets and SIGNAL_BUCKETS:
+        from collections import defaultdict
+        by_bucket = defaultdict(list)
+        for key, active in active_signals.items():
+            if active and key in weights_dict:
+                bucket = SIGNAL_BUCKETS.get(key, f"_solo_{key}")
+                by_bucket[bucket].append((key, float(weights_dict[key])))
+        for bucket, items in by_bucket.items():
+            items.sort(key=lambda kv: -kv[1])
+            for k, (key, w) in enumerate(items):
+                w_eff = BASE_RATE + (w - BASE_RATE) * (BUCKET_DECAY ** k)
+                eff.append((key, w_eff))
+    else:
+        for key, active in active_signals.items():
+            if active and key in weights_dict:
+                eff.append((key, float(weights_dict[key])))
+
+    # ── 3. Bayesian update (unchanged math) ────────────────────────────────
     p = BASE_RATE
-    for key, active in active_signals.items():
-        if active and key in weights_dict:
-            w   = weights_dict[key]
-            num = p * (w / BASE_RATE)
-            den = num + (1 - p) * ((1 - w) / (1 - BASE_RATE))
-            p   = num / den
+    for _key, w in eff:
+        # Clip to avoid divide-by-zero on degenerate weights
+        w = max(0.001, min(0.999, w))
+        num = p * (w / BASE_RATE)
+        den = num + (1 - p) * ((1 - w) / (1 - BASE_RATE))
+        if den <= 0:
+            continue
+        p = num / den
     p = min(p + bonus, 0.97)
     p = 0.40 + (p - BASE_RATE) / (0.97 - BASE_RATE) * 0.55
     return round(max(0.35, min(0.95, p)), 4)
@@ -2896,6 +3013,45 @@ opt_required = st.sidebar.checkbox(
          "scan, it means yfinance is not returning option-chain data — "
          "try `pip install --upgrade yfinance` and `streamlit cache clear`.",
 )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v13.7: Bucket-cap toggle for correlated-signal handling
+# Default ON — this is a real fix for evidence over-counting in the
+# Bayesian engine. Off only for A/B comparison or to debug a borderline
+# case. Toggling this invalidates fetch_analysis cache so probabilities
+# are recomputed on the next scan.
+# ─────────────────────────────────────────────────────────────────────────────
+use_bucket_cap = st.sidebar.checkbox(
+    "Bucket-cap correlated signals (recommended)",
+    value=True,
+    help="Bayesian probability assumes signals are independent. They aren't — "
+         "trend_daily, weekly_trend, full_ma_stack, golden_cross all measure "
+         "the same uptrend. Default ON: within each bucket (trend / momentum / "
+         "volume / volatility / structure / relative / options), the strongest "
+         "signal counts in full, the next at half-strength, the third at "
+         "quarter, and so on. This stops 5 correlated 'uptrend' signals from "
+         "being scored as 5 independent witnesses, which previously pegged "
+         "probability at 95% on setups that historically win ~60%.",
+)
+st.session_state["use_bucket_cap"] = use_bucket_cap
+_prev_bucket = st.session_state.get("_prev_bucket_cap")
+if _prev_bucket is not None and _prev_bucket != use_bucket_cap:
+    try:
+        fetch_analysis.clear()
+    except Exception:
+        pass
+st.session_state["_prev_bucket_cap"] = use_bucket_cap
+
+# Status caption — visible reminder when calibrated weights are active
+if st.session_state.get("calibrated_long_weights") or \
+   st.session_state.get("calibrated_short_weights"):
+    _cal_sides = []
+    if st.session_state.get("calibrated_long_weights"):  _cal_sides.append("long")
+    if st.session_state.get("calibrated_short_weights"): _cal_sides.append("short")
+    st.sidebar.success(
+        f"⚖️ Calibrated weights ACTIVE for: {', '.join(_cal_sides)}. "
+        "Reset in 🧪 Backtest tab."
+    )
 
 st.sidebar.markdown("---")
 st.sidebar.header("Long signal filters")
@@ -6243,6 +6399,171 @@ with tab_backtest:
         st.caption(
             "Read this with sample count. A 90% win rate on 5 samples is weaker evidence than "
             "65–70% on 50+ samples. Past performance is not a guarantee."
+        )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # v13.7: PER-SIGNAL WEIGHT CALIBRATION
+    # The biggest accuracy lever available: replace hand-set weights with the
+    # measured forward-return hit rate of each signal in isolation. Walk the
+    # same historical bars as the backtest above, but instead of evaluating
+    # gated trades, record for every active signal: "did the next H bars
+    # close higher / lower". The empirical hit rate becomes the new weight.
+    # Persisted in st.session_state for the rest of the Streamlit session,
+    # consumed transparently by bayesian_prob via the LONG_WEIGHTS /
+    # SHORT_WEIGHTS identity check.
+    # ─────────────────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("⚖️ Calibrate signal weights")
+    st.caption(
+        "Replace the hand-set weights in `LONG_WEIGHTS` / `SHORT_WEIGHTS` with the "
+        "measured forward-return hit rate of each signal in isolation. Uses the "
+        "same tickers, history, and horizon as the backtest above. Results are "
+        "session-scoped — restart Streamlit to revert. Apply on a representative "
+        "ticker basket (15+ names recommended) to avoid overfitting."
+    )
+
+    def _calibrate_signal_hit_rates(tickers: list, horizon: int, period: str,
+                                    side: str = "long",
+                                    min_samples: int = 30) -> tuple:
+        """
+        Returns (rates_dict, counts_dict).
+        rates_dict[signal_key]  = empirical fraction of bars where signal was True
+                                  AND forward H-day return moved in expected direction
+        counts_dict[signal_key] = sample size (only signals with N >= min_samples
+                                  are returned)
+        """
+        from collections import defaultdict
+        wins  = defaultdict(int)
+        total = defaultdict(int)
+        for t in tickers:
+            try:
+                raw = yf.download(t, period=period, interval="1d",
+                                  progress=False, auto_adjust=True)
+                df = _bt_flatten(raw)
+                if df.empty or len(df) < 260:
+                    continue
+                closes = df["Close"].ffill().dropna()
+                highs  = df["High"].ffill().dropna()
+                lows   = df["Low"].ffill().dropna()
+                vols   = df["Volume"].ffill().dropna()
+                for end in range(220, len(closes) - horizon, 3):
+                    c = closes.iloc[:end]; h = highs.iloc[:end]
+                    l = lows.iloc[:end];   v = vols.iloc[:end]
+                    try:
+                        long_sig, short_sig, _ = compute_all_signals(c, h, l, v)
+                    except Exception:
+                        continue
+                    p_now = float(c.iloc[-1])
+                    p_fut = float(closes.iloc[end + horizon])
+                    if p_now <= 0 or np.isnan(p_now) or np.isnan(p_fut):
+                        continue
+                    fwd = (p_fut / p_now - 1) * 100
+                    sigs = long_sig if side == "long" else short_sig
+                    win  = (fwd > 0) if side == "long" else (fwd < 0)
+                    for k, active in sigs.items():
+                        if active:
+                            total[k] += 1
+                            wins[k]  += int(win)
+            except Exception:
+                continue
+
+        rates  = {}
+        counts = {}
+        for k, n in total.items():
+            if n >= min_samples:
+                rates[k]  = wins[k] / n
+                counts[k] = n
+        return rates, counts
+
+    cal_cols = st.columns([1, 1, 2])
+    with cal_cols[0]:
+        run_long_cal = st.button("📊 Calibrate Long Weights",
+                                 key="run_long_cal", type="secondary")
+    with cal_cols[1]:
+        run_short_cal = st.button("📊 Calibrate Short Weights",
+                                  key="run_short_cal", type="secondary")
+    with cal_cols[2]:
+        if st.button("↩️ Reset to defaults", key="reset_cal"):
+            st.session_state.pop("calibrated_long_weights",  None)
+            st.session_state.pop("calibrated_short_weights", None)
+            st.session_state.pop("cal_long_table",  None)
+            st.session_state.pop("cal_short_table", None)
+            st.success("Calibrated weights cleared. Engine reverted to defaults.")
+
+    def _run_calibration(side: str):
+        bt_tickers = [t.strip().upper() for t in bt_tickers_txt.split(",") if t.strip()]
+        if len(bt_tickers) < 5:
+            st.warning(f"Use at least 5 tickers — got {len(bt_tickers)}. "
+                       "Calibration on a tiny basket overfits.")
+            return
+        bt_tickers = bt_tickers[:25]   # cap
+        with st.spinner(f"Walking {len(bt_tickers)} tickers × {bt_period} of "
+                        f"history for {side} signals..."):
+            rates, counts = _calibrate_signal_hit_rates(
+                bt_tickers, bt_horizon, bt_period, side=side, min_samples=30
+            )
+        if not rates:
+            st.error("Not enough data. Increase tickers, history, or lower horizon.")
+            return
+        defaults = LONG_WEIGHTS if side == "long" else SHORT_WEIGHTS
+        # Clip measured rates to a sensible range. Rates below 0.50 mean the
+        # signal is anti-predictive; we floor at 0.50 (no info) rather than
+        # invert, because inverting a single signal usually reflects an
+        # in-sample artifact rather than a robust contrarian edge.
+        clipped = {k: max(0.50, min(0.78, v)) for k, v in rates.items() if k in defaults}
+        # Merge with defaults: signals below the sample threshold keep defaults
+        merged = {**defaults, **clipped}
+        if side == "long":
+            st.session_state["calibrated_long_weights"]  = merged
+        else:
+            st.session_state["calibrated_short_weights"] = merged
+        # Build comparison table
+        rows = []
+        for k in sorted(defaults.keys()):
+            rows.append({
+                "Signal":         k,
+                "Default":        defaults[k],
+                "Measured":       round(rates[k], 4)   if k in rates  else None,
+                "Clipped":        round(clipped[k], 4) if k in clipped else None,
+                "Δ":              round((clipped[k] - defaults[k]), 3) if k in clipped else None,
+                "Samples":        counts.get(k, 0),
+                "Bucket":         SIGNAL_BUCKETS.get(k, "—"),
+            })
+        df_cal = pd.DataFrame(rows)
+        if side == "long":
+            st.session_state["cal_long_table"]  = df_cal
+        else:
+            st.session_state["cal_short_table"] = df_cal
+        st.success(
+            f"Calibrated {len(clipped)} of {len(defaults)} {side} signals. "
+            f"The rest had < 30 samples and kept their defaults. Live scanner now "
+            f"uses these weights — re-run Scan to see the effect."
+        )
+
+    if run_long_cal:  _run_calibration("long")
+    if run_short_cal: _run_calibration("short")
+
+    # Comparison tables
+    for tag, label, key in [("long",  "📈 Long signals",  "cal_long_table"),
+                            ("short", "📉 Short signals", "cal_short_table")]:
+        df_cal = st.session_state.get(key)
+        if df_cal is None or df_cal.empty:
+            continue
+        active = (st.session_state.get(f"calibrated_{tag}_weights") is not None)
+        st.markdown(f"**{label}** · {'🟢 ACTIVE in live scanner' if active else '⚪ inactive'}")
+        st.dataframe(
+            df_cal,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "Signal":   st.column_config.TextColumn(width=170),
+                "Default":  st.column_config.NumberColumn(format="%.2f", width=70),
+                "Measured": st.column_config.NumberColumn(format="%.3f", width=80),
+                "Clipped":  st.column_config.NumberColumn(format="%.3f", width=80),
+                "Δ":        st.column_config.NumberColumn(format="%+.3f", width=70),
+                "Samples":  st.column_config.NumberColumn(width=70),
+                "Bucket":   st.column_config.TextColumn(width=90),
+            },
         )
 
 # ─────────────────────────────────────────────────────────────────────────────
