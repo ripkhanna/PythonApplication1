@@ -1,5 +1,5 @@
 """
-Swing Scanner v13.21 — Bayesian Ensemble
+Swing Scanner v13.22 — Bayesian Ensemble
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -28,7 +28,7 @@ from datetime import datetime
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v13.21",
+    page_title="Swing Scanner v13.22",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -149,37 +149,13 @@ div[data-testid="stVerticalBlock"] > div {
     [data-testid="metric-container"] [data-testid="stMetricValue"] { font-size: 12px !important; }
 }
 
-/* ── Responsive app title: prevents cut-off on mobile ─────────── */
-.app-title {
-    text-align: center;
-    font-size: clamp(0.95rem, 4vw, 1.35rem);
-    font-weight: 700;
-    line-height: 1.15;
-    margin: 0 0 6px 0;
-    white-space: normal;
-    overflow-wrap: anywhere;
-    word-break: normal;
-}
-.app-title .desktop-title { display: inline; }
-.app-title .mobile-title { display: none; }
-@media (max-width: 480px) {
-    .app-title { font-size: 0.95rem; line-height: 1.2; margin-bottom: 4px; }
-    .app-title .desktop-title { display: none; }
-    .app-title .mobile-title { display: inline; }
-}
+/* Title uses native Streamlit elements so it remains visible on mobile. */
 
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown(
-    """
-    <div class="app-title">
-      <span class="desktop-title">📈 Swing/Long Term Scanner v13.21 — Bayesian Ensemble</span>
-      <span class="mobile-title">📈 Swing Scanner v13.21</span>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+st.title("📈 Swing Scanner v13.22")
+st.caption("Swing/Long Term Scanner — Bayesian Ensemble")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TICKER UNIVERSE  — v4 curated high-quality list (always scanned)
