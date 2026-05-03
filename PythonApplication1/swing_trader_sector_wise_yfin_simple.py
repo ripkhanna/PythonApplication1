@@ -3063,9 +3063,10 @@ else:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-tab_sectors, tab_long, tab_short, tab_operator, tab_both, tab_etf, tab_stock, tab_earn, tab_event, tab_lt, tab_diag, tab_backtest, tab_help = st.tabs([
+tab_sectors, tab_long, tab_swing_picks, tab_short, tab_operator, tab_both, tab_etf, tab_stock, tab_earn, tab_event, tab_lt, tab_diag, tab_backtest, tab_help = st.tabs([
     "🗂️ Sector Heatmap",
     "📈 Long Setups",
+    "🎯 Swing Picks",
     "📉 Short Setups",
     "🪤 Operator Activity",
     "🔄 Side by Side",
@@ -4616,6 +4617,216 @@ def fetch_event_predictions(tickers: tuple, days_ahead: int = 30) -> pd.DataFram
     return pd.DataFrame(rows).sort_values(["_score", "Ticker"], ascending=[False, True]).reset_index(drop=True)
 
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB — SWING PICKS  (technical setup + earnings + news)
+# ─────────────────────────────────────────────────────────────────────────────
+def _prob_to_float(val):
+    try:
+        return float(str(val).replace("%", "").strip())
+    except Exception:
+        return 0.0
+
+
+def _event_verdict_rank(verdict):
+    v = str(verdict or "").upper()
+    if "BUY" in v: return 3
+    if "WATCH" in v: return 2
+    if "WAIT" in v: return 1
+    return 0
+
+
+def _make_swing_picks_from_scan(df_long_in: pd.DataFrame, max_candidates: int = 25, event_days: int = 30) -> pd.DataFrame:
+    """Merge latest long-signal output with Event Predictor scoring.
+
+    Uses existing scanner factors first (probability/action/operator/VWAP/trap),
+    then adds earnings/news/order scoring. Designed for the 🎯 Swing Picks tab.
+    """
+    if df_long_in is None or df_long_in.empty or "Ticker" not in df_long_in.columns:
+        return pd.DataFrame()
+
+    tech = df_long_in.copy()
+    tech["_rise"] = tech.get("Rise Prob", "0%").apply(_prob_to_float)
+
+    # Prefer true BUY / high-quality WATCH setups; keep enough candidates for
+    # earnings/news enrichment even when the market is quiet.
+    action = tech.get("Action", pd.Series([""] * len(tech))).astype(str).str.upper()
+    entry = tech.get("Entry Quality", pd.Series([""] * len(tech))).astype(str).str.upper()
+    trap = tech.get("Trap Risk", pd.Series(["–"] * len(tech))).astype(str)
+    tech_pref = tech[
+        (tech["_rise"] >= 62) &
+        (~trap.isin(["FALSE BO", "GAP CHASE", "DISTRIB"])) &
+        (
+            action.str.contains("BUY|HIGH QUALITY|DEVELOPING", na=False) |
+            entry.str.contains("BUY|WATCH", na=False)
+        )
+    ].copy()
+    if tech_pref.empty:
+        tech_pref = tech.sort_values("_rise", ascending=False).head(max_candidates).copy()
+    else:
+        tech_pref = tech_pref.sort_values("_rise", ascending=False).head(max_candidates).copy()
+
+    tickers = _unique_keep_order(tech_pref["Ticker"].astype(str).str.upper().tolist())
+    if not tickers:
+        return pd.DataFrame()
+
+    event_df = fetch_event_predictions(tuple(tickers), days_ahead=event_days)
+    if event_df.empty:
+        # Still return technical shortlist when Yahoo earnings/news fetch fails.
+        out = tech_pref[[c for c in [
+            "Ticker", "Entry Quality", "Rise Prob", "Score", "Operator", "Op Score",
+            "VWAP", "Trap Risk", "Today %", "Price", "Sector", "Action",
+            "MA60 Stop", "TP1 +10%", "TP2 +15%", "TP3 +20%"
+        ] if c in tech_pref.columns]].copy()
+        out["Earnings"] = "–"
+        out["News"] = "–"
+        out["Event Verdict"] = "–"
+        out["Swing Verdict"] = "👀 WATCH — tech only"
+        out["Why"] = "Event/news fetch unavailable; use technical setup only."
+        return out
+
+    event_cols = [c for c in [
+        "Ticker", "Earnings", "Days Out", "EPS Trend", "News", "Orders",
+        "Trend Score", "Event Score", "Verdict", "Evidence", "Top News"
+    ] if c in event_df.columns]
+    merged = tech_pref.merge(event_df[event_cols], on="Ticker", how="left")
+
+    rows = []
+    for _, r in merged.iterrows():
+        rise = _prob_to_float(r.get("Rise Prob", "0%"))
+        op_score = 0
+        try:
+            op_score = int(float(str(r.get("Op Score", 0)).replace("–", "0")))
+        except Exception:
+            op_score = 0
+        action_s = str(r.get("Action", "")).upper()
+        entry_s = str(r.get("Entry Quality", "")).upper()
+        event_v = str(r.get("Verdict", ""))
+        earnings = str(r.get("Earnings", ""))
+        news = str(r.get("News", ""))
+        trap_risk = str(r.get("Trap Risk", "–"))
+        event_rank = _event_verdict_rank(event_v)
+        days_out = r.get("Days Out", None)
+
+        tech_ok = (rise >= 72) or ("BUY" in action_s) or ("BUY" in entry_s)
+        watch_ok = (rise >= 62) or ("WATCH" in action_s) or ("WATCH" in entry_s)
+        near_earn = False
+        try:
+            near_earn = pd.notna(days_out) and int(days_out) <= 7 and int(days_out) >= 0
+        except Exception:
+            near_earn = "≤7" in earnings
+
+        if near_earn:
+            swing_verdict = "🚫 AVOID — earnings ≤7d"
+        elif trap_risk in ("FALSE BO", "GAP CHASE", "DISTRIB"):
+            swing_verdict = f"⏳ WAIT — {trap_risk} risk"
+        elif tech_ok and event_rank >= 2 and op_score >= 4:
+            swing_verdict = "✅ BUY / WATCH ENTRY"
+        elif watch_ok and event_rank >= 2:
+            swing_verdict = "👀 WATCH"
+        elif watch_ok and event_rank >= 1:
+            swing_verdict = "⏳ WAIT"
+        else:
+            swing_verdict = "🚫 AVOID"
+
+        why_parts = []
+        why_parts.append(f"Tech {r.get('Rise Prob','–')} / {r.get('Action','–')}")
+        if r.get("Operator", "–") != "–": why_parts.append(f"Operator {r.get('Operator','–')}")
+        if r.get("VWAP", "–") != "–": why_parts.append(f"VWAP {r.get('VWAP','–')}")
+        if earnings and earnings != "nan": why_parts.append(f"Earnings {earnings}")
+        if news and news != "nan": why_parts.append(f"News {news}")
+        if r.get("Orders", "–") not in ("–", "nan", None): why_parts.append(str(r.get("Orders")))
+
+        item = r.to_dict()
+        item["Event Verdict"] = event_v if event_v and event_v != "nan" else "–"
+        item["Swing Verdict"] = swing_verdict
+        item["Why"] = " · ".join(why_parts)
+        item["_swing_rank"] = (
+            (3 if swing_verdict.startswith("✅") else 2 if swing_verdict.startswith("👀") else 1 if swing_verdict.startswith("⏳") else 0),
+            rise,
+            op_score,
+            _safe_float_event(r.get("Event Score"), 0),
+        )
+        rows.append(item)
+
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    out["_rank_a"] = out["_swing_rank"].apply(lambda x: x[0])
+    out["_rank_b"] = out["_swing_rank"].apply(lambda x: x[1])
+    out["_rank_c"] = out["_swing_rank"].apply(lambda x: x[2])
+    out["_rank_d"] = out["_swing_rank"].apply(lambda x: x[3])
+    out = out.sort_values(["_rank_a", "_rank_b", "_rank_c", "_rank_d"], ascending=False)
+    return out.drop(columns=[c for c in ["_swing_rank", "_rank_a", "_rank_b", "_rank_c", "_rank_d", "_rise", "_score", "_vcol"] if c in out.columns])
+
+
+with tab_swing_picks:
+    st.caption("🎯 Swing Picks — scanner factors + earnings guard + Yahoo news/event scoring")
+    st.info(
+        "Run **🚀 Scan** first. This tab takes the latest Long Setups, then adds "
+        "earnings risk, recent Yahoo news sentiment, order/contract keywords, "
+        "and a final swing verdict. It is meant to reduce false BUYs before earnings/news traps."
+    )
+
+    c1, c2, c3 = st.columns([1, 1, 2])
+    with c1:
+        swing_max_candidates = st.slider("Candidates to enrich", 5, 50, 25, step=5, key="swing_pick_max")
+    with c2:
+        swing_event_days = st.slider("Earnings/news lookahead", 7, 45, 30, step=1, key="swing_pick_days")
+    with c3:
+        manual_swing_tickers = st.text_input(
+            "➕ Force include from Long Setups",
+            placeholder="UUUU, APP, NVDA",
+            key="swing_pick_manual"
+        ).strip().upper()
+
+    if df_long.empty:
+        st.warning("No Long Setups available yet. Click **🚀 Scan** in the main scanner first.")
+    else:
+        df_swing_source = df_long.copy()
+        forced = [t.strip().upper() for t in manual_swing_tickers.replace("\n", ",").split(",") if t.strip()]
+        if forced:
+            forced_rows = df_long[df_long["Ticker"].astype(str).str.upper().isin(forced)]
+            rest_rows = df_long[~df_long["Ticker"].astype(str).str.upper().isin(forced)]
+            df_swing_source = pd.concat([forced_rows, rest_rows], ignore_index=True)
+
+        if st.button("🎯 Build Swing Picks", type="primary", key="btn_build_swing_picks"):
+            with st.spinner("Adding earnings/news scoring to current Long Setups…"):
+                st.session_state["df_swing_picks"] = _make_swing_picks_from_scan(
+                    df_swing_source,
+                    max_candidates=swing_max_candidates,
+                    event_days=swing_event_days,
+                )
+
+        swing_df = st.session_state.get("df_swing_picks", pd.DataFrame())
+        if swing_df.empty:
+            st.caption("Click **🎯 Build Swing Picks** to enrich the latest Long Setups.")
+        else:
+            buy_n = int(swing_df["Swing Verdict"].astype(str).str.startswith("✅").sum()) if "Swing Verdict" in swing_df.columns else 0
+            watch_n = int(swing_df["Swing Verdict"].astype(str).str.startswith("👀").sum()) if "Swing Verdict" in swing_df.columns else 0
+            wait_n = int(swing_df["Swing Verdict"].astype(str).str.startswith("⏳").sum()) if "Swing Verdict" in swing_df.columns else 0
+            avoid_n = int(swing_df["Swing Verdict"].astype(str).str.startswith("🚫").sum()) if "Swing Verdict" in swing_df.columns else 0
+            st.success(f"✅ {buy_n} BUY/WATCH ENTRY · 👀 {watch_n} WATCH · ⏳ {wait_n} WAIT · 🚫 {avoid_n} AVOID")
+
+            display_cols = [c for c in [
+                "Ticker", "Swing Verdict", "Entry Quality", "Rise Prob", "Action",
+                "Operator", "Op Score", "VWAP", "Trap Risk", "Today %", "Price",
+                "Sector", "Earnings", "Days Out", "EPS Trend", "News", "Orders",
+                "Event Score", "Event Verdict", "Why", "Top News",
+                "MA60 Stop", "TP1 +10%", "TP2 +15%", "TP3 +20%"
+            ] if c in swing_df.columns]
+            st.dataframe(
+                swing_df[display_cols],
+                width="stretch",
+                hide_index=True,
+                height=min(420, 38 + 35 * len(swing_df)),
+            )
+
+            with st.expander("📋 Copy tickers by final verdict"):
+                for label, prefix in [("BUY/WATCH ENTRY", "✅"), ("WATCH", "👀"), ("WAIT", "⏳"), ("AVOID", "🚫")]:
+                    tickers_txt = ", ".join(swing_df[swing_df["Swing Verdict"].astype(str).str.startswith(prefix)]["Ticker"].astype(str).tolist()) if "Ticker" in swing_df.columns else ""
+                    st.text_area(label, value=tickers_txt or "–", height=70, key=f"swing_copy_{prefix}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB — EARNINGS CALENDAR
