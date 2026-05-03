@@ -1,5 +1,5 @@
 """
-Swing Scanner v13.10 — Bayesian Ensemble Ranking
+Swing Scanner v13.14 — Bayesian Ensemble
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -28,7 +28,7 @@ from datetime import datetime
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v13.10",
+    page_title="Swing Scanner v13.14",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -151,7 +151,7 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v13.10 — Bayesian Ensemble")
+st.title("📈 Swing/Long Term Scanner v13.14 — Bayesian Ensemble")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TICKER UNIVERSE  — v4 curated high-quality list (always scanned)
@@ -457,6 +457,23 @@ try:
     _nse_opt_available = True
 except Exception:
     _nse_opt_available = False
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Strategy Lab ML backends (optional)
+# Install preferred backend: pip install lightgbm scikit-learn
+# ─────────────────────────────────────────────────────────────────────────────
+try:
+    from lightgbm import LGBMClassifier
+    _lgbm_available = True
+except Exception:
+    _lgbm_available = False
+
+try:
+    from sklearn.ensemble import HistGradientBoostingClassifier
+    from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, brier_score_loss
+    _sklearn_strategy_available = True
+except Exception:
+    _sklearn_strategy_available = False
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPERS  — exact v5 implementations
@@ -3189,7 +3206,7 @@ else:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-tab_sectors, tab_long, tab_swing_picks, tab_short, tab_operator, tab_both, tab_etf, tab_stock, tab_earn, tab_event, tab_lt, tab_diag, tab_backtest, tab_help = st.tabs([
+tab_sectors, tab_long, tab_swing_picks, tab_strategy, tab_short, tab_operator, tab_both, tab_etf, tab_stock, tab_earn, tab_event, tab_lt, tab_diag, tab_backtest, tab_help = st.tabs([
     "🗂️ Sector Heatmap",
     "📈 Long Setups",
     "🎯 Swing Picks",
@@ -3203,6 +3220,7 @@ tab_sectors, tab_long, tab_swing_picks, tab_short, tab_operator, tab_both, tab_e
     "🌱 Long Term",
     "🔍 Diagnostics",
     "🧪 Accuracy Lab",
+    "🧠 Strategy Lab",
     "❓ Help",
 ])
 
@@ -5013,7 +5031,7 @@ with tab_swing_picks:
     st.info(
         "Run **🚀 Scan** first. This tab keeps Bayesian as the base model, then adds "
         "operator activity, recent Yahoo news sentiment, order/contract keywords, sector tailwind, "
-        "and earnings/trap penalties. Simple ML has been removed because it did not improve AUC."
+        "and earnings/trap penalties. Strategy Lab ML is optional and only useful if it beats the baseline."
     )
 
     c1, c2, c3 = st.columns([1, 1, 2])
@@ -5057,8 +5075,8 @@ with tab_swing_picks:
             st.success(f"✅ {buy_n} BUY/WATCH ENTRY · 👀 {watch_n} WATCH · ⏳ {wait_n} WAIT · 🚫 {avoid_n} AVOID")
 
             display_cols = [c for c in [
-                "Ticker", "Swing Verdict", "Final Swing Score", "Bayes Score",
-                "Operator Score", "News Score", "Sector Score", "Earnings Risk",
+                "Ticker", "Swing Verdict", "ML Trade Quality", "ML Failure Risk", "Suggested Size",
+                "Final Swing Score", "Bayes Score", "Operator Score", "News Score", "Sector Score", "Earnings Risk",
                 "Trap Risk Score", "Entry Quality", "Rise Prob", "Action",
                 "Operator", "Op Score", "VWAP", "Trap Risk", "Today %", "Price",
                 "Sector", "Earnings", "Days Out", "EPS Trend", "News", "Orders",
@@ -5076,6 +5094,318 @@ with tab_swing_picks:
                 for label, prefix in [("BUY/WATCH ENTRY", "✅"), ("WATCH", "👀"), ("WAIT", "⏳"), ("AVOID", "🚫")]:
                     tickers_txt = ", ".join(swing_df[swing_df["Swing Verdict"].astype(str).str.startswith(prefix)]["Ticker"].astype(str).tolist()) if "Ticker" in swing_df.columns else ""
                     st.text_area(label, value=tickers_txt or "–", height=70, key=f"swing_copy_{prefix}")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB — STRATEGY LAB / OPTIONAL ML QUALITY FILTER
+# ─────────────────────────────────────────────────────────────────────────────
+def _strategy_auc(y_true, scores):
+    try:
+        y = np.asarray(y_true, dtype=int)
+        s = np.asarray(scores, dtype=float)
+        pos = s[y == 1]; neg = s[y == 0]
+        if len(pos) == 0 or len(neg) == 0:
+            return None
+        wins = 0.0
+        for ps in pos:
+            wins += float(np.sum(ps > neg)) + 0.5 * float(np.sum(ps == neg))
+        return wins / float(len(pos) * len(neg))
+    except Exception:
+        return None
+
+
+def _strategy_first_hit_label(future_high, future_low, entry, tp_pct=6.0, sl_pct=4.0):
+    """1 if +target is hit before -stop within horizon; same-day tie counts as stop first."""
+    if entry <= 0:
+        return 0, 0.0, 0.0, "bad_entry"
+    tp = entry * (1.0 + tp_pct / 100.0)
+    sl = entry * (1.0 - sl_pct / 100.0)
+    max_gain, max_dd = 0.0, 0.0
+    for hi, lo in zip(future_high, future_low):
+        try:
+            hi = float(hi); lo = float(lo)
+        except Exception:
+            continue
+        max_gain = max(max_gain, (hi / entry - 1.0) * 100.0)
+        max_dd = min(max_dd, (lo / entry - 1.0) * 100.0)
+        if lo <= sl and hi >= tp:
+            return 0, max_gain, max_dd, "same_day_stop_first"
+        if lo <= sl:
+            return 0, max_gain, max_dd, "stop_first"
+        if hi >= tp:
+            return 1, max_gain, max_dd, "target_first"
+    return 0, max_gain, max_dd, "no_target"
+
+
+def _strategy_feature_row(long_sig, raw):
+    bayes_prob = bayesian_prob(LONG_WEIGHTS, long_sig, 0.0) * 100.0
+    bucket_counts = {}
+    for k, active in long_sig.items():
+        if active:
+            b = SIGNAL_BUCKETS.get(k, "other")
+            bucket_counts[b] = bucket_counts.get(b, 0) + 1
+    trap = 1 if raw.get("false_breakout") or raw.get("gap_chase_risk") or raw.get("operator_distribution") else 0
+    p = float(raw.get("p", 0) or 0)
+    ma20 = float(raw.get("ma20", p) or p or 1)
+    ma60 = float(raw.get("ma60", p) or p or 1)
+    vwap = float(raw.get("vwap", p) or p or 1)
+    atr = float(raw.get("atr", 0) or 0)
+    return {
+        "BayesProb": round(bayes_prob, 4),
+        "SignalCount": int(sum(1 for v in long_sig.values() if v)),
+        "TrendCount": int(bucket_counts.get("trend", 0)),
+        "MomentumCount": int(bucket_counts.get("momentum", 0)),
+        "VolumeCount": int(bucket_counts.get("volume", 0)),
+        "StructureCount": int(bucket_counts.get("structure", 0)),
+        "RelativeCount": int(bucket_counts.get("relative", 0)),
+        "VolatilityCount": int(bucket_counts.get("volatility", 0)),
+        "OptionsCount": int(bucket_counts.get("options", 0)),
+        "OperatorScore": float(raw.get("operator_score", 0) or 0),
+        "VolumeRatio": float(raw.get("vr", 0) or 0),
+        "TodayPct": float(raw.get("today_chg_pct", 0) or 0),
+        "RSI": float(raw.get("rsi0", 50) or 50),
+        "ADX": float(raw.get("adx", 0) or 0),
+        "ATRpct": round((atr / p * 100.0), 4) if p else 0.0,
+        "PriceVsMA20Pct": round(((p / ma20) - 1.0) * 100.0, 4) if ma20 else 0.0,
+        "PriceVsMA60Pct": round(((p / ma60) - 1.0) * 100.0, 4) if ma60 else 0.0,
+        "PriceVsVWAPPct": round(((p / vwap) - 1.0) * 100.0, 4) if vwap else 0.0,
+        "AboveVWAP": 1 if raw.get("above_vwap") else 0,
+        "AboveMA60": 1 if raw.get("above_ma60") else 0,
+        "NotChasing": 1 if raw.get("not_chasing") and raw.get("not_limit_up") else 0,
+        "TrapRisk": trap,
+        "FalseBreakout": 1 if raw.get("false_breakout") else 0,
+        "GapChaseRisk": 1 if raw.get("gap_chase_risk") else 0,
+        "DistributionRisk": 1 if raw.get("operator_distribution") else 0,
+    }
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _strategy_build_dataset(tickers_tuple, period="2y", horizon=10, tp_pct=6.0, sl_pct=4.0, step=3):
+    rows = []
+    for ticker in list(tickers_tuple):
+        try:
+            raw_df = yf.download(ticker, period=period, interval="1d", progress=False, auto_adjust=True)
+            df = raw_df.copy()
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df = df.ffill().dropna()
+            if df.empty or len(df) < 260:
+                continue
+            close = df["Close"].ffill().dropna()
+            high = df["High"].ffill().dropna()
+            low = df["Low"].ffill().dropna()
+            vol = df["Volume"].ffill().dropna()
+            for end in range(220, len(close) - horizon, max(1, int(step))):
+                try:
+                    long_sig, _short_sig, sig_raw = compute_all_signals(close.iloc[:end], high.iloc[:end], low.iloc[:end], vol.iloc[:end])
+                except Exception:
+                    continue
+                entry = float(close.iloc[end - 1])
+                label, max_gain, max_dd, outcome = _strategy_first_hit_label(high.iloc[end:end+horizon], low.iloc[end:end+horizon], entry, tp_pct, sl_pct)
+                feat = _strategy_feature_row(long_sig, sig_raw)
+                feat.update({
+                    "Ticker": ticker,
+                    "Date": str(close.index[end - 1])[:10],
+                    "Target": int(label),
+                    "MaxGain%": round(max_gain, 3),
+                    "MaxDD%": round(max_dd, 3),
+                    "PathOutcome": outcome,
+                    "BaselineScore": round(feat["BayesProb"] * 0.55 + feat["OperatorScore"] * 4.0 - feat["TrapRisk"] * 10.0, 4),
+                })
+                rows.append(feat)
+        except Exception:
+            continue
+    return pd.DataFrame(rows)
+
+
+def _strategy_train_model(data: pd.DataFrame, feature_cols):
+    if data is None or data.empty or len(data) < 150:
+        return None, {"Error": "Need at least 150 historical samples. Add tickers or use longer history."}
+    d = data.copy().sort_values("Date")
+    X = d[feature_cols].replace([np.inf, -np.inf], np.nan).fillna(0.0).astype(float)
+    y = d["Target"].astype(int)
+    split = int(len(d) * 0.70)
+    if split <= 20 or len(d) - split <= 20 or y.nunique() < 2:
+        return None, {"Error": "Not enough class diversity after chronological split."}
+    X_train, X_test = X.iloc[:split], X.iloc[split:]
+    y_train, y_test = y.iloc[:split], y.iloc[split:]
+    if _lgbm_available:
+        model = LGBMClassifier(n_estimators=250, learning_rate=0.035, max_depth=3, num_leaves=15, min_child_samples=25, subsample=0.85, colsample_bytree=0.85, reg_lambda=2.0, random_state=42, verbose=-1)
+        model_name = "LightGBM Classifier"
+    elif _sklearn_strategy_available:
+        model = HistGradientBoostingClassifier(max_iter=180, learning_rate=0.05, max_leaf_nodes=15, l2_regularization=1.0, random_state=42)
+        model_name = "sklearn HistGradientBoosting fallback"
+    else:
+        return None, {"Error": "Install lightgbm or scikit-learn to use Strategy Lab ML."}
+    try:
+        model.fit(X_train, y_train)
+        proba = model.predict_proba(X_test)[:, 1]
+        baseline = d["BaselineScore"].iloc[split:].astype(float).to_numpy()
+        pred = (proba >= 0.50).astype(int)
+        base_pred = (baseline >= np.nanpercentile(baseline, 60)).astype(int)
+        y_arr = y_test.to_numpy()
+        if _sklearn_strategy_available:
+            auc_ml = roc_auc_score(y_test, proba) if len(np.unique(y_test)) > 1 else None
+            auc_base = roc_auc_score(y_test, baseline) if len(np.unique(y_test)) > 1 else None
+            acc_ml = accuracy_score(y_test, pred)
+            acc_base = accuracy_score(y_test, base_pred)
+            prec_ml = precision_score(y_test, pred, zero_division=0)
+            brier = brier_score_loss(y_test, proba)
+        else:
+            auc_ml = _strategy_auc(y_arr, proba)
+            auc_base = _strategy_auc(y_arr, baseline)
+            acc_ml = float(np.mean(pred == y_arr))
+            acc_base = float(np.mean(base_pred == y_arr))
+            prec_ml = float(np.sum((pred == 1) & (y_arr == 1)) / max(1, np.sum(pred == 1)))
+            brier = float(np.mean((proba - y_arr) ** 2))
+        top_n = max(5, int(len(proba) * 0.10))
+        top_ml_idx = np.argsort(-proba)[:top_n]
+        top_base_idx = np.argsort(-baseline)[:top_n]
+        top_ml_win = float(np.mean(y_arr[top_ml_idx])) if top_n else 0.0
+        top_base_win = float(np.mean(y_arr[top_base_idx])) if top_n else 0.0
+        max_gain_arr = d["MaxGain%"].iloc[split:].to_numpy()
+        max_dd_arr = d["MaxDD%"].iloc[split:].to_numpy()
+        importance = []
+        if hasattr(model, "feature_importances_"):
+            importance = sorted(zip(feature_cols, list(model.feature_importances_)), key=lambda x: -abs(float(x[1])))[:12]
+        report = {
+            "Model": model_name,
+            "Samples": int(len(d)), "Train": int(len(X_train)), "Test": int(len(X_test)),
+            "Base Rate": round(float(y.mean()) * 100.0, 2),
+            "ML AUC": round(float(auc_ml), 4) if auc_ml is not None else None,
+            "Baseline AUC": round(float(auc_base), 4) if auc_base is not None else None,
+            "AUC Edge": round(float((auc_ml or 0) - (auc_base or 0)), 4) if auc_ml is not None and auc_base is not None else None,
+            "ML Accuracy": round(float(acc_ml) * 100.0, 2),
+            "Baseline Accuracy": round(float(acc_base) * 100.0, 2),
+            "ML Precision": round(float(prec_ml) * 100.0, 2),
+            "Top 10% ML Win%": round(top_ml_win * 100.0, 2),
+            "Top 10% Baseline Win%": round(top_base_win * 100.0, 2),
+            "Top 10% Avg MaxGain%": round(float(max_gain_arr[top_ml_idx].mean()), 2) if top_n else 0.0,
+            "Top 10% Avg MaxDD%": round(float(max_dd_arr[top_ml_idx].mean()), 2) if top_n else 0.0,
+            "Brier": round(float(brier), 4),
+            "Split Date": str(d["Date"].iloc[split]),
+            "Recommended": "YES" if (auc_ml is not None and auc_base is not None and auc_ml >= auc_base + 0.02 and top_ml_win >= top_base_win) else "NO — keep Bayesian ensemble primary",
+            "Importance": importance,
+        }
+        return (model, feature_cols, report), report
+    except Exception as e:
+        return None, {"Error": f"Training failed: {type(e).__name__}: {e}"}
+
+
+def _strategy_apply_to_current(model_bundle, df_current: pd.DataFrame):
+    if model_bundle is None or df_current is None or df_current.empty:
+        return df_current
+    try:
+        model, feature_cols, _metrics = model_bundle
+        qs = []
+        for _, r in df_current.iterrows():
+            bayes = _parse_score_num(r.get("Bayes Score", r.get("Rise Prob", 0)), 0.0)
+            op = _parse_score_num(r.get("Operator Score", r.get("Op Score", 0)), 0.0)
+            trap = 1 if str(r.get("Trap Risk", "–")).upper() in ("FALSE BO", "GAP CHASE", "DISTRIB") else 0
+            feat = {c: 0.0 for c in feature_cols}
+            feat.update({"BayesProb": bayes, "OperatorScore": op, "TrapRisk": trap, "AboveVWAP": 1 if str(r.get("VWAP", "")).upper().startswith("ABOVE") else 0, "TodayPct": _parse_score_num(r.get("Today %", 0), 0.0), "SignalCount": _parse_score_num(r.get("Score", 0), 0.0)})
+            x = pd.DataFrame([[feat.get(c, 0.0) for c in feature_cols]], columns=feature_cols)
+            try:
+                qs.append(float(model.predict_proba(x)[0, 1]))
+            except Exception:
+                qs.append(np.nan)
+        out = df_current.copy()
+        out["ML Trade Quality"] = [f"{q*100:.1f}%" if pd.notna(q) else "–" for q in qs]
+        out["ML Failure Risk"] = [f"{(1-q)*100:.1f}%" if pd.notna(q) else "–" for q in qs]
+        def _size(q, verdict):
+            if pd.isna(q): return "–"
+            v = str(verdict)
+            if q >= 0.65 and v.startswith("✅"): return "Normal"
+            if q >= 0.55 and (v.startswith("✅") or v.startswith("👀")): return "Half"
+            if q >= 0.48: return "Small / Watch"
+            return "Avoid"
+        out["Suggested Size"] = [_size(q, v) for q, v in zip(qs, out.get("Swing Verdict", pd.Series([""]*len(out))))]
+        return out
+    except Exception:
+        return df_current
+
+
+with tab_strategy:
+    st.caption("🧠 Strategy Lab — optional ML filter for trade quality, not a replacement for Bayesian")
+    st.info(
+        "This trains a model to answer: did this setup hit the profit target before the stop within N trading days? "
+        "The live scanner remains Bayesian ensemble first. Use ML only if it beats the baseline on chronological test data."
+    )
+    backend = "LightGBM" if _lgbm_available else "sklearn fallback" if _sklearn_strategy_available else "not installed"
+    st.caption(f"ML backend: **{backend}** · Preferred install: `pip install lightgbm scikit-learn`")
+
+    sl1, sl2, sl3, sl4 = st.columns([2, 1, 1, 1])
+    with sl1:
+        lab_tickers_txt = st.text_area("Training tickers", value=", ".join(_active_tickers[:25]), height=80, key="strategy_lab_tickers")
+    with sl2:
+        lab_period = st.selectbox("History", ["1y", "2y", "3y", "5y"], index=1, key="strategy_lab_period")
+        lab_horizon = st.slider("Horizon days", 5, 20, 10, step=1, key="strategy_lab_horizon")
+    with sl3:
+        lab_tp = st.slider("Target %", 3.0, 12.0, 6.0, step=0.5, key="strategy_lab_tp")
+        lab_sl = st.slider("Stop %", 2.0, 10.0, 4.0, step=0.5, key="strategy_lab_sl")
+    with sl4:
+        lab_step = st.slider("Sample step", 1, 10, 3, step=1, key="strategy_lab_step")
+        lab_max_tickers = st.slider("Max tickers", 5, 80, 30, step=5, key="strategy_lab_max_tickers")
+
+    if not (_lgbm_available or _sklearn_strategy_available):
+        st.warning("Install `lightgbm` or `scikit-learn` to train the Strategy Lab model.")
+
+    if st.button("🧠 Train Strategy Lab model", type="primary", key="strategy_lab_train"):
+        lab_tickers = _unique_keep_order([t.strip().upper() for t in lab_tickers_txt.replace("\n", ",").split(",") if t.strip()])[:lab_max_tickers]
+        if not lab_tickers:
+            st.error("Enter at least a few tickers.")
+        else:
+            with st.spinner("Building historical +target before -stop training set..."):
+                ds = _strategy_build_dataset(tuple(lab_tickers), period=lab_period, horizon=lab_horizon, tp_pct=lab_tp, sl_pct=lab_sl, step=lab_step)
+            if ds.empty:
+                st.error("No usable training rows. Try longer history, more liquid tickers, or more tickers.")
+            else:
+                feature_cols = [c for c in ds.columns if c not in ["Ticker", "Date", "Target", "MaxGain%", "MaxDD%", "PathOutcome", "BaselineScore"]]
+                bundle, report = _strategy_train_model(ds, feature_cols)
+                st.session_state["strategy_lab_dataset"] = ds
+                st.session_state["strategy_lab_model"] = bundle
+                st.session_state["strategy_lab_report"] = report
+
+    report = st.session_state.get("strategy_lab_report")
+    if report:
+        if "Error" in report:
+            st.error(report["Error"])
+        else:
+            metric_cols = st.columns(5)
+            metric_cols[0].metric("ML AUC", report.get("ML AUC", "–"))
+            metric_cols[1].metric("Baseline AUC", report.get("Baseline AUC", "–"))
+            metric_cols[2].metric("AUC Edge", report.get("AUC Edge", "–"))
+            metric_cols[3].metric("Top 10% ML Win", f"{report.get('Top 10% ML Win%', '–')}%")
+            metric_cols[4].metric("Use ML?", report.get("Recommended", "–"))
+            summary_cols = ["Model", "Samples", "Train", "Test", "Base Rate", "ML Accuracy", "Baseline Accuracy", "ML Precision", "Top 10% Baseline Win%", "Top 10% Avg MaxGain%", "Top 10% Avg MaxDD%", "Brier", "Split Date", "Recommended"]
+            st.dataframe(pd.DataFrame([{k: report.get(k) for k in summary_cols if k in report}]), width="stretch", hide_index=True)
+            imp = report.get("Importance", [])
+            if imp:
+                st.markdown("**Top ML features**")
+                st.dataframe(pd.DataFrame(imp, columns=["Feature", "Importance"]), width="stretch", hide_index=True)
+            if str(report.get("Recommended", "")).startswith("YES"):
+                st.success("ML improved the baseline on this test. Use it as a trade-quality filter, not as the only signal.")
+            else:
+                st.warning("ML did not clearly beat the Bayesian ensemble. Keep Bayesian ensemble primary.")
+
+    ds_prev = st.session_state.get("strategy_lab_dataset")
+    if isinstance(ds_prev, pd.DataFrame) and not ds_prev.empty:
+        with st.expander("Training data sample"):
+            st.dataframe(ds_prev.tail(200), width="stretch", hide_index=True)
+
+    st.markdown("---")
+    st.markdown("### Apply trained ML overlay to current Swing Picks")
+    latest_swing = st.session_state.get("df_swing_picks", pd.DataFrame())
+    if st.session_state.get("strategy_lab_model") is None:
+        st.caption("Train a Strategy Lab model first.")
+    elif latest_swing.empty:
+        st.caption("Build 🎯 Swing Picks first, then return here to apply the ML overlay.")
+    elif st.button("Add ML quality/risk columns to latest Swing Picks", key="strategy_apply_overlay"):
+        st.session_state["latest_swing_picks_ml"] = _strategy_apply_to_current(st.session_state.get("strategy_lab_model"), latest_swing)
+
+    latest_ml = st.session_state.get("latest_swing_picks_ml")
+    if isinstance(latest_ml, pd.DataFrame) and not latest_ml.empty:
+        show_cols = [c for c in ["Ticker", "Swing Verdict", "ML Trade Quality", "ML Failure Risk", "Suggested Size", "Final Swing Score", "Bayes Score", "Operator Score", "Trap Risk", "Why"] if c in latest_ml.columns]
+        st.dataframe(latest_ml[show_cols], width="stretch", hide_index=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB — EARNINGS CALENDAR
@@ -6526,12 +6856,12 @@ This is more realistic than the old binary label: `price is higher after N days`
 # TAB 8 — HELP
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_help:
-    st.markdown("## ❓ How to Use the Swing/Long Term Scanner v13.12")
+    st.markdown("## ❓ How to Use the Swing/Long Term Scanner v13.14")
     st.caption(
-        "Latest guide: fixed bucket-capped Bayesian scoring, Bayesian ensemble ranking, "
+        "Latest guide: fixed bucket-capped Bayesian scoring, Bayesian ensemble ranking, optional Strategy Lab ML filter, "
         "Yahoo/live + existing ticker universe, operator/smart-money activity, earnings/news "
         "risk checks, Swing Picks, Long Term combined universe, Diagnostics scanned ticker list, "
-        "and compact searchable grids. ML and calibration tools have been removed."
+        "and compact searchable grids. Old simple ML and calibration tools have been removed; Strategy Lab adds optional LightGBM/sklearn quality filtering only when it beats the Bayesian baseline."
     )
 
     # ── VERSION SUMMARY ─────────────────────────────────────────────────────
@@ -6585,7 +6915,8 @@ Sector Heatmap → Long Setups → Swing Picks → Stock Analysis → Earnings /
 | 📰 **Event Predictor** | News / event catalyst scan | Uses news headlines, sentiment, order/contract/catalyst keywords where available |
 | 🌱 **Long Term** | 1–3 year stock/fund ideas | Uses existing tickers + ETF tickers + ETF holdings + Yahoo/live tickers |
 | 🔍 **Diagnostics** | Debug and verify scan logic | Shows market, universe source, counts, and comma-separated scanned ticker list |
-| 🧪 **Accuracy Lab** | Backtest / validation notes | ML and calibration removed; use it to understand signal behavior and swing-target logic |
+| 🧪 **Accuracy Lab** | Backtest / validation notes | Quick walk-forward validation of signal behavior and swing-target logic |
+| 🧠 **Strategy Lab** | Optional ML quality filter | Trains LightGBM/sklearn model on +6% before -4% target; use only if it beats baseline |
 | ❓ **Help** | This guide | Updated for latest tabs and changes |
         """)
 
