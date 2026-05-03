@@ -1,5 +1,5 @@
 """
-Swing Scanner v13.14 — Bayesian Ensemble
+Swing Scanner v13.15 — Bayesian Ensemble
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -28,7 +28,7 @@ from datetime import datetime
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v13.14",
+    page_title="Swing Scanner v13.15",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -151,7 +151,7 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v13.14 — Bayesian Ensemble")
+st.title("📈 Swing/Long Term Scanner v13.15 — Bayesian Ensemble")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TICKER UNIVERSE  — v4 curated high-quality list (always scanned)
@@ -3206,7 +3206,7 @@ else:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-tab_sectors, tab_long, tab_swing_picks, tab_strategy, tab_short, tab_operator, tab_both, tab_etf, tab_stock, tab_earn, tab_event, tab_lt, tab_diag, tab_backtest, tab_help = st.tabs([
+tab_sectors, tab_long, tab_swing_picks, tab_short, tab_operator, tab_both, tab_etf, tab_stock, tab_earn, tab_event, tab_lt, tab_diag, tab_backtest, tab_strategy, tab_help = st.tabs([
     "🗂️ Sector Heatmap",
     "📈 Long Setups",
     "🎯 Swing Picks",
@@ -5075,7 +5075,7 @@ with tab_swing_picks:
             st.success(f"✅ {buy_n} BUY/WATCH ENTRY · 👀 {watch_n} WATCH · ⏳ {wait_n} WAIT · 🚫 {avoid_n} AVOID")
 
             display_cols = [c for c in [
-                "Ticker", "Swing Verdict", "ML Trade Quality", "ML Failure Risk", "Suggested Size",
+                "Ticker", "Swing Verdict",
                 "Final Swing Score", "Bayes Score", "Operator Score", "News Score", "Sector Score", "Earnings Risk",
                 "Trap Risk Score", "Entry Quality", "Rise Prob", "Action",
                 "Operator", "Op Score", "VWAP", "Trap Risk", "Today %", "Price",
