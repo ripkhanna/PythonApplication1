@@ -1,5 +1,5 @@
 """
-Swing Scanner v13.6 — Long Term Yahoo + Existing + ETF Universe
+Swing Scanner v13.10 — Bayesian Ensemble Ranking
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -28,7 +28,7 @@ from datetime import datetime
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v13.6",
+    page_title="Swing Scanner v13.10",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -151,7 +151,7 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v13.6")
+st.title("📈 Swing/Long Term Scanner v13.10 — Bayesian Ensemble")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TICKER UNIVERSE  — v4 curated high-quality list (always scanned)
@@ -489,36 +489,17 @@ def find_swing_highs(high_series, lookback_bars=60, n_side=3):
 
 def bayesian_prob(weights_dict, active_signals, bonus=0.0, use_buckets=True):
     """
-    Bayesian-style probability with two v13.7 fixes layered transparently:
+    Bayesian-style probability with bucket-capping for correlated signals.
 
-      1. CALIBRATED WEIGHTS (session-scoped):
-         If the caller passed the module-level LONG_WEIGHTS or SHORT_WEIGHTS
-         object AND the user has run "Calibrate weights" in the Backtest tab,
-         we substitute the measured per-signal hit rates (clipped to a sane
-         range) for the hand-set defaults. Other call sites that pass a
-         custom dict are unaffected.
+    Many signals are statistically dependent ("trend_daily" + "weekly_trend"
+    + "full_ma_stack" all measure the same uptrend). Naive Bayesian update
+    multiplies their odds ratios as if independent, which over-counts evidence
+    and pegs probability at 95% on setups that historically win much less.
 
-      2. BUCKET-CAP for correlated signals (default ON):
-         Many signals are statistically dependent ("trend_daily" + "weekly_trend"
-         + "full_ma_stack" all measure the same uptrend). Naive Bayesian update
-         multiplies their odds ratios as if independent, which over-counts
-         evidence and pegs probability at 95% on setups that win ~60%.
-         Group active signals by SIGNAL_BUCKETS, sort within bucket by weight
-         desc, and shrink the k-th signal's distance from BASE_RATE by
-         BUCKET_DECAY**k. Pure cosmetic to evidence weight — Bayesian update
-         math itself is unchanged.
+    Bucket-cap groups active signals by SIGNAL_BUCKETS, sorts within each bucket
+    by weight, and shrinks the k-th signal's distance from BASE_RATE by
+    BUCKET_DECAY**k. The hand-set LONG_WEIGHTS / SHORT_WEIGHTS remain fixed.
     """
-    # ── 1. Calibrated-weights override ─────────────────────────────────────
-    try:
-        if weights_dict is LONG_WEIGHTS:
-            cal = st.session_state.get("calibrated_long_weights")
-            if cal: weights_dict = cal
-        elif weights_dict is SHORT_WEIGHTS:
-            cal = st.session_state.get("calibrated_short_weights")
-            if cal: weights_dict = cal
-    except Exception:
-        pass
-
     # Allow runtime kill-switch from sidebar (debugging / A-B comparison)
     try:
         if not st.session_state.get("use_bucket_cap", True):
@@ -3042,17 +3023,6 @@ if _prev_bucket is not None and _prev_bucket != use_bucket_cap:
         pass
 st.session_state["_prev_bucket_cap"] = use_bucket_cap
 
-# Status caption — visible reminder when calibrated weights are active
-if st.session_state.get("calibrated_long_weights") or \
-   st.session_state.get("calibrated_short_weights"):
-    _cal_sides = []
-    if st.session_state.get("calibrated_long_weights"):  _cal_sides.append("long")
-    if st.session_state.get("calibrated_short_weights"): _cal_sides.append("short")
-    st.sidebar.success(
-        f"⚖️ Calibrated weights ACTIVE for: {', '.join(_cal_sides)}. "
-        "Reset in 🧪 Backtest tab."
-    )
-
 st.sidebar.markdown("---")
 st.sidebar.header("Long signal filters")
 req_stoch = st.sidebar.checkbox("Must have Stoch bounce",      False)
@@ -4793,11 +4763,121 @@ def _event_verdict_rank(verdict):
     return 0
 
 
-def _make_swing_picks_from_scan(df_long_in: pd.DataFrame, max_candidates: int = 25, event_days: int = 30) -> pd.DataFrame:
-    """Merge latest long-signal output with Event Predictor scoring.
+def _parse_score_num(v, default=0.0):
+    try:
+        s = str(v).replace("%", "").replace("–", "0").strip()
+        return float(s) if s else default
+    except Exception:
+        return default
 
-    Uses existing scanner factors first (probability/action/operator/VWAP/trap),
-    then adds earnings/news/order scoring. Designed for the 🎯 Swing Picks tab.
+
+def _sector_tailwind_score(sector_value):
+    """Small ranking boost for sectors already showing green momentum.
+    Works with sector text or numeric strings and safely returns 0 when unknown."""
+    s = str(sector_value or "").upper()
+    score = 0.0
+    if any(k in s for k in ["SEMICON", "TECH", "AI", "CLOUD", "SOFTWARE"]):
+        score += 2.0
+    if any(k in s for k in ["GREEN", "LEADER", "STRONG"]):
+        score += 1.0
+    return score
+
+
+def _news_score_from_event_row(row):
+    """Convert Event Predictor text fields into a simple catalyst score."""
+    score = 0.0
+    news = str(row.get("News", "")).upper()
+    orders = str(row.get("Orders", "")).upper()
+    verdict = str(row.get("Verdict", "")).upper()
+    evidence = str(row.get("Evidence", "")).upper()
+    top_news = str(row.get("Top News", "")).upper()
+    joined = " ".join([news, orders, verdict, evidence, top_news])
+
+    if "POSITIVE" in news or "BUY" in verdict:
+        score += 2.0
+    if "WATCH" in verdict:
+        score += 1.0
+    if any(k in joined for k in ["ORDER", "CONTRACT", "GUIDANCE", "RAISE", "BEAT", "AWARD", "PARTNERSHIP", "UPGRADE"]):
+        score += 2.0
+    if any(k in joined for k in ["MISS", "CUT", "DOWNGRADE", "PROBE", "LAWSUIT", "DELAY", "WARNING"]):
+        score -= 2.0
+    return max(-4.0, min(6.0, score))
+
+
+def _earnings_risk_penalty(days_out, earnings_text=""):
+    """Penalty for upcoming earnings. Near earnings is event risk, not a clean swing."""
+    try:
+        if pd.notna(days_out):
+            d = int(days_out)
+            if 0 <= d <= 3:
+                return 14.0
+            if 4 <= d <= 7:
+                return 10.0
+            if 8 <= d <= 14:
+                return 4.0
+    except Exception:
+        pass
+    s = str(earnings_text or "")
+    if "≤7" in s or "EARNINGS" in s.upper() and "SOON" in s.upper():
+        return 10.0
+    return 0.0
+
+
+def _trap_risk_penalty(trap_risk):
+    t = str(trap_risk or "–").upper().strip()
+    if t == "FALSE BO":
+        return 10.0
+    if t == "GAP CHASE":
+        return 8.0
+    if t == "DISTRIB":
+        return 9.0
+    return 0.0
+
+
+def _calc_final_swing_score(row):
+    """Bayesian ensemble ranking score.
+
+    This intentionally replaces the removed simple ML ranking. Bayesian remains
+    the base model; other factors are additive/penalty layers that match real
+    swing-trading workflow. Higher is better.
+    """
+    bayes_score = _parse_score_num(row.get("Rise Prob", 0), 0.0)
+    op_score = _parse_score_num(row.get("Op Score", 0), 0.0)
+    event_score = _parse_score_num(row.get("Event Score", 0), 0.0)
+    news_score = _news_score_from_event_row(row)
+    sector_score = _sector_tailwind_score(row.get("Sector", ""))
+    earnings_pen = _earnings_risk_penalty(row.get("Days Out", None), row.get("Earnings", ""))
+    trap_pen = _trap_risk_penalty(row.get("Trap Risk", "–"))
+
+    # Main rank formula. Keep Bayesian dominant but not absolute.
+    final = (
+        bayes_score * 0.55
+        + op_score * 4.0
+        + news_score * 5.0
+        + event_score * 0.8
+        + sector_score * 3.0
+        - earnings_pen
+        - trap_pen
+    )
+
+    return {
+        "Bayes Score": round(bayes_score, 2),
+        "Operator Score": round(op_score, 2),
+        "News Score": round(news_score, 2),
+        "Sector Score": round(sector_score, 2),
+        "Earnings Risk": round(earnings_pen, 2),
+        "Trap Risk Score": round(trap_pen, 2),
+        "Final Swing Score": round(final, 2),
+    }
+
+
+def _make_swing_picks_from_scan(df_long_in: pd.DataFrame, max_candidates: int = 25, event_days: int = 30) -> pd.DataFrame:
+    """Merge latest long-signal output with Event Predictor scoring and
+    v13.10 Bayesian ensemble ranking.
+
+    Uses Bayesian probability as the base, then adds operator/smart-money,
+    news/orders, sector tailwind and earnings/trap penalties. No simple ML is
+    used in live ranking.
     """
     if df_long_in is None or df_long_in.empty or "Ticker" not in df_long_in.columns:
         return pd.DataFrame()
@@ -4837,10 +4917,17 @@ def _make_swing_picks_from_scan(df_long_in: pd.DataFrame, max_candidates: int = 
         ] if c in tech_pref.columns]].copy()
         out["Earnings"] = "–"
         out["News"] = "–"
+        out["Event Score"] = 0
         out["Event Verdict"] = "–"
+        # Build ensemble score even when event/news fetch fails.
+        rank_rows = []
+        for _, rr in out.iterrows():
+            rank_rows.append(_calc_final_swing_score(rr))
+        if rank_rows:
+            out = pd.concat([out.reset_index(drop=True), pd.DataFrame(rank_rows)], axis=1)
         out["Swing Verdict"] = "👀 WATCH — tech only"
-        out["Why"] = "Event/news fetch unavailable; use technical setup only."
-        return out
+        out["Why"] = "Event/news fetch unavailable; ranking uses technical + operator factors only."
+        return out.sort_values("Final Swing Score", ascending=False) if "Final Swing Score" in out.columns else out
 
     event_cols = [c for c in [
         "Ticker", "Earnings", "Days Out", "EPS Trend", "News", "Orders",
@@ -4873,15 +4960,18 @@ def _make_swing_picks_from_scan(df_long_in: pd.DataFrame, max_candidates: int = 
         except Exception:
             near_earn = "≤7" in earnings
 
+        rank_bits = _calc_final_swing_score(r)
+        final_score = rank_bits["Final Swing Score"]
+
         if near_earn:
             swing_verdict = "🚫 AVOID — earnings ≤7d"
         elif trap_risk in ("FALSE BO", "GAP CHASE", "DISTRIB"):
             swing_verdict = f"⏳ WAIT — {trap_risk} risk"
-        elif tech_ok and event_rank >= 2 and op_score >= 4:
+        elif tech_ok and event_rank >= 2 and op_score >= 4 and final_score >= 55:
             swing_verdict = "✅ BUY / WATCH ENTRY"
-        elif watch_ok and event_rank >= 2:
+        elif watch_ok and final_score >= 48:
             swing_verdict = "👀 WATCH"
-        elif watch_ok and event_rank >= 1:
+        elif watch_ok and final_score >= 40:
             swing_verdict = "⏳ WAIT"
         else:
             swing_verdict = "🚫 AVOID"
@@ -4895,14 +4985,15 @@ def _make_swing_picks_from_scan(df_long_in: pd.DataFrame, max_candidates: int = 
         if r.get("Orders", "–") not in ("–", "nan", None): why_parts.append(str(r.get("Orders")))
 
         item = r.to_dict()
+        item.update(rank_bits)
         item["Event Verdict"] = event_v if event_v and event_v != "nan" else "–"
         item["Swing Verdict"] = swing_verdict
         item["Why"] = " · ".join(why_parts)
         item["_swing_rank"] = (
             (3 if swing_verdict.startswith("✅") else 2 if swing_verdict.startswith("👀") else 1 if swing_verdict.startswith("⏳") else 0),
+            item.get("Final Swing Score", 0),
             rise,
             op_score,
-            _safe_float_event(r.get("Event Score"), 0),
         )
         rows.append(item)
 
@@ -4918,11 +5009,11 @@ def _make_swing_picks_from_scan(df_long_in: pd.DataFrame, max_candidates: int = 
 
 
 with tab_swing_picks:
-    st.caption("🎯 Swing Picks — scanner factors + earnings guard + Yahoo news/event scoring")
+    st.caption("🎯 Swing Picks — Bayesian ensemble rank: scanner + operator + earnings + news + sector")
     st.info(
-        "Run **🚀 Scan** first. This tab takes the latest Long Setups, then adds "
-        "earnings risk, recent Yahoo news sentiment, order/contract keywords, "
-        "and a final swing verdict. It is meant to reduce false BUYs before earnings/news traps."
+        "Run **🚀 Scan** first. This tab keeps Bayesian as the base model, then adds "
+        "operator activity, recent Yahoo news sentiment, order/contract keywords, sector tailwind, "
+        "and earnings/trap penalties. Simple ML has been removed because it did not improve AUC."
     )
 
     c1, c2, c3 = st.columns([1, 1, 2])
@@ -4966,7 +5057,9 @@ with tab_swing_picks:
             st.success(f"✅ {buy_n} BUY/WATCH ENTRY · 👀 {watch_n} WATCH · ⏳ {wait_n} WAIT · 🚫 {avoid_n} AVOID")
 
             display_cols = [c for c in [
-                "Ticker", "Swing Verdict", "Entry Quality", "Rise Prob", "Action",
+                "Ticker", "Swing Verdict", "Final Swing Score", "Bayes Score",
+                "Operator Score", "News Score", "Sector Score", "Earnings Risk",
+                "Trap Risk Score", "Entry Quality", "Rise Prob", "Action",
                 "Operator", "Op Score", "VWAP", "Trap Risk", "Today %", "Price",
                 "Sector", "Earnings", "Days Out", "EPS Trend", "News", "Orders",
                 "Event Score", "Event Verdict", "Why", "Top News",
@@ -6401,570 +6494,431 @@ with tab_backtest:
             "65–70% on 50+ samples. Past performance is not a guarantee."
         )
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # v13.7: PER-SIGNAL WEIGHT CALIBRATION
-    # The biggest accuracy lever available: replace hand-set weights with the
-    # measured forward-return hit rate of each signal in isolation. Walk the
-    # same historical bars as the backtest above, but instead of evaluating
-    # gated trades, record for every active signal: "did the next H bars
-    # close higher / lower". The empirical hit rate becomes the new weight.
-    # Persisted in st.session_state for the rest of the Streamlit session,
-    # consumed transparently by bayesian_prob via the LONG_WEIGHTS /
-    # SHORT_WEIGHTS identity check.
-    # ─────────────────────────────────────────────────────────────────────────
-    st.markdown("---")
-    st.subheader("⚖️ Calibrate signal weights")
-    st.caption(
-        "Replace the hand-set weights in `LONG_WEIGHTS` / `SHORT_WEIGHTS` with the "
-        "measured forward-return hit rate of each signal in isolation. Uses the "
-        "same tickers, history, and horizon as the backtest above. Results are "
-        "session-scoped — restart Streamlit to revert. Apply on a representative "
-        "ticker basket (15+ names recommended) to avoid overfitting."
+
+    st.info(
+        "ML was removed because the simple model did not improve AUC over the "
+        "bucket-capped Bayesian engine. The live scanner now uses Bayesian as "
+        "the base signal and ranks candidates with an ensemble score: Bayesian "
+        "+ operator activity + news/orders + sector strength - earnings/trap risk."
     )
 
-    def _calibrate_signal_hit_rates(tickers: list, horizon: int, period: str,
-                                    side: str = "long",
-                                    min_samples: int = 30) -> tuple:
+    st.markdown(
         """
-        Returns (rates_dict, counts_dict).
-        rates_dict[signal_key]  = empirical fraction of bars where signal was True
-                                  AND forward H-day return moved in expected direction
-        counts_dict[signal_key] = sample size (only signals with N >= min_samples
-                                  are returned)
+**New validation target for swing trading:** a setup is considered a useful winner only if it reaches a profit target before hitting a stop.
+
+Default label used for manual validation:
+
+```text
+Winner = next 10 trading days hits +6% before -4% stop
+Loser  = -4% stop hits first, or +6% is never reached
+```
+
+This is more realistic than the old binary label: `price is higher after N days`. Use this section as the rule for judging the scanner, not the removed simple ML AUC.
         """
-        from collections import defaultdict
-        wins  = defaultdict(int)
-        total = defaultdict(int)
-        for t in tickers:
-            try:
-                raw = yf.download(t, period=period, interval="1d",
-                                  progress=False, auto_adjust=True)
-                df = _bt_flatten(raw)
-                if df.empty or len(df) < 260:
-                    continue
-                closes = df["Close"].ffill().dropna()
-                highs  = df["High"].ffill().dropna()
-                lows   = df["Low"].ffill().dropna()
-                vols   = df["Volume"].ffill().dropna()
-                for end in range(220, len(closes) - horizon, 3):
-                    c = closes.iloc[:end]; h = highs.iloc[:end]
-                    l = lows.iloc[:end];   v = vols.iloc[:end]
-                    try:
-                        long_sig, short_sig, _ = compute_all_signals(c, h, l, v)
-                    except Exception:
-                        continue
-                    p_now = float(c.iloc[-1])
-                    p_fut = float(closes.iloc[end + horizon])
-                    if p_now <= 0 or np.isnan(p_now) or np.isnan(p_fut):
-                        continue
-                    fwd = (p_fut / p_now - 1) * 100
-                    sigs = long_sig if side == "long" else short_sig
-                    win  = (fwd > 0) if side == "long" else (fwd < 0)
-                    for k, active in sigs.items():
-                        if active:
-                            total[k] += 1
-                            wins[k]  += int(win)
-            except Exception:
-                continue
+    )
 
-        rates  = {}
-        counts = {}
-        for k, n in total.items():
-            if n >= min_samples:
-                rates[k]  = wins[k] / n
-                counts[k] = n
-        return rates, counts
-
-    cal_cols = st.columns([1, 1, 2])
-    with cal_cols[0]:
-        run_long_cal = st.button("📊 Calibrate Long Weights",
-                                 key="run_long_cal", type="secondary")
-    with cal_cols[1]:
-        run_short_cal = st.button("📊 Calibrate Short Weights",
-                                  key="run_short_cal", type="secondary")
-    with cal_cols[2]:
-        if st.button("↩️ Reset to defaults", key="reset_cal"):
-            st.session_state.pop("calibrated_long_weights",  None)
-            st.session_state.pop("calibrated_short_weights", None)
-            st.session_state.pop("cal_long_table",  None)
-            st.session_state.pop("cal_short_table", None)
-            st.success("Calibrated weights cleared. Engine reverted to defaults.")
-
-    def _run_calibration(side: str):
-        bt_tickers = [t.strip().upper() for t in bt_tickers_txt.split(",") if t.strip()]
-        if len(bt_tickers) < 5:
-            st.warning(f"Use at least 5 tickers — got {len(bt_tickers)}. "
-                       "Calibration on a tiny basket overfits.")
-            return
-        bt_tickers = bt_tickers[:25]   # cap
-        with st.spinner(f"Walking {len(bt_tickers)} tickers × {bt_period} of "
-                        f"history for {side} signals..."):
-            rates, counts = _calibrate_signal_hit_rates(
-                bt_tickers, bt_horizon, bt_period, side=side, min_samples=30
-            )
-        if not rates:
-            st.error("Not enough data. Increase tickers, history, or lower horizon.")
-            return
-        defaults = LONG_WEIGHTS if side == "long" else SHORT_WEIGHTS
-        # Clip measured rates to a sensible range. Rates below 0.50 mean the
-        # signal is anti-predictive; we floor at 0.50 (no info) rather than
-        # invert, because inverting a single signal usually reflects an
-        # in-sample artifact rather than a robust contrarian edge.
-        clipped = {k: max(0.50, min(0.78, v)) for k, v in rates.items() if k in defaults}
-        # Merge with defaults: signals below the sample threshold keep defaults
-        merged = {**defaults, **clipped}
-        if side == "long":
-            st.session_state["calibrated_long_weights"]  = merged
-        else:
-            st.session_state["calibrated_short_weights"] = merged
-        # Build comparison table
-        rows = []
-        for k in sorted(defaults.keys()):
-            rows.append({
-                "Signal":         k,
-                "Default":        defaults[k],
-                "Measured":       round(rates[k], 4)   if k in rates  else None,
-                "Clipped":        round(clipped[k], 4) if k in clipped else None,
-                "Δ":              round((clipped[k] - defaults[k]), 3) if k in clipped else None,
-                "Samples":        counts.get(k, 0),
-                "Bucket":         SIGNAL_BUCKETS.get(k, "—"),
-            })
-        df_cal = pd.DataFrame(rows)
-        if side == "long":
-            st.session_state["cal_long_table"]  = df_cal
-        else:
-            st.session_state["cal_short_table"] = df_cal
-        st.success(
-            f"Calibrated {len(clipped)} of {len(defaults)} {side} signals. "
-            f"The rest had < 30 samples and kept their defaults. Live scanner now "
-            f"uses these weights — re-run Scan to see the effect."
-        )
-
-    if run_long_cal:  _run_calibration("long")
-    if run_short_cal: _run_calibration("short")
-
-    # Comparison tables
-    for tag, label, key in [("long",  "📈 Long signals",  "cal_long_table"),
-                            ("short", "📉 Short signals", "cal_short_table")]:
-        df_cal = st.session_state.get(key)
-        if df_cal is None or df_cal.empty:
-            continue
-        active = (st.session_state.get(f"calibrated_{tag}_weights") is not None)
-        st.markdown(f"**{label}** · {'🟢 ACTIVE in live scanner' if active else '⚪ inactive'}")
-        st.dataframe(
-            df_cal,
-            width="stretch",
-            hide_index=True,
-            column_config={
-                "Signal":   st.column_config.TextColumn(width=170),
-                "Default":  st.column_config.NumberColumn(format="%.2f", width=70),
-                "Measured": st.column_config.NumberColumn(format="%.3f", width=80),
-                "Clipped":  st.column_config.NumberColumn(format="%.3f", width=80),
-                "Δ":        st.column_config.NumberColumn(format="%+.3f", width=70),
-                "Samples":  st.column_config.NumberColumn(width=70),
-                "Bucket":   st.column_config.TextColumn(width=90),
-            },
-        )
+    st.caption(
+        "Live ranking columns are visible in 🎯 Swing Picks: Bayes Score, Operator Score, "
+        "News Score, Sector Score, Earnings Risk, Trap Risk and Final Swing Score."
+    )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 8 — HELP
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_help:
-    st.markdown("## ❓ How to Use the Swing/Long Term Scanner v13.1")
-    st.caption("Updated guide for v13.5: Yahoo/live + existing ticker universe for Operator Activity, operator/smart-money activity, VWAP confirmation, false-breakout/distribution trap filters, options enrichment, diagnostics, and compact searchable grids.")
+    st.markdown("## ❓ How to Use the Swing/Long Term Scanner v13.12")
+    st.caption(
+        "Latest guide: fixed bucket-capped Bayesian scoring, Bayesian ensemble ranking, "
+        "Yahoo/live + existing ticker universe, operator/smart-money activity, earnings/news "
+        "risk checks, Swing Picks, Long Term combined universe, Diagnostics scanned ticker list, "
+        "and compact searchable grids. ML and calibration tools have been removed."
+    )
 
-    # ── QUICK START ───────────────────────────────────────────────────────────
-    with st.expander("🚀 Quick Start — what to use each tab for", expanded=True):
+    # ── VERSION SUMMARY ─────────────────────────────────────────────────────
+    with st.expander("🆕 What changed in the latest version", expanded=True):
         st.markdown("""
-**1) Choose a market at the top**
-- 🇺🇸 **US** — US swing setup scanning and US ETF sector heatmap.
-- 🇸🇬 **SGX** — Singapore swing setup scanning, SGX stock-group heatmap, and SG long-term stock builder.
-- 🇮🇳 **India** — NSE swing setup scanning and India sector-index heatmap.
+### Current engine
+The scanner now uses a simpler and more stable ranking stack:
 
-**2) Use the tab based on your goal**
+```text
+Fixed Bayesian signal weights
++ bucket-cap to reduce double-counting correlated signals
++ operator / smart-money confirmation
++ news and order/contract catalyst score
++ sector strength
+- earnings risk
+- trap risk such as false breakout, gap chase, distribution
+```
 
-| Goal | Go to tab | What it does |
+# ── QUICK START ─────────────────────────────────────────────────────────
+    with st.expander("🚀 Quick Start — what to do first"):
+        st.markdown("""
+1. Pick the market at the top: **US**, **SGX**, or **India**.
+2. Turn on **Use live market universe** if you want Yahoo/live movers added to the existing list.
+3. Keep **Always include tickers** for names you never want excluded, for example `UUUU, APP`.
+4. Click **🚀 Scan**.
+5. Start with **🎯 Swing Picks** for the final ranked shortlist.
+6. Open **🔬 Stock Analysis** before entry to check support, resistance, stop, and chart context.
+
+For normal swing trading, use this flow:
+
+```text
+Sector Heatmap → Long Setups → Swing Picks → Stock Analysis → Earnings / News check → Entry decision
+```
+        """)
+
+    # ── TAB GUIDE ───────────────────────────────────────────────────────────
+    with st.expander("🧭 Tab guide — latest tabs explained"):
+        st.markdown("""
+| Tab | Use it for | Latest behavior |
 |---|---|---|
-| Find strong 5–7 day buy setups | 📈 Long Setups | Shows bullish swing candidates after scan |
-| Find bearish / short setups | 📉 Short Setups | Shows breakdown / bearish setups |
-| Compare long and short lists | 🔄 Side by Side | Longs and shorts together |
-| Find operator/smart-money footprints | 🪤 Operator Activity | Uses latest scanned Yahoo/live + existing ticker universe when enabled |
-| Check hot / weak sectors first | 🗂️ Sector Heatmap | Market-aware sector strength map |
-| Analyse one stock deeply | 🔬 Stock Analysis | Chart, indicators, stops, targets, notes |
-| Check upcoming earnings risk | 📅 Earnings | Upcoming earnings + verdict scoring |
-| Build 1–3 year SG portfolio | 🌱 Long Term | SG stocks, SG funds/ETFs, US funds/ETFs |
-| Debug why a ticker passed/failed | 🔍 Diagnostics | Full signal condition breakdown |
-
-**3) Scan button logic**
-The main scan button is for swing-trading tabs only. It should not be used inside **📅 Earnings** or **🌱 Long Term** because those tabs have their own buttons and logic.
-
-**4) Always verify before buying**
-After a ticker appears in Long/Short Setups, open **🔬 Stock Analysis** or **🔍 Diagnostics** to confirm support, resistance, risk/reward, and earnings risk.
+| 🗂️ **Sector Heatmap** | Check strongest / weakest sectors first | US uses sector ETFs; SGX uses stock-group averages; India uses NSE sector indices |
+| 📈 **Long Setups** | Bullish swing candidates | Uses fixed Bayesian bucket-capped probability + operator/VWAP/trap columns |
+| 🎯 **Swing Picks** | Final actionable shortlist | Ranks Long Setups using Final Swing Score: Bayes + operator + news + sector - earnings/trap risk |
+| 📉 **Short Setups** | Bearish / breakdown candidates | Best suited to US market; SGX/India shorting may be limited by broker/product access |
+| 🪤 **Operator Activity** | Smart-money / manipulation footprint scan | Uses actual scanned universe; live mode includes Yahoo/live + existing tickers |
+| 🔄 **Side by Side** | Compare long and short ideas | Useful for spotting conflict, sector concentration, or weak market breadth |
+| 📊 **ETF Holdings** | Add ETF constituents to scan universe | Mainly useful for US ETFs and thematic/sector lists |
+| 🔬 **Stock Analysis** | Deep dive for one ticker | Shows chart, indicators, support/stop/target style analysis |
+| 📅 **Earnings** | Earnings date and earnings-risk review | Helps avoid fresh swing buys just before earnings |
+| 📰 **Event Predictor** | News / event catalyst scan | Uses news headlines, sentiment, order/contract/catalyst keywords where available |
+| 🌱 **Long Term** | 1–3 year stock/fund ideas | Uses existing tickers + ETF tickers + ETF holdings + Yahoo/live tickers |
+| 🔍 **Diagnostics** | Debug and verify scan logic | Shows market, universe source, counts, and comma-separated scanned ticker list |
+| 🧪 **Accuracy Lab** | Backtest / validation notes | ML and calibration removed; use it to understand signal behavior and swing-target logic |
+| ❓ **Help** | This guide | Updated for latest tabs and changes |
         """)
 
-    # ── MARKET SELECTOR ───────────────────────────────────────────────────────
-    with st.expander("🌍 Market selector — what changes per market"):
+    # ── UNIVERSE ────────────────────────────────────────────────────────────
+    with st.expander("🌍 Ticker universe — what gets scanned"):
         st.markdown("""
-The market selector controls the heatmap source, currency formatting, and scan universe. When **Use live market universe** is ON in the sidebar, the scanner uses **Yahoo expanded live screeners/index tickers plus the full existing curated ticker list**, then adds anything in **Always include tickers** on top. This keeps existing watchlist names such as UUUU and APP in the scan even when they are not in today's movers.
+### Swing scan universe
+When **Use live market universe** is OFF:
 
-| Feature | 🇺🇸 US | 🇸🇬 SGX | 🇮🇳 India |
-|---|---|---|---|
-| Swing ticker universe | Yahoo movers + US index constituents | SGX securities feed / STI fallback | NSE live index constituents |
-| Sector heatmap | US sector ETFs | SG stock-group averages | NSE sector indices |
-| Currency shown | USD `$` | SGD `S$` | INR `₹` |
-| Short setup usefulness | High | Limited | Limited for retail |
-| Liquidity | Highest | Lower, use limit orders | Good for large caps |
+```text
+Existing curated tickers + extra tickers + always-include tickers
+```
 
-**Important:** SGX has no liquid sector ETFs, so SG heatmap is calculated from average returns of stock groups like Banks, REITs, Telecoms, Transport, Shipping, and Tech.
+When **Use live market universe** is ON:
+
+```text
+Yahoo/live tickers + current/index/live sources + existing curated tickers + extra tickers + always-include tickers
+```
+
+This means tickers already in your existing lists, such as **UUUU** and **APP**, should remain included even if Yahoo movers do not return them that day.
+
+### Max live stocks to scan
+This is a **cap**, not a guaranteed number. If Yahoo/live sources return only 274 unique names, and existing list overlap reduces duplicates, the final count may be below 1000.
+
+### Long Term universe
+The **🌱 Long Term** tab has its own combined universe:
+
+```text
+Existing tickers + ETF tickers + ETF holdings + Yahoo/live tickers
+```
+
+### Diagnostics check
+Use **🔍 Diagnostics** after a scan to confirm:
+- total scanned count
+- live ticker count
+- existing ticker count
+- universe source
+- exact comma-separated ticker list
         """)
 
-    # ── MAIN TABS ─────────────────────────────────────────────────────────────
-    with st.expander("🧭 Tab guide — what each tab now does"):
+    # ── BAYESIAN ENGINE ─────────────────────────────────────────────────────
+    with st.expander("🧠 Scoring engine — Bayesian bucket-cap + ensemble ranking"):
         st.markdown("""
-| Tab | Use it for | Notes |
-|---|---|---|
-| 🗂️ **Sector Heatmap** | See strongest/weakest sectors before scanning | Refreshes from yfinance cache |
-| 📈 **Long Setups** | 5–7 day bullish swing ideas | Uses Bayesian probability + signal score |
-| 📉 **Short Setups** | Bearish setups / breakdowns | Best for US market; use caution elsewhere |
-| 🔄 **Side by Side** | Compare long and short results | Helps spot sector concentration |
-| 🪤 **Operator Activity** | Scan manipulation footprints | Uses the latest scanned live market universe when enabled |
-| 📊 **ETF Holdings** | Pull US ETF holdings into scan universe | Mainly useful for US sector/thematic ETFs |
-| 🔬 **Stock Analysis** | Detailed chart and trade plan for one ticker | Use this before entry |
-| 📅 **Earnings** | Upcoming earnings scanner | Uses EPS trend, MA50/MA200, analyst target/rec |
-| 🌱 **Long Term** | 1–3 year portfolio ideas | SG Stocks + SG Funds/ETFs + US Funds/ETFs |
-| 🔍 **Diagnostics** | Debug signal logic | Shows every pass/fail condition |
-| ❓ **Help** | This guide | Updated for v13.1 |
+### 1. Bayesian probability
+The scanner uses fixed signal weights from the code. Examples:
+- volume breakout
+- volume surge up
+- pocket pivot
+- trend daily
+- weekly trend
+- OBV rising
+- strong close
+- VWAP support
+- relative strength
+- options signals where available
+
+### 2. Bucket-cap
+Many signals overlap. For example:
+
+```text
+trend_daily + weekly_trend + full_ma_stack + near_52w_high
+```
+
+All of these partly measure trend. Bucket-cap reduces double-counting by allowing the strongest signal in a bucket to count most, and later signals in the same bucket count less.
+
+### 3. Final Swing Score
+The **🎯 Swing Picks** tab does not rely only on Rise Prob. It ranks using:
+
+```text
+Bayes Score
++ Operator Score
++ News Score
++ Sector Score
+- Earnings Risk
+- Trap Risk Score
+= Final Swing Score
+```
+
+This is better for practical swing trading because a high-probability technical setup can still be bad if earnings are tomorrow, news is negative, or the move is a gap-chase trap.
         """)
 
-    # ── SWING LOGIC ───────────────────────────────────────────────────────────
-    with st.expander("📊 Swing setup logic — long, short, probability, and entry quality"):
+    # ── SWING PICKS ─────────────────────────────────────────────────────────
+    with st.expander("🎯 Swing Picks tab — how to read it"):
         st.markdown("""
-### Long setup engine
-The long scanner combines trend, momentum, volume, volatility, relative strength, and structure signals.
+The **Swing Picks** tab is the main shortlist tab.
 
-Important signals include:
-- **Trend Daily:** price > EMA8 > EMA21
-- **Weekly / higher trend:** broader trend confirmation
-- **Volume breakout:** price near 10-day high with strong volume
-- **Pocket pivot / volume surge up:** institutional-style accumulation
-- **MACD acceleration:** momentum improving
-- **Stoch bounce:** oversold bounce confirmation
-- **Near 52-week high:** momentum leadership
-- **OBV rising:** accumulation
-- **Strong close:** buyers controlled the close
-- **VCP tightness:** volatility contraction before expansion
+It starts from the latest **Long Setups** scan and enriches each ticker with:
+- **Bayes Score** — technical probability score
+- **Operator Score** — smart-money / accumulation footprint
+- **News Score** — recent catalyst/headline strength
+- **Sector Score** — sector tailwind
+- **Earnings Risk** — penalty for nearby earnings or event risk
+- **Trap Risk Score** — penalty for false breakout, gap chase, or distribution risk
+- **Final Swing Score** — final ranking score
 
-### Short setup engine
-The short scanner looks for bearish trend, overbought rollover, MACD deceleration, high-volume red candles, 10-day breakdowns, lower highs, and MA60 stop-break behavior.
-
-### Probability engine
-The script uses weighted Bayesian-style probability. Stronger signals move the probability more than weak/noisy signals. Market regime then adjusts the result:
-
-| Regime | Meaning | Effect |
-|---|---|---|
-| 🟢 **BULL** | SPY above EMA20 and VIX below 20 | Normal long thresholds |
-| 🟡 **CAUTION** | Mixed market | Longs stricter; shorts slightly boosted |
-| 🔴 **BEAR** | SPY below EMA50 or VIX high | Longs much stricter; shorts boosted |
-
-### Entry Quality
-Long tables show **BUY / WATCH / WAIT / AVOID** based on trend, probability, volume, and entry-risk filters. Do not buy only because probability is high; confirm entry level and stop.
-        """)
-
-    # ── EARNINGS ──────────────────────────────────────────────────────────────
-    with st.expander("📅 Earnings tab — how to read it"):
-        st.markdown("""
-The Earnings tab scans for upcoming earnings dates and gives a quick verdict.
-
-It checks:
-- **Days Out** — how close the earnings event is
-- **EPS Est vs EPS Last** — whether expected earnings trend is improving
-- **MA50 / MA200** — whether price is technically strong
-- **Analyst Target / Upside** — whether analysts still see upside
-- **Analyst Rec** — buy/hold/sell style rating
-
+### Verdicts
 | Verdict | Meaning |
 |---|---|
-| ✅ **BUY** | Multiple confirmations: trend, target upside, EPS trend, analyst support |
-| 👀 **WATCH** | Some positives but not enough for full confidence |
-| ⏳ **WAIT** | Mixed signals; better to wait until after earnings |
-| 🚫 **AVOID** | Weak trend, weak estimates, or poor setup |
+| ✅ **BUY / WATCH ENTRY** | Strong setup, but still wait for good entry and risk/reward |
+| 👀 **WATCH** | Good candidate but needs confirmation or pullback |
+| ⏳ **WAIT** | Mixed setup, earnings risk, or not enough confirmation |
+| 🚫 **AVOID** | Weak setup, trap risk, or event risk too high |
 
-**Rule:** Earnings are binary. A stock can gap up or down sharply. For swing trades, avoid full-size positions through earnings unless you intentionally accept event risk.
+### Best use
+Do not blindly buy the top row. Prefer:
+
+```text
+High Final Swing Score
++ operator accumulation
++ no false breakout / gap chase
++ earnings not too close
++ clear stop below support
+```
         """)
 
-    # ── LONG TERM ─────────────────────────────────────────────────────────────
-    with st.expander("🌱 Long Term tab — SG stocks, funds, expected return logic"):
+    # ── OPERATOR ────────────────────────────────────────────────────────────
+    with st.expander("🪤 Operator / smart-money activity"):
         st.markdown("""
-The Long Term tab is now focused on practical 1–3 year investing, especially for Singapore investors. Its stock scans use a combined universe: existing curated tickers + ETF tickers/holdings + Yahoo/live market tickers when live universe is enabled.
+Operator activity is a confirmation layer, not a standalone buy signal.
 
-### SG Stocks
-The SG stock list uses a curated universe of Singapore companies such as banks, REITs, industrials, telecom, transport, finance, property, and growth names.
+The scanner looks for footprints such as:
+- high volume with green candle
+- strong close near day high
+- OBV rising
+- price holding above VWAP
+- breakout with volume
+- absorption: red/high-volume day but price closes off lows
 
-Scoring uses:
-- Revenue growth
-- EPS growth
-- ROE and margins
-- Debt level
-- Price vs MA200
-- Analyst target upside
-- Analyst recommendation
-- Dividend yield
+### Operator labels
+| Label | Meaning |
+|---|---|
+| 🔥 **STRONG OPERATOR** | Strong accumulation footprint |
+| 🟢 **ACCUMULATION** | Good smart-money signs |
+| 🟡 **WEAK SIGNS** | Some signs but not enough |
+| ⚪ **NONE** | No clear operator activity |
 
-### Expected 1Y Return
-The **Exp 1Y Return** column is now split into:
-
-`Price appreciation estimate + Dividend yield estimate`
-
-The dividend logic was corrected so abnormal yfinance values do not make stocks like DBS show unrealistic 10% dividends. The displayed dividend estimate is capped/normalised and should be used as an estimate, not a guarantee.
-
-### Funds / ETFs
-- **SG Funds & ETFs**: Singapore-friendly fund/ETF ideas, including Irish-domiciled UCITS alternatives where relevant.
-- **US Funds & ETFs**: US-listed fund/ETF ideas, with a warning about US estate tax risk for non-US persons.
-
-### How to use this tab
-1. Start with **SG Stocks** for direct stock ideas.
-2. Use **Min score** to filter quality.
-3. Use **Search** for tickers like `D05`, `O39`, `AIY`, `OYY`, `C38U`.
-4. Check **Return Breakdown** to see whether expected return is coming from price growth or dividends.
-5. Use dividend names for income; growth names for capital appreciation.
+### Trap labels
+| Trap | Meaning |
+|---|---|
+| **FALSE BO** | Breakout attempt with weak close |
+| **GAP CHASE** | Big move with high volume; avoid chasing |
+| **DISTRIB** | High volume but poor price progress / weak close |
         """)
 
-    # ── COLUMNS ───────────────────────────────────────────────────────────────
+    # ── EARNINGS / NEWS ─────────────────────────────────────────────────────
+    with st.expander("📅 Earnings and 📰 News / Event filters"):
+        st.markdown("""
+### Earnings guard
+The scanner avoids treating a stock as a normal swing buy when earnings are very close. Earnings can create overnight gaps that ignore technical stops.
+
+General rule:
+
+```text
+If earnings are within the next 7 days → reduce size, wait, or treat as event trade only
+```
+
+### News / event scoring
+News and event features look for positive or negative catalyst clues such as:
+- earnings beat / guidance raise
+- contracts / orders / partnerships
+- analyst upgrades / downgrades
+- regulatory or legal risks
+- offering / dilution / investigation headlines
+
+News score improves ranking only when it supports the technical setup. Negative or risky news should reduce confidence.
+        """)
+
+    # ── LONG / SHORT LOGIC ──────────────────────────────────────────────────
+    with st.expander("📈 Long Setups and 📉 Short Setups — signal logic"):
+        st.markdown("""
+### Long Setups
+Important long signals include:
+- price > EMA8 > EMA21
+- weekly trend confirmation
+- volume breakout near 10-day high
+- pocket pivot / volume surge up
+- MACD acceleration
+- Stoch RSI confirmation
+- OBV rising
+- strong close
+- VWAP support
+- VCP tightness
+- relative strength vs SPY / sector
+
+### Short Setups
+Important short signals include:
+- price < EMA8 < EMA21
+- high-volume down candle
+- 10-day breakdown
+- lower highs
+- MACD deceleration / bearish cross
+- below VWAP
+- operator distribution
+- MA60 stop break
+
+### Entry quality
+Use **BUY / WATCH / WAIT / AVOID** as a filter, not a command. Always confirm support, resistance, market regime, and stop level.
+        """)
+
+    # ── LONG TERM ───────────────────────────────────────────────────────────
+    with st.expander("🌱 Long Term tab — latest behavior"):
+        st.markdown("""
+The Long Term tab is separate from swing trading. It is designed for 1–3 year ideas and portfolio building.
+
+### Current Long Term universe
+```text
+Existing tickers + ETF tickers + ETF holdings + Yahoo/live tickers
+```
+
+### Sub-tabs
+| Sub-tab | Use it for |
+|---|---|
+| 🇺🇸 **US Stocks** | Long-term US stock candidates from combined universe |
+| 🇸🇬 **SG Stocks** | Singapore long-term stock candidates |
+| 🇸🇬 **SG Funds & ETFs** | Singapore-friendly fund / ETF options |
+| 🇺🇸 **US Funds & ETFs** | US-listed ETFs/funds with tax-risk warning |
+
+### Long-term score considers
+- revenue growth
+- EPS growth
+- ROE / margins
+- debt level
+- dividend yield
+- MA200 trend
+- analyst target upside
+- analyst recommendation
+
+The **Exp 1Y Return** is an estimate, not a guarantee. Dividend values are normalised/capped to avoid unrealistic yfinance dividend anomalies.
+        """)
+
+    # ── ACCURACY LAB ────────────────────────────────────────────────────────
+    with st.expander("🧪 Accuracy Lab — current role"):
+        st.markdown("""
+The old ML and signal calibration controls have been removed.
+
+The preferred validation idea is now the practical swing target:
+
+```text
+Winner = price hits +6% before hitting -4% stop within 10 trading days
+Loser  = -4% stop hits first, or +6% is never reached
+```
+
+This is more useful than simply asking whether the close is higher after N days.
+
+For daily use, rely on:
+
+```text
+Fixed Bayesian weights + bucket-cap + Final Swing Score
+```
+        """)
+
+    # ── COLUMNS ─────────────────────────────────────────────────────────────
     with st.expander("🔎 Important columns explained"):
         st.markdown("""
 | Column | Meaning |
 |---|---|
-| **Rise Prob / Fall Prob** | Bayesian probability estimate from active technical signals |
-| **Score** | Number of active long/short signals (denominator scales with the engine version) |
-| **Operator** | Smart-money/operator label based on volume expansion, strong close, OBV, VWAP and breakout quality |
-| **Op Score** | 0–9 operator-activity score. Prefer longs with 4+ and strong buys with 6+ |
-| **VWAP** | Whether price is above or below VWAP. Above VWAP supports longs; below VWAP supports shorts |
-| **Trap Risk** | Flags false breakout, gap-chase risk, or distribution risk |
-| **Entry Quality** | Practical entry label: BUY, WATCH, WAIT, AVOID |
-| **Today %** | Latest daily percentage change |
-| **MA60 Stop** | Stop reference based on 60-day moving average logic |
-| **TP1 / TP2 / TP3** | Long trade targets at +10%, +15%, +20% where shown |
-| **Smart TP** | Target derived from the option-implied 2-week move (US tickers only) |
-| **Implied Move 2W** | ATM straddle-implied expected move, scaled to ~10 trading days |
-| **IV vs RV** | Front-month ATM IV ÷ 20-day realized vol (proxy for IV Rank) |
-| **Cover Stop** | Stop level for short trades |
-| **Target 1:1 / 1:2** | Risk/reward-based targets |
-| **Opt Flow** | Compact summary of active options-derived signals |
-| **Exp 1Y Return** | Long-term estimated price appreciation + dividend |
-| **Return Breakdown** | Shows how much comes from price vs dividend |
-| **Div Yield** | Normalised dividend yield estimate |
-| **Horizon** | Suggested long-term category: Core, Buy & Hold, Accumulate, Monitor |
+| **Rise Prob / Fall Prob** | Bucket-capped Bayesian probability from active signals |
+| **Score** | Count of active long/short signals |
+| **Bayes Score** | Probability converted into ranking contribution |
+| **Final Swing Score** | Ensemble score used in Swing Picks ranking |
+| **Operator** | Operator/smart-money label |
+| **Op Score / Operator Score** | Numeric smart-money accumulation score |
+| **VWAP** | Whether price is above/below VWAP confirmation |
+| **Trap Risk** | FALSE BO, GAP CHASE, DISTRIB, or none |
+| **Trap Risk Score** | Penalty used in Final Swing Score |
+| **News Score** | Catalyst/news contribution |
+| **Sector Score** | Sector tailwind contribution |
+| **Earnings Risk** | Penalty for upcoming earnings/event risk |
+| **MA60 Stop** | Trend stop area around 60-day moving average |
+| **TP1 / TP2 / TP3** | Example upside targets; not guaranteed |
+| **Sources** | Long Term source: Existing, ETF, ETF holding, Yahoo/live, etc. |
         """)
 
-    # ── OPERATOR / SMART MONEY LAYER ──────────────────────────────────────────
-    with st.expander("🧠 Operator / smart-money layer (v13.1) — live market scan + BUY/SELL accuracy"):
+    # ── PRACTICAL RULES ─────────────────────────────────────────────────────
+    with st.expander("✅ Practical trading rules"):
         st.markdown("""
-This version adds a confirmation layer for **operator / institutional footprints**. The Operator Activity tab now reads from the latest scanned market universe. With **Use live market universe** ON, the universe is **Yahoo expanded live screeners/index tickers plus the existing curated ticker list**. Tickers in **Always include tickers** are also added even when they are not in today's live movers.
+For cleaner swing trades, prefer:
 
-It does not blindly buy because probability is high. A cleaner BUY now needs
-technical strength **plus** smart-money confirmation and no trap warning.
+```text
+Final Swing Score high
++ Rise Prob high
++ Operator Score >= 4
++ price above VWAP
++ no Trap Risk
++ earnings not within 7 days
++ strong sector
+```
 
-### Bullish operator clues
+Avoid or reduce size when:
 
-| Clue | Meaning |
-|---|---|
-| Volume ≥2× on a green candle | Aggressive buying interest |
-| Volume ≥1.5× + strong close | Buyers controlled the close |
-| OBV rising | Accumulation before/with price movement |
-| Breakout near 10-day high with volume | More likely a real breakout |
-| Price above VWAP | Buyers are in control of average traded price |
-| Red high-volume day closing off lows | Possible absorption/accumulation |
+```text
+Gap chase
+False breakout
+Distribution label
+Earnings very close
+Very wide spread / low liquidity
+Market regime is BEAR or VIX is high
+```
 
-### Trap warnings
-
-| Trap Risk | Meaning | Action |
-|---|---|---|
-| **FALSE BO** | Price breaks 10-day high on volume but does not close strong | Downgrade to WATCH |
-| **GAP CHASE** | Price already jumped >7% with >2.5× volume | Wait for pullback |
-| **DISTRIB** | High volume but weak close / price cannot advance | Avoid fresh long; supports SELL/short watch |
-
-### Practical rule
-- Prefer **BUY** only when `Op Score >= 4`, price is **ABOVE VWAP**, and `Trap Risk = –`.
-- Treat `Op Score >= 6` as stronger smart-money confirmation.
-- For shorts, prefer **BELOW VWAP** plus `DISTRIB`, `VOL BREAKDOWN`, or `DIST DAY`.
-
-This reduces the number of BUY/SELL calls, but should improve quality by avoiding
-false breakouts, pump-chase entries, and weak probability-only signals.
+Suggested risk framework:
+- Risk small per trade.
+- Put stop below support or MA60 stop area.
+- Do not average down blindly.
+- Take partial profit near TP1 if move is fast.
+- For SGX names, use limit orders due to wider spreads.
         """)
 
-    # ── OPTIONS LAYER ─────────────────────────────────────────────────────────
-    with st.expander("🧩 Options enrichment (v12) — what it adds and how to read it"):
-        st.markdown("""
-v12 adds a forward-looking options layer on top of the existing technical
-Bayesian engine. Two backends are wired in:
-
-| Market | Backend | Coverage |
-|---|---|---|
-| 🇺🇸 US | **yfinance** | All optionable US-listed stocks |
-| 🇮🇳 India | **nsepython** (`pip install nsepython`) | F&O list only — about 200 stocks have liquid option chains on NSE |
-| 🇸🇬 SGX | — | No liquid single-stock options market exists. SGX scans skip this layer entirely; the toggle has no effect on SGX. |
-
-The toggle is in the sidebar: **"Use options data (US + India F&O, +30–60s)"**.
-The helper checkbox **"Filter: only options-confirmed setups"** hides any
-stock that didn't fire an option signal — fastest way to confirm the layer
-is actually flowing on your machine.
-
-### Bullish flags
-
-| Tag | Meaning | Why it matters for swing |
-|---|---|---|
-| **🔥CALL FLOW** | Any near-money call strike with today's volume > 3× its open interest, plus a meaningful absolute volume baseline | Captures fresh, aggressive call positioning that often front-runs price |
-| **📈CALL SKEW** | 10% OTM call IV ≥ 10% OTM put IV (proxy for a positive 25Δ risk reversal) | Call demand priced richer than put demand — unusual, typically bullish |
-| **P/C↓** | Total put/call volume across the chain < 0.6 | Call-biased session — confirms directional bias |
-| **IV CHEAP** | Front-month ATM IV < 0.85 × 20-day realized vol | Calm-bull regime; IV underpricing realized often precedes trends |
-
-### Bearish flags
-
-| Tag | Meaning | Why it matters |
-|---|---|---|
-| **🔻PUT FLOW** | Near-money put with volume > 3× OI | Fresh hedging or directional shorts |
-| **📉PUT SKEW** | 10% OTM put IV ≥ 5 vol pts above 10% OTM call IV | Fear bid for downside protection |
-| **⚠️IV INVERTED** | Front-month ATM IV > back-month ATM IV (≥5%) | Acute near-term event/fear priced in. Also **downgrades a fresh ✅ BUY to 👀 WATCH** because event risk dominates the swing horizon |
-| **P/C↑** | Total put/call volume > 1.5 | Defensive session — confirms downside positioning |
-
-### Risk / context flags
-
-| Tag | Meaning |
-|---|---|
-| **⚠️IV RICH** | Front-month IV > 1.4 × realized vol — options expensive, often around earnings or pending news |
-
-### How `Smart TP` works
-The **Implied Move 2W** column is the ATM straddle expressed as % of spot,
-scaled by √(t) to roughly 10 trading days. **Smart TP** = price ×
-(1 + max(implied move, 5%)) — a target the market itself believes is in
-range. If your TP1 (+10%) sits well outside the implied move, the market
-is telling you that target is in the tail — size accordingly.
-
-### India-specific notes
-- NSE returns the **whole option chain in one JSON** (all expiries, all
-  strikes). The code splits it per expiry and maps NSE field names to the
-  yfinance schema so the downstream signal logic is identical for both
-  markets.
-- NSE quotes **IV in percent** (e.g. `35.5`); yfinance returns **fractions**
-  (e.g. `0.355`). The NSE backend divides by 100 internally — you don't
-  need to do anything.
-- **Rate limits are tighter than yfinance.** First scan after a long idle
-  period may hit a 401/cooldown. The 15-minute cache and the technical
-  pre-filter (≥4 long signals or ≥3 short signals) cap the call rate.
-- Only stocks on the NSE F&O list have chains. Most mid/small caps in
-  `INDIA_TICKERS` won't have option data — that's expected, not a bug.
-- NSE chain data is **delayed by 3–5 minutes**. Fine for swing horizons,
-  not for intraday entries.
-
-### What it does NOT do
-- It does **not** override or replace technicals. Each option flag is just
-  another piece of evidence for the same Bayesian engine.
-- It does **not** estimate dealer gamma exposure (would need Black-Scholes
-  greeks and is heuristic on retail data). Easy to add later if useful.
-- It does **not** run on SGX, HK, ASX, EU, JP, KR, or other markets — no
-  free public option-chain feed equivalent to yfinance/nsepython for these.
-
-### Important caveat
-The signal weights (0.62–0.70) are set conservatively by analogy to the
-Tier-2 technical signals. They are **not** backtested. To trust them
-seriously, run a 6–12 month walk-forward and measure each flag's actual
-hit rate vs forward 5-day returns, then update the weights in
-`LONG_WEIGHTS` / `SHORT_WEIGHTS`. Without that, treat options flags as
-**confirming evidence** for technicals you already like, not as
-standalone reasons to enter.
-        """)
-
-    # ── TRADE PLAN ───────────────────────────────────────────────────────────
-    with st.expander("💼 Swing trade plan — stops, targets, sizing"):
-        st.markdown("""
-### Long trades
-- Prefer setups in green sectors and bullish/caution regime.
-- Avoid chasing if price is far above MA20 or `Trap Risk` shows GAP CHASE / FALSE BO.
-- Prefer BUY only when price is above VWAP and operator score is 4+.
-- Use stop loss immediately after entry.
-- Take partial profit at first target when possible.
-
-### Stop loss ideas
-- ATR stop: Entry − 1.5 × ATR
-- Swing stop: below recent swing low
-- MA60 stop: useful for trend-following exits
-
-### Targets
-| Target | Meaning |
-|---|---|
-| **TP1 +10%** | First profit-taking zone |
-| **TP2 +15%** | Strong swing target |
-| **TP3 +20%** | Extended target; not always reached |
-
-### Position sizing
-Risk only a small fixed amount per trade. For example, if your max risk is S$500 and stop distance is S$0.50/share, position size is about 1,000 shares.
-        """)
-
-    # ── SEARCH / REFRESH ──────────────────────────────────────────────────────
-    with st.expander("🔍 Search, refresh, and cache behavior"):
-        st.markdown("""
-- Most result grids now have a **Search** box.
-- Search works by ticker/name where available.
-- yfinance data is cached to keep the app fast.
-- If values look stale, rerun the scan or clear Streamlit cache.
-- If yfinance returns empty data, wait and retry; rate limits happen.
-
-| Data | Approx cache |
-|---|---|
-| Sector heatmaps | 15 minutes |
-| Market regime | 30 minutes |
-| Swing scan results | 60 minutes |
-| Earnings calendar | 60 minutes |
-| ETF holdings / long-term data | 6 hours where cached |
-        """)
-
-    # ── RISK WARNINGS ────────────────────────────────────────────────────────
-    with st.expander("⚠️ Risk warnings — read before trading"):
-        st.warning("""
-**This tool does not provide financial advice. All outputs are estimates and signals only.**
-
-**1. Probability is not certainty.** A 75% probability can still fail.
-
-**2. Earnings risk is high.** Stocks can gap sharply overnight.
-
-**3. Dividend yield can change.** Dividends may be cut, raised, delayed, or special/non-recurring.
-
-**4. SGX liquidity is lower.** Use limit orders; spreads can be wide.
-
-**5. Short selling risk is high.** Losses can exceed your initial capital if unmanaged.
-
-**6. Sector concentration matters.** If many picks are from banks, REITs, tech, or semiconductors, one sector move can hit all positions.
-
-**7. Currency risk matters.** USD, SGD, INR, JPY, GBP, and EUR assets can move differently from your home currency.
-
-**8. Model assumptions can be wrong.** Always check company news, earnings dates, support/resistance, and your own risk tolerance.
-        """)
-
-    # ── INSTALL ──────────────────────────────────────────────────────────────
+    # ── INSTALL ─────────────────────────────────────────────────────────────
     with st.expander("🔧 Install & run"):
         st.markdown("""
 ```bash
-pip install streamlit yfinance pandas numpy ta financedatabase plotly nsepython
+pip install streamlit yfinance pandas numpy ta financedatabase plotly nsepython requests
 python -m streamlit run swing_trader_sector_wise_yfin_simple.py
 ```
 
 If data fetch fails:
+
 ```bash
-pip install --upgrade yfinance nsepython
+pip install --upgrade yfinance nsepython requests
 streamlit cache clear
 ```
 
-Recommended packages:
+Main packages:
 - `streamlit` — app UI
-- `yfinance` — market data + US option chains
+- `yfinance` — prices, fundamentals, earnings, options where available
 - `pandas`, `numpy` — data processing
 - `ta` — technical indicators
 - `financedatabase` — optional ETF/sector data
-- `nsepython` — optional, NSE option chains for India F&O scans
-- `plotly` — charting in Stock Analysis
+- `nsepython` — optional India F&O option chains
+- `requests` — Yahoo/live universe and web data helpers
+- `plotly` — charts where used
         """)
 
-    # ── GLOSSARY ─────────────────────────────────────────────────────────────
+    # ── GLOSSARY ────────────────────────────────────────────────────────────
     with st.expander("📖 Glossary"):
         st.markdown("""
 | Term | Meaning |
@@ -6978,13 +6932,31 @@ Recommended packages:
 | **Bollinger Squeeze** | Volatility compression before possible expansion |
 | **ATR** | Average True Range; used for volatility and stops |
 | **OBV** | On-Balance Volume; accumulation/distribution clue |
+| **VWAP** | Volume-weighted average price; intraday/institutional control clue |
 | **VCP** | Volatility contraction pattern |
 | **RS>SPY** | Stock outperforming SPY over recent days |
-| **Bayesian probability** | Probability estimate updated by active weighted signals |
+| **Bucket-cap** | Reduces double-counting of overlapping signals |
+| **Operator Score** | Smart-money/accumulation footprint score |
+| **Trap Risk** | Warning for false breakout, gap chase, or distribution |
+| **Final Swing Score** | Ensemble ranking score in Swing Picks |
 | **MA60 Stop** | Trend stop around the 60-day moving average |
-| **Dividend Yield** | Annual dividend divided by current price |
 | **Exp 1Y Return** | Estimated price return plus estimated dividend return |
         """)
 
+    # ── RISK WARNINGS ───────────────────────────────────────────────────────
+    with st.expander("⚠️ Risk warnings — read before trading"):
+        st.warning("""
+This tool does not provide financial advice. All outputs are estimates and signals only.
+
+1. Probability is not certainty. A 75% probability can still fail.
+2. Earnings risk is high. Stocks can gap sharply overnight.
+3. News can change quickly. Always check latest headlines before entry.
+4. SGX liquidity is lower. Use limit orders; spreads can be wide.
+5. Short selling risk is high. Losses can exceed initial capital if unmanaged.
+6. Sector concentration matters. Many picks from one sector can fail together.
+7. Currency risk matters for USD, SGD, INR, JPY, GBP, and EUR assets.
+8. Model assumptions can be wrong. Always check support/resistance and risk tolerance.
+        """)
+
     st.markdown("---")
-    st.caption("Swing/Long Term Scanner v11 · US + SGX + India · Not financial advice · Created by Ripin")
+    st.caption("Swing/Long Term Scanner v13.12 · Fixed Bayesian bucket-cap + ensemble ranking · US + SGX + India · Not financial advice · Created by Ripin")
