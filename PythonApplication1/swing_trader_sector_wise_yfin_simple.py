@@ -31,7 +31,7 @@ from datetime import datetime, timedelta
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v13.27",
+    page_title="Swing Scanner v13.28",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -213,14 +213,25 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v13.27")
-st.caption("Swing/Long Term Scanner — Bayesian Ensemble")
+st.title("📈 Swing/Long Term Scanner v13.28")
+st.caption("Swing/Long Term Scanner — Bayesian Ensemble · build 2026-05-04 · script-relative cache")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CSV RESULT CACHE — load previous scan instantly; refresh on demand / interval
 # ─────────────────────────────────────────────────────────────────────────────
-SCAN_CACHE_DIR = Path("scanner_cache")
-SCAN_CACHE_DIR.mkdir(exist_ok=True)
+# v13.10: Anchor the cache directory to the SCRIPT'S OWN location, not CWD.
+# Path("scanner_cache") resolves relative to the working directory Streamlit
+# was launched from — which is often different from where the .py file lives.
+# That made cache files appear "missing" because users looked next to the
+# script while Streamlit wrote them next to wherever they ran the command.
+# Anchoring to __file__ guarantees files always land at <script_dir>/scanner_cache.
+try:
+    _SCRIPT_DIR = Path(__file__).resolve().parent
+except NameError:
+    # __file__ not defined (rare — happens in some interactive contexts)
+    _SCRIPT_DIR = Path.cwd()
+SCAN_CACHE_DIR = _SCRIPT_DIR / "scanner_cache"
+SCAN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _market_cache_key(market: str) -> str:
@@ -256,9 +267,15 @@ def _save_scan_cache(market: str, df_long: pd.DataFrame, df_short: pd.DataFrame,
                      df_operator: pd.DataFrame, meta: dict):
     """Persist latest scan results so the next app start can load instantly.
     Returns the saved metadata so Diagnostics can show cache timing immediately.
+    On failure stores both an error message AND the absolute path attempted
+    so the user can see exactly where files should have been written.
     """
+    paths = _scan_cache_paths(market)
+    abs_dir = SCAN_CACHE_DIR.resolve()
     try:
-        paths = _scan_cache_paths(market)
+        # Ensure the directory exists at write time (in case it was deleted
+        # between import and now)
+        SCAN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         df_long.to_csv(paths["long"], index=False)
         df_short.to_csv(paths["short"], index=False)
         df_operator.to_csv(paths["operator"], index=False)
@@ -269,11 +286,36 @@ def _save_scan_cache(market: str, df_long: pd.DataFrame, df_short: pd.DataFrame,
             "long_rows": int(len(df_long)),
             "short_rows": int(len(df_short)),
             "operator_rows": int(len(df_operator)),
+            "abs_dir": str(abs_dir),
         })
         paths["meta"].write_text(json.dumps(meta, indent=2, default=str), encoding="utf-8")
+        # Record success info in session_state so the UI can show it
+        st.session_state["scan_cache_last_save"] = {
+            "ok":         True,
+            "market":     market,
+            "abs_dir":    str(abs_dir),
+            "long_path":  str(paths["long"].resolve()),
+            "short_path": str(paths["short"].resolve()),
+            "operator_path": str(paths["operator"].resolve()),
+            "meta_path":  str(paths["meta"].resolve()),
+            "saved_at":   meta["saved_at"],
+            "long_rows":  meta["long_rows"],
+            "short_rows": meta["short_rows"],
+        }
+        # Clear any prior warning
+        st.session_state.pop("scan_cache_warning", None)
         return meta
     except Exception as e:
-        st.session_state["scan_cache_warning"] = f"CSV cache save failed: {type(e).__name__}: {e}"
+        st.session_state["scan_cache_warning"] = (
+            f"CSV cache save failed: {type(e).__name__}: {e}\n"
+            f"Attempted directory: {abs_dir}"
+        )
+        st.session_state["scan_cache_last_save"] = {
+            "ok":      False,
+            "market":  market,
+            "abs_dir": str(abs_dir),
+            "error":   f"{type(e).__name__}: {e}",
+        }
         return None
 
 
@@ -3132,14 +3174,144 @@ def diagnose_ticker(ticker, regime):
 # ─────────────────────────────────────────────────────────────────────────────
 # SIDEBAR
 # ─────────────────────────────────────────────────────────────────────────────
+# v13.9: PERSISTENT UI STATE
+# Every sidebar widget binds to st.session_state via a stable `key=` and
+# defaults are pre-seeded in one block below. This guarantees user changes
+# survive every rerun, including cache-clear reruns, until the user
+# explicitly resets them or restarts the Streamlit server.
+#
+# Pattern: widgets must NOT use both `key=` and `value=` — Streamlit
+# deprecates that and the value parameter is silently ignored. The correct
+# pattern is to seed defaults into session_state once, then pass key= only.
+# ─────────────────────────────────────────────────────────────────────────────
+_SIDEBAR_DEFAULTS = {
+    # Scan settings
+    "ui_top_n_sectors":       3,
+    "ui_min_prob_long":       62,
+    "ui_min_prob_short":      60,
+    "ui_skip_earnings":       False,
+    "ui_use_live_universe":   True,
+    "ui_max_live_universe":   1000,
+    "ui_always_include":      "",
+    # Options layer
+    "ui_enable_options":      False,
+    "ui_opt_required":        False,
+    # Bayesian / engine controls
+    "ui_use_bucket_cap":      True,
+    # Long filters
+    "ui_req_stoch":           False,
+    "ui_req_bb":              False,
+    "ui_req_accel":           False,
+    # Short filters
+    "ui_req_s_stoch":         False,
+    "ui_req_s_bb":            False,
+    "ui_req_s_decel":         False,
+    # Misc
+    "ui_extra_input":         "",
+    "ui_load_csv_on_start":   True,
+    "ui_refresh_choice":      "15 min",
+}
+for _k, _v in _SIDEBAR_DEFAULTS.items():
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
+
 st.sidebar.header("Scan settings")
-top_n_sectors  = st.sidebar.slider("Top N green/red sectors to scan", 1, 6, 3)
-min_prob_long  = st.sidebar.slider("Min LONG rise prob (%)",  40, 95, 62)
-min_prob_short = st.sidebar.slider("Min SHORT fall prob (%)", 40, 95, 60)
-skip_earnings  = st.sidebar.checkbox("Skip earnings within 7 days", False)
+
+# v13.9: One-click reset for users who want defaults back, plus cache-status
+# diagnostic panel so the user can SEE whether scanner_cache/*.csv are
+# being written and where.
+with st.sidebar.expander("⚙️ UI settings · save & reset", expanded=False):
+    if st.button("↩️ Reset all sidebar settings to defaults",
+                 key="ui_reset_btn",
+                 help="Reverts all sidebar controls to factory defaults. "
+                      "Does not affect ML models, calibrated weights, or scan results.",
+                 use_container_width=True):
+        for _k, _v in _SIDEBAR_DEFAULTS.items():
+            st.session_state[_k] = _v
+        st.rerun()
+    st.caption(
+        "All sidebar settings now persist across reruns and cache "
+        "refreshes. Restart Streamlit to fully reset."
+    )
+
+with st.sidebar.expander("📦 CSV cache status (where results are saved)", expanded=False):
+    _cache_dir_abs = SCAN_CACHE_DIR.resolve()
+    st.caption(f"**Directory:** `{_cache_dir_abs}`")
+
+    # Probe writability so the user can immediately see permission issues
+    _writable = False
+    _probe_err = None
+    try:
+        SCAN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        _probe = SCAN_CACHE_DIR / ".write_probe"
+        _probe.write_text("ok", encoding="utf-8")
+        _probe.unlink(missing_ok=True)
+        _writable = True
+    except Exception as _e:
+        _probe_err = f"{type(_e).__name__}: {_e}"
+
+    if _writable:
+        st.success("✅ Directory is writable.")
+    else:
+        st.error(f"❌ Cannot write to this directory.\n\n`{_probe_err}`\n\n"
+                 "Run Streamlit from a directory where you have write "
+                 "permission, or change `SCAN_CACHE_DIR` in the source "
+                 "file at the top of the script.")
+
+    # Last save status (set in _save_scan_cache)
+    _last = st.session_state.get("scan_cache_last_save")
+    if _last:
+        if _last.get("ok"):
+            st.markdown(
+                f"**Last save:** {_last['saved_at']}  \n"
+                f"Market: **{_last['market']}**  \n"
+                f"Long rows: **{_last['long_rows']}** · "
+                f"Short rows: **{_last['short_rows']}**"
+            )
+        else:
+            st.error(f"Last save FAILED for {_last.get('market','?')}: "
+                     f"{_last.get('error','?')}")
+
+    # Existing files snapshot
+    existing = []
+    try:
+        for p in sorted(SCAN_CACHE_DIR.glob("*")):
+            if p.is_file():
+                size_kb = p.stat().st_size / 1024
+                mtime = datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                existing.append((p.name, size_kb, mtime))
+    except Exception:
+        pass
+    if existing:
+        st.markdown("**Files currently in cache:**")
+        for name, size_kb, mtime in existing:
+            st.markdown(f"- `{name}` · {size_kb:.1f} KB · {mtime}")
+    else:
+        st.info("📭 No cache files yet. Run a 🚀 Scan to create them.")
+
+    st.caption(
+        "Files written: `<market>_long_setups.csv`, `<market>_short_setups.csv`, "
+        "`<market>_operator_activity.csv`, `<market>_scan_meta.json`, where "
+        "`<market>` is one of `us`, `sgx`, `india`. Updated on every "
+        "successful scan, regardless of whether 'Load latest CSV results on "
+        "app start' is on."
+    )
+
+top_n_sectors  = st.sidebar.slider(
+    "Top N green/red sectors to scan", 1, 6, key="ui_top_n_sectors",
+)
+min_prob_long  = st.sidebar.slider(
+    "Min LONG rise prob (%)",  40, 95, key="ui_min_prob_long",
+)
+min_prob_short = st.sidebar.slider(
+    "Min SHORT fall prob (%)", 40, 95, key="ui_min_prob_short",
+)
+skip_earnings  = st.sidebar.checkbox(
+    "Skip earnings within 7 days", key="ui_skip_earnings",
+)
 use_live_universe = st.sidebar.checkbox(
     "Use live market universe",
-    value=True,
+    key="ui_use_live_universe",
     help="When ON, the scanner and Operator Activity tab fetch the market universe "
          "from live/public market sources first (Yahoo movers + index constituents, "
          "SGX securities feed, NSE index API), then merges them with the full existing "
@@ -3147,13 +3319,14 @@ use_live_universe = st.sidebar.checkbox(
          "This means stocks like UUUU/APP remain scanned even if they are not in today's movers.",
 )
 max_live_universe = st.sidebar.slider(
-    "Max live stocks to scan", 50, 1000, 1000, step=25,
+    "Max live stocks to scan", 50, 1000, step=25,
+    key="ui_max_live_universe",
     help="Limits only the live/Yahoo side of the universe. Existing curated tickers "
          "and always-include tickers are added on top of this limit.",
 )
 always_include_text = st.sidebar.text_area(
     "Always include tickers",
-    value="",
+    key="ui_always_include",
     height=68,
     help="Comma- or line-separated tickers that are always scanned, even when "
          "Use live market universe is ON. Example: UUUU, APP, NVDA, D05.SI",
@@ -3165,7 +3338,7 @@ always_include_tickers = [
 ]
 enable_options = st.sidebar.checkbox(
     "Use options data (US + India F&O, +30–60s)",
-    value=False,
+    key="ui_enable_options",
     help="Adds call/put flow, IV term structure, skew, and implied-move "
          "signals on top of the technical Bayesian engine. "
          "US tickers use yfinance; Indian .NS tickers use nsepython "
@@ -3194,7 +3367,7 @@ st.session_state["_prev_enable_options"] = enable_options
 # scan with the main toggle ON, yfinance options aren't loading.
 opt_required = st.sidebar.checkbox(
     "Filter: only options-confirmed setups",
-    value=False,
+    key="ui_opt_required",
     help="Hides any stock that didn't fire at least one option signal. "
          "Requires 'Use options data' ON. If the table empties on a US "
          "scan, it means yfinance is not returning option-chain data — "
@@ -3210,7 +3383,7 @@ opt_required = st.sidebar.checkbox(
 # ─────────────────────────────────────────────────────────────────────────────
 use_bucket_cap = st.sidebar.checkbox(
     "Bucket-cap correlated signals (recommended)",
-    value=True,
+    key="ui_use_bucket_cap",
     help="Bayesian probability assumes signals are independent. They aren't — "
          "trend_daily, weekly_trend, full_ma_stack, golden_cross all measure "
          "the same uptrend. Default ON: within each bucket (trend / momentum / "
@@ -3231,31 +3404,35 @@ st.session_state["_prev_bucket_cap"] = use_bucket_cap
 
 st.sidebar.markdown("---")
 st.sidebar.header("Long signal filters")
-req_stoch = st.sidebar.checkbox("Must have Stoch bounce",      False)
-req_bb    = st.sidebar.checkbox("Must have BB bull squeeze",   False)
-req_accel = st.sidebar.checkbox("Must have MACD acceleration", False)
+req_stoch = st.sidebar.checkbox("Must have Stoch bounce",      key="ui_req_stoch")
+req_bb    = st.sidebar.checkbox("Must have BB bull squeeze",   key="ui_req_bb")
+req_accel = st.sidebar.checkbox("Must have MACD acceleration", key="ui_req_accel")
 
 st.sidebar.markdown("---")
 st.sidebar.header("Short signal filters")
-req_s_stoch = st.sidebar.checkbox("Must have Stoch rollover",    False)
-req_s_bb    = st.sidebar.checkbox("Must have BB bear squeeze",   False)
-req_s_decel = st.sidebar.checkbox("Must have MACD deceleration", False)
+req_s_stoch = st.sidebar.checkbox("Must have Stoch rollover",    key="ui_req_s_stoch")
+req_s_bb    = st.sidebar.checkbox("Must have BB bear squeeze",   key="ui_req_s_bb")
+req_s_decel = st.sidebar.checkbox("Must have MACD deceleration", key="ui_req_s_decel")
 
 st.sidebar.markdown("---")
 st.sidebar.header("Custom tickers")
-extra_input = st.sidebar.text_input("Add tickers (comma-separated)", placeholder="HIMS, NVTS")
+extra_input = st.sidebar.text_input(
+    "Add tickers (comma-separated)",
+    key="ui_extra_input",
+    placeholder="HIMS, NVTS",
+)
 
 st.sidebar.markdown("---")
 st.sidebar.header("CSV result cache")
 load_csv_on_start = st.sidebar.checkbox(
     "Load latest CSV results on app start",
-    value=True,
+    key="ui_load_csv_on_start",
     help="Shows the last completed scan immediately from scanner_cache/*.csv so the UI does not stay blank while a new scan runs.",
 )
 refresh_choice = st.sidebar.radio(
     "Auto refresh scan",
     ["Off", "5 min","15 min", "30 min"],
-    index=2,
+    key="ui_refresh_choice",
     horizontal=True,
     help="When enabled, the browser reloads on this interval. If the cached scan is older than the interval, the app runs a fresh scan and then writes new CSV files.",
 )
@@ -3463,8 +3640,105 @@ if load_csv_on_start:
         if refresh_minutes:
             _cache_loaded_note = "📦 No CSV cache found yet. Click Scan once to create it."
 
+# ─────────────────────────────────────────────────────────────────────────────
+# v13.28: ALWAYS-VISIBLE CACHE STATUS EXPANDER (main page, not sidebar)
+# This duplicates info that's also in the sidebar, but renders in the main
+# content area so it's visible regardless of whether the sidebar is
+# collapsed or whether the browser is showing a stale cached version.
+# It's the most reliable way to confirm:
+#   1. The user is running this version of the script (build stamp visible).
+#   2. The cache directory's actual absolute path on this machine.
+#   3. Whether files exist there right now.
+# ─────────────────────────────────────────────────────────────────────────────
+with st.expander(
+    f"📦 Cache & directory diagnostics — "
+    f"`{SCAN_CACHE_DIR.resolve()}` "
+    f"({len(list(SCAN_CACHE_DIR.glob('*'))) if SCAN_CACHE_DIR.exists() else 0} files)",
+    expanded=False,
+):
+    diag_cols = st.columns([2, 1])
+    with diag_cols[0]:
+        st.markdown(f"**Script:** `{_SCRIPT_DIR}`")
+        st.markdown(f"**Cache directory (absolute):** `{SCAN_CACHE_DIR.resolve()}`")
+        st.markdown(f"**Working directory at startup:** `{Path.cwd()}`")
+        st.caption(
+            "If the cache and working directories differ, your earlier `scanner_cache/` "
+            "folder may have been created next to wherever you ran `streamlit run`. "
+            "From v13.28 onward, files are written next to the script itself."
+        )
+
+    with diag_cols[1]:
+        # Live writability probe
+        _writable = False
+        _probe_err = None
+        try:
+            SCAN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            _probe = SCAN_CACHE_DIR / ".write_probe"
+            _probe.write_text("ok", encoding="utf-8")
+            _probe.unlink(missing_ok=True)
+            _writable = True
+        except Exception as _e:
+            _probe_err = f"{type(_e).__name__}: {_e}"
+        if _writable:
+            st.success("✅ Writable")
+        else:
+            st.error(f"❌ Not writable\n\n`{_probe_err}`")
+
+    # Existing files
+    existing = []
+    try:
+        for p in sorted(SCAN_CACHE_DIR.glob("*")):
+            if p.is_file():
+                size_kb = p.stat().st_size / 1024
+                mtime = datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                existing.append((p.name, size_kb, mtime))
+    except Exception:
+        pass
+
+    if existing:
+        st.markdown(f"**Files in cache ({len(existing)}):**")
+        df_cache = pd.DataFrame(existing, columns=["File", "Size (KB)", "Modified"])
+        st.dataframe(df_cache, hide_index=True, width="stretch")
+    else:
+        st.info(
+            "📭 **No cache files yet.** Click 🚀 Scan to create them. "
+            "After a successful scan, you should see 4 files appear: "
+            "`<market>_long_setups.csv`, `<market>_short_setups.csv`, "
+            "`<market>_operator_activity.csv`, `<market>_scan_meta.json`."
+        )
+
+    # Last save info
+    _last_save = st.session_state.get("scan_cache_last_save")
+    if _last_save:
+        if _last_save.get("ok"):
+            st.markdown(
+                f"**Last save:** ✅ {_last_save['saved_at']} · "
+                f"market **{_last_save['market']}** · "
+                f"long {_last_save['long_rows']} · short {_last_save['short_rows']}"
+            )
+        else:
+            st.error(f"**Last save FAILED:** {_last_save.get('error','?')}")
+
+    # Open-in-finder helper for macOS / Linux / Windows users
+    st.caption(
+        "**To open this folder:**  \n"
+        f"• macOS: `open '{SCAN_CACHE_DIR.resolve()}'`  \n"
+        f"• Linux: `xdg-open '{SCAN_CACHE_DIR.resolve()}'`  \n"
+        f"• Windows: `explorer \"{SCAN_CACHE_DIR.resolve()}\"`"
+    )
+
 if st.session_state.get("scan_cache_warning"):
-    st.warning(st.session_state.get("scan_cache_warning"))
+    _cw = st.session_state.get("scan_cache_warning")
+    cw_cols = st.columns([10, 1])
+    with cw_cols[0]:
+        st.error(f"⚠️ {_cw}\n\n"
+                 "See sidebar → 📦 CSV cache status for the directory and "
+                 "writability check.")
+    with cw_cols[1]:
+        if st.button("✕", key="dismiss_cache_warning",
+                     help="Dismiss this warning"):
+            st.session_state.pop("scan_cache_warning", None)
+            st.rerun()
 elif _cache_loaded_note:
     st.caption(_cache_loaded_note)
 
@@ -4388,7 +4662,16 @@ with tab_etf:
 
     # Refresh button
     if st.button("🔄 Refresh ETF Holdings"):
-        st.cache_data.clear()
+        # Scoped cache clear — only nukes the ETF-holdings function, not the
+        # full app cache. The previous `st.cache_data.clear()` wiped every
+        # cached function (sector data, dividends, EPS, prices...) and the
+        # subsequent rerun caused sidebar widgets without persistent keys
+        # to fall back to their hardcoded defaults, which looked like the
+        # user's settings had been reset.
+        try:
+            fetch_etf_holdings.clear()
+        except Exception:
+            pass
         st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -6191,7 +6474,14 @@ with tab_earn:
 
     # ── Fetch button ──────────────────────────────────────────────────────────
     if st.button("📅 Fetch Earnings Calendar", type="primary", key="btn_earnings"):
-        st.cache_data.clear()   # force fresh fetch
+        # Scoped clear — see ETF holdings note. Only invalidate the
+        # earnings-calendar function's own cache; leave other cached data
+        # (sector heatmaps, dividends, prices) intact. This also avoids
+        # the side-effect of resetting unkeyed sidebar widgets.
+        try:
+            fetch_earnings_calendar.clear()
+        except Exception:
+            pass
         earn_df = fetch_earnings_calendar(tuple(earn_base), earn_days)
         st.session_state["earn_df"] = earn_df
 
