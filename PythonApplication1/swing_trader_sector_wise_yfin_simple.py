@@ -1,5 +1,5 @@
 """
-Swing Scanner v13.27 — Bayesian Ensemble
+Swing Scanner v13.30 — Bayesian Ensemble
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -31,7 +31,7 @@ from datetime import datetime, timedelta
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v13.28",
+    page_title="Swing Scanner v13.30",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -213,7 +213,7 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v13.28")
+st.title("📈 Swing/Long Term Scanner v13.30")
 st.caption("Swing/Long Term Scanner — Bayesian Ensemble · build 2026-05-04 · script-relative cache")
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3641,7 +3641,7 @@ if load_csv_on_start:
             _cache_loaded_note = "📦 No CSV cache found yet. Click Scan once to create it."
 
 # ─────────────────────────────────────────────────────────────────────────────
-# v13.28: ALWAYS-VISIBLE CACHE STATUS EXPANDER (main page, not sidebar)
+# v13.30: ALWAYS-VISIBLE CACHE STATUS EXPANDER (main page, not sidebar)
 # This duplicates info that's also in the sidebar, but renders in the main
 # content area so it's visible regardless of whether the sidebar is
 # collapsed or whether the browser is showing a stale cached version.
@@ -3664,7 +3664,7 @@ with st.expander(
         st.caption(
             "If the cache and working directories differ, your earlier `scanner_cache/` "
             "folder may have been created next to wherever you ran `streamlit run`. "
-            "From v13.28 onward, files are written next to the script itself."
+            "From v13.30 onward, files are written next to the script itself."
         )
 
     with diag_cols[1]:
