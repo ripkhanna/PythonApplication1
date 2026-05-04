@@ -1,5 +1,5 @@
 """
-Swing Scanner v13.30 — Bayesian Ensemble
+Swing Scanner v13.33 — Bayesian Ensemble
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -14,8 +14,14 @@ v12 add-ons  : options-derived signals — call/put unusual flow, IV term
                  • SGX            → no options market exists, layer skipped
 
 Install:
-  pip install financedatabase ta streamlit yfinance pandas numpy nsepython requests
+  pip install financedatabase ta streamlit yfinance pandas numpy nsepython requests streamlit-autorefresh
 """
+# v13.33: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
+# NotImplementedError from __annotate__ when @st.cache_data wraps functions
+# with bare unsubscripted generics like `-> tuple`. This `from __future__`
+# downgrades all annotations in this module to strings at parse time,
+# bypassing __annotate__ entirely. Annotations here are documentation only.
+from __future__ import annotations
 
 import streamlit as st
 import yfinance as yf
@@ -31,7 +37,7 @@ from datetime import datetime, timedelta
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v13.30",
+    page_title="Swing Scanner v13.33",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -213,13 +219,35 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v13.30")
-st.caption("Swing/Long Term Scanner — Bayesian Ensemble · build 2026-05-04 · script-relative cache")
+st.title("📈 Swing/Long Term Scanner v13.33")
+
+# v13.33: COMPACT SELF-STAMP
+# The build identity (path, mtime, hash, size) is still computed so it can
+# self-prove the running file, but only the short hash and mtime are visible
+# in the caption. The full path and size are tucked into the tooltip — hover
+# the caption to see them — so the page header stays compact.
+try:
+    import hashlib
+    _src_path = Path(__file__).resolve()
+    _src_mtime = datetime.fromtimestamp(_src_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+    _src_hash = hashlib.sha256(_src_path.read_bytes()).hexdigest()[:8]
+    _src_size = _src_path.stat().st_size
+    st.caption(
+        f"Bayesian Ensemble · build `{_src_hash}` · {_src_mtime}",
+        help=f"Running file: {_src_path}\nSize: {_src_size:,} bytes\n"
+             f"Full SHA-256 prefix: {_src_hash}\n\n"
+             f"Hover this caption to verify which file Streamlit loaded. "
+             f"To compare against your file on disk:\n"
+             f"  PowerShell: Get-FileHash '{_src_path.name}' -Algorithm SHA256",
+    )
+except Exception as _e:
+    st.caption(f"Bayesian Ensemble · build 2026-05-04 "
+               f"(stamp failed: {type(_e).__name__})")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CSV RESULT CACHE — load previous scan instantly; refresh on demand / interval
 # ─────────────────────────────────────────────────────────────────────────────
-# v13.10: Anchor the cache directory to the SCRIPT'S OWN location, not CWD.
+# v13.31: Anchor the cache directory to the SCRIPT'S OWN location, not CWD.
 # Path("scanner_cache") resolves relative to the working directory Streamlit
 # was launched from — which is often different from where the .py file lives.
 # That made cache files appear "missing" because users looked next to the
@@ -228,7 +256,6 @@ st.caption("Swing/Long Term Scanner — Bayesian Ensemble · build 2026-05-04 ·
 try:
     _SCRIPT_DIR = Path(__file__).resolve().parent
 except NameError:
-    # __file__ not defined (rare — happens in some interactive contexts)
     _SCRIPT_DIR = Path.cwd()
 SCAN_CACHE_DIR = _SCRIPT_DIR / "scanner_cache"
 SCAN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -705,6 +732,22 @@ try:
     _sklearn_strategy_available = True
 except Exception:
     _sklearn_strategy_available = False
+
+# ─────────────────────────────────────────────────────────────────────────────
+# streamlit-autorefresh — optional dependency for non-destructive auto-rerun
+# Without this, the auto-refresh feature falls back to a manual "Rerun now"
+# button. The previous implementation used window.parent.location.reload(),
+# which destroyed the entire Streamlit session — including all sidebar
+# widget values (market selector, refresh interval, every checkbox/slider).
+# `st_autorefresh` triggers a server-side rerun without reloading the
+# browser page, preserving session state perfectly.
+# Install: pip install streamlit-autorefresh
+# ─────────────────────────────────────────────────────────────────────────────
+try:
+    from streamlit_autorefresh import st_autorefresh
+    _autorefresh_available = True
+except Exception:
+    _autorefresh_available = False
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPERS  — exact v5 implementations
@@ -3180,11 +3223,20 @@ def diagnose_ticker(ticker, regime):
 # survive every rerun, including cache-clear reruns, until the user
 # explicitly resets them or restarts the Streamlit server.
 #
+# v13.31: DISK PERSISTENCE — settings now also survive browser reloads,
+# server restarts, and new tabs. On first widget render of each session we
+# overlay any saved values from ui_state.json on top of the factory defaults.
+# After the sidebar finishes rendering, we write the current state back if
+# anything changed. Crucially this is the same script-anchored directory as
+# the CSV cache, so it lives next to the .py file and never gets lost.
+#
 # Pattern: widgets must NOT use both `key=` and `value=` — Streamlit
 # deprecates that and the value parameter is silently ignored. The correct
 # pattern is to seed defaults into session_state once, then pass key= only.
 # ─────────────────────────────────────────────────────────────────────────────
 _SIDEBAR_DEFAULTS = {
+    # Top-of-page market selector (lives outside sidebar but persisted here)
+    "market_selector":        "🇺🇸 US",
     # Scan settings
     "ui_top_n_sectors":       3,
     "ui_min_prob_long":       62,
@@ -3211,9 +3263,45 @@ _SIDEBAR_DEFAULTS = {
     "ui_load_csv_on_start":   True,
     "ui_refresh_choice":      "15 min",
 }
-for _k, _v in _SIDEBAR_DEFAULTS.items():
-    if _k not in st.session_state:
-        st.session_state[_k] = _v
+
+# Disk-backed persistence: load saved settings once per session
+_UI_STATE_FILE = SCAN_CACHE_DIR / "ui_state.json"
+
+def _load_ui_state() -> dict:
+    """Load saved UI state from disk. Returns empty dict on any error."""
+    try:
+        if _UI_STATE_FILE.exists():
+            return json.loads(_UI_STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+def _save_ui_state(state_dict: dict) -> None:
+    """Save UI state to disk. Silent on error to avoid breaking the app."""
+    try:
+        _UI_STATE_FILE.write_text(
+            json.dumps(state_dict, indent=2, default=str), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+# Once per session: seed defaults, then overlay saved overrides
+if not st.session_state.get("_ui_state_loaded"):
+    _saved = _load_ui_state()
+    for _k, _v in _SIDEBAR_DEFAULTS.items():
+        # Saved value takes precedence over factory default
+        st.session_state[_k] = _saved.get(_k, _v)
+    st.session_state["_ui_state_loaded"] = True
+    # Track baseline so we can detect changes
+    st.session_state["_ui_state_baseline"] = {
+        _k: st.session_state.get(_k) for _k in _SIDEBAR_DEFAULTS
+    }
+else:
+    # On every subsequent rerun, just ensure defaults exist for any keys
+    # that might have been deleted (e.g. by Reset)
+    for _k, _v in _SIDEBAR_DEFAULTS.items():
+        if _k not in st.session_state:
+            st.session_state[_k] = _v
 
 st.sidebar.header("Scan settings")
 
@@ -3223,79 +3311,31 @@ st.sidebar.header("Scan settings")
 with st.sidebar.expander("⚙️ UI settings · save & reset", expanded=False):
     if st.button("↩️ Reset all sidebar settings to defaults",
                  key="ui_reset_btn",
-                 help="Reverts all sidebar controls to factory defaults. "
-                      "Does not affect ML models, calibrated weights, or scan results.",
+                 help="Reverts all sidebar controls to factory defaults AND "
+                      "deletes the saved ui_state.json from disk. Does not "
+                      "affect ML models, calibrated weights, or scan results.",
                  use_container_width=True):
         for _k, _v in _SIDEBAR_DEFAULTS.items():
             st.session_state[_k] = _v
+        # v13.31: also delete the on-disk file, otherwise the next rerun
+        # would re-load the old saved values and the reset would silently
+        # not stick.
+        try:
+            _UI_STATE_FILE.unlink(missing_ok=True)
+        except Exception:
+            pass
+        st.session_state["_ui_state_baseline"] = dict(_SIDEBAR_DEFAULTS)
         st.rerun()
     st.caption(
-        "All sidebar settings now persist across reruns and cache "
-        "refreshes. Restart Streamlit to fully reset."
+        f"Settings persist across reruns, browser reloads, and server "
+        f"restarts via `{_UI_STATE_FILE.name}` next to the script. "
+        f"Click reset above to clear both memory and disk state."
     )
 
-with st.sidebar.expander("📦 CSV cache status (where results are saved)", expanded=False):
-    _cache_dir_abs = SCAN_CACHE_DIR.resolve()
-    st.caption(f"**Directory:** `{_cache_dir_abs}`")
-
-    # Probe writability so the user can immediately see permission issues
-    _writable = False
-    _probe_err = None
-    try:
-        SCAN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        _probe = SCAN_CACHE_DIR / ".write_probe"
-        _probe.write_text("ok", encoding="utf-8")
-        _probe.unlink(missing_ok=True)
-        _writable = True
-    except Exception as _e:
-        _probe_err = f"{type(_e).__name__}: {_e}"
-
-    if _writable:
-        st.success("✅ Directory is writable.")
-    else:
-        st.error(f"❌ Cannot write to this directory.\n\n`{_probe_err}`\n\n"
-                 "Run Streamlit from a directory where you have write "
-                 "permission, or change `SCAN_CACHE_DIR` in the source "
-                 "file at the top of the script.")
-
-    # Last save status (set in _save_scan_cache)
-    _last = st.session_state.get("scan_cache_last_save")
-    if _last:
-        if _last.get("ok"):
-            st.markdown(
-                f"**Last save:** {_last['saved_at']}  \n"
-                f"Market: **{_last['market']}**  \n"
-                f"Long rows: **{_last['long_rows']}** · "
-                f"Short rows: **{_last['short_rows']}**"
-            )
-        else:
-            st.error(f"Last save FAILED for {_last.get('market','?')}: "
-                     f"{_last.get('error','?')}")
-
-    # Existing files snapshot
-    existing = []
-    try:
-        for p in sorted(SCAN_CACHE_DIR.glob("*")):
-            if p.is_file():
-                size_kb = p.stat().st_size / 1024
-                mtime = datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-                existing.append((p.name, size_kb, mtime))
-    except Exception:
-        pass
-    if existing:
-        st.markdown("**Files currently in cache:**")
-        for name, size_kb, mtime in existing:
-            st.markdown(f"- `{name}` · {size_kb:.1f} KB · {mtime}")
-    else:
-        st.info("📭 No cache files yet. Run a 🚀 Scan to create them.")
-
-    st.caption(
-        "Files written: `<market>_long_setups.csv`, `<market>_short_setups.csv`, "
-        "`<market>_operator_activity.csv`, `<market>_scan_meta.json`, where "
-        "`<market>` is one of `us`, `sgx`, `india`. Updated on every "
-        "successful scan, regardless of whether 'Load latest CSV results on "
-        "app start' is on."
-    )
+# v13.31: Cache & directory diagnostics moved to the 🔍 Diagnostics tab.
+# This block previously lived in the sidebar; it's now merged with the
+# existing CSV cache refresh block in the Diagnostics tab so all
+# cache/storage-related signals are in one place.
 
 top_n_sectors  = st.sidebar.slider(
     "Top N green/red sectors to scan", 1, 6, key="ui_top_n_sectors",
@@ -3434,14 +3474,51 @@ refresh_choice = st.sidebar.radio(
     ["Off", "5 min","15 min", "30 min"],
     key="ui_refresh_choice",
     horizontal=True,
-    help="When enabled, the browser reloads on this interval. If the cached scan is older than the interval, the app runs a fresh scan and then writes new CSV files.",
+    help="When enabled, the app re-runs on this interval to refresh data. "
+         "Requires `streamlit-autorefresh` (pip install streamlit-autorefresh) "
+         "to do this WITHOUT reloading the browser — which would otherwise "
+         "wipe your sidebar settings, market selection, and refresh interval. "
+         "If the package isn't installed, auto-refresh is disabled and a "
+         "manual 'Rerun now' button is shown instead.",
 )
 refresh_minutes = 0 if refresh_choice == "Off" else int(refresh_choice.split()[0])
+# v13.31: Non-destructive auto-refresh
+# OLD: <script>setTimeout(window.parent.location.reload, ...)</script>
+#      ^ This destroyed the entire Streamlit session — every widget reset to
+#      default, market selector flipped to US, refresh interval back to 15 min.
+# NEW: streamlit-autorefresh, which triggers a server-side rerun WITHOUT
+#      reloading the browser page. Session state is fully preserved.
 if refresh_minutes:
-    components.html(
-        f"<script>setTimeout(function(){{window.parent.location.reload();}}, {refresh_minutes * 60 * 1000});</script>",
-        height=0,
-    )
+    if _autorefresh_available:
+        # Returns a counter that increments each refresh — we don't use the
+        # value, but the call itself schedules the next rerun.
+        st_autorefresh(
+            interval=refresh_minutes * 60 * 1000,
+            limit=None,
+            key=f"_autorefresh_{refresh_minutes}m",
+        )
+    else:
+        st.sidebar.warning(
+            "⚠️ Auto-refresh disabled — `streamlit-autorefresh` not installed.\n\n"
+            "Install with `pip install streamlit-autorefresh` and restart "
+            "Streamlit. The previous browser-reload approach was removed "
+            "because it wiped all sidebar settings on every refresh."
+        )
+        if st.sidebar.button("🔄 Rerun now", key="manual_rerun_btn",
+                             use_container_width=True,
+                             help="Manual fallback for auto-refresh."):
+            st.rerun()
+
+# v13.31: After all sidebar widgets have rendered, persist any changes to disk
+# so a true browser reload, server restart, or new tab restores the user's
+# last-known settings. We compare to the per-session baseline; if anything
+# changed, write ui_state.json. Cheap because Python dict equality is fast,
+# and writes are skipped when nothing changed.
+_current_ui_state = {_k: st.session_state.get(_k) for _k in _SIDEBAR_DEFAULTS}
+_baseline = st.session_state.get("_ui_state_baseline", {})
+if _current_ui_state != _baseline:
+    _save_ui_state(_current_ui_state)
+    st.session_state["_ui_state_baseline"] = _current_ui_state
 
 st.sidebar.markdown("---")
 st.sidebar.markdown(
@@ -3450,7 +3527,9 @@ st.sidebar.markdown(
     f"{'✅' if _fd_available else '⚠️'} FinanceDatabase "
     f"({'installed' if _fd_available else 'pip install financedatabase'})\n\n"
     f"{'✅' if _nse_opt_available else '⚠️'} nsepython · India F&O options "
-    f"({'installed' if _nse_opt_available else 'pip install nsepython'})"
+    f"({'installed' if _nse_opt_available else 'pip install nsepython'})\n\n"
+    f"{'✅' if _autorefresh_available else '⚠️'} streamlit-autorefresh "
+    f"({'installed' if _autorefresh_available else 'pip install streamlit-autorefresh'})"
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3639,93 +3718,6 @@ if load_csv_on_start:
         st.session_state["scan_cache_refresh_due"] = False
         if refresh_minutes:
             _cache_loaded_note = "📦 No CSV cache found yet. Click Scan once to create it."
-
-# ─────────────────────────────────────────────────────────────────────────────
-# v13.30: ALWAYS-VISIBLE CACHE STATUS EXPANDER (main page, not sidebar)
-# This duplicates info that's also in the sidebar, but renders in the main
-# content area so it's visible regardless of whether the sidebar is
-# collapsed or whether the browser is showing a stale cached version.
-# It's the most reliable way to confirm:
-#   1. The user is running this version of the script (build stamp visible).
-#   2. The cache directory's actual absolute path on this machine.
-#   3. Whether files exist there right now.
-# ─────────────────────────────────────────────────────────────────────────────
-with st.expander(
-    f"📦 Cache & directory diagnostics — "
-    f"`{SCAN_CACHE_DIR.resolve()}` "
-    f"({len(list(SCAN_CACHE_DIR.glob('*'))) if SCAN_CACHE_DIR.exists() else 0} files)",
-    expanded=False,
-):
-    diag_cols = st.columns([2, 1])
-    with diag_cols[0]:
-        st.markdown(f"**Script:** `{_SCRIPT_DIR}`")
-        st.markdown(f"**Cache directory (absolute):** `{SCAN_CACHE_DIR.resolve()}`")
-        st.markdown(f"**Working directory at startup:** `{Path.cwd()}`")
-        st.caption(
-            "If the cache and working directories differ, your earlier `scanner_cache/` "
-            "folder may have been created next to wherever you ran `streamlit run`. "
-            "From v13.30 onward, files are written next to the script itself."
-        )
-
-    with diag_cols[1]:
-        # Live writability probe
-        _writable = False
-        _probe_err = None
-        try:
-            SCAN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            _probe = SCAN_CACHE_DIR / ".write_probe"
-            _probe.write_text("ok", encoding="utf-8")
-            _probe.unlink(missing_ok=True)
-            _writable = True
-        except Exception as _e:
-            _probe_err = f"{type(_e).__name__}: {_e}"
-        if _writable:
-            st.success("✅ Writable")
-        else:
-            st.error(f"❌ Not writable\n\n`{_probe_err}`")
-
-    # Existing files
-    existing = []
-    try:
-        for p in sorted(SCAN_CACHE_DIR.glob("*")):
-            if p.is_file():
-                size_kb = p.stat().st_size / 1024
-                mtime = datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-                existing.append((p.name, size_kb, mtime))
-    except Exception:
-        pass
-
-    if existing:
-        st.markdown(f"**Files in cache ({len(existing)}):**")
-        df_cache = pd.DataFrame(existing, columns=["File", "Size (KB)", "Modified"])
-        st.dataframe(df_cache, hide_index=True, width="stretch")
-    else:
-        st.info(
-            "📭 **No cache files yet.** Click 🚀 Scan to create them. "
-            "After a successful scan, you should see 4 files appear: "
-            "`<market>_long_setups.csv`, `<market>_short_setups.csv`, "
-            "`<market>_operator_activity.csv`, `<market>_scan_meta.json`."
-        )
-
-    # Last save info
-    _last_save = st.session_state.get("scan_cache_last_save")
-    if _last_save:
-        if _last_save.get("ok"):
-            st.markdown(
-                f"**Last save:** ✅ {_last_save['saved_at']} · "
-                f"market **{_last_save['market']}** · "
-                f"long {_last_save['long_rows']} · short {_last_save['short_rows']}"
-            )
-        else:
-            st.error(f"**Last save FAILED:** {_last_save.get('error','?')}")
-
-    # Open-in-finder helper for macOS / Linux / Windows users
-    st.caption(
-        "**To open this folder:**  \n"
-        f"• macOS: `open '{SCAN_CACHE_DIR.resolve()}'`  \n"
-        f"• Linux: `xdg-open '{SCAN_CACHE_DIR.resolve()}'`  \n"
-        f"• Windows: `explorer \"{SCAN_CACHE_DIR.resolve()}\"`"
-    )
 
 if st.session_state.get("scan_cache_warning"):
     _cw = st.session_state.get("scan_cache_warning")
@@ -7680,6 +7672,88 @@ with tab_diag:
         st.success("Cache refresh timer is active. The app reloads on the selected interval and refreshes if the cache is old enough.")
     else:
         st.info("Auto refresh is Off. Use 🚀 Scan to refresh the CSV cache manually, or enable 15/30 min refresh in the sidebar.")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # v13.31: Cache & directory diagnostics (moved from sidebar)
+    # Self-contained read-only panel showing where files actually live, whether
+    # the directory is writable, what's in it, and when the last save happened.
+    # Useful when "I don't see cache files" or "scan results aren't sticking".
+    # ─────────────────────────────────────────────────────────────────────────
+    with st.expander("📦 Cache & directory diagnostics", expanded=False):
+        _diag_cache_abs = SCAN_CACHE_DIR.resolve()
+        col_a, col_b = st.columns([3, 1])
+        with col_a:
+            st.markdown(f"**Script directory:** `{_SCRIPT_DIR}`")
+            st.markdown(f"**Cache directory (absolute):** `{_diag_cache_abs}`")
+            st.markdown(f"**UI state file:** `{_UI_STATE_FILE.resolve()}`  \n"
+                        f"`{'exists' if _UI_STATE_FILE.exists() else 'not yet created'}`")
+            st.caption(
+                "From v13.31 onward, files are anchored to the script's own "
+                "directory. If you ran an older version, an unrelated "
+                "`scanner_cache/` may exist next to wherever you launched "
+                "Streamlit from — that one can be safely deleted."
+            )
+        with col_b:
+            # Live writability probe so permission issues surface immediately
+            _diag_writable = False
+            _diag_probe_err = None
+            try:
+                SCAN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                _probe = SCAN_CACHE_DIR / ".write_probe"
+                _probe.write_text("ok", encoding="utf-8")
+                _probe.unlink(missing_ok=True)
+                _diag_writable = True
+            except Exception as _e:
+                _diag_probe_err = f"{type(_e).__name__}: {_e}"
+            if _diag_writable:
+                st.success("✅ Writable")
+            else:
+                st.error(f"❌ Not writable\n\n`{_diag_probe_err}`")
+
+        # Last save status — set inside _save_scan_cache after every scan
+        _diag_last = st.session_state.get("scan_cache_last_save")
+        if _diag_last:
+            if _diag_last.get("ok"):
+                st.markdown(
+                    f"**Last successful save:** ✅ {_diag_last['saved_at']} · "
+                    f"market **{_diag_last['market']}** · "
+                    f"long rows **{_diag_last['long_rows']}** · "
+                    f"short rows **{_diag_last['short_rows']}**"
+                )
+            else:
+                st.error(f"**Last save FAILED:** market {_diag_last.get('market','?')} · "
+                         f"`{_diag_last.get('error','?')}`")
+        else:
+            st.info("No save attempted yet in this session — click 🚀 Scan to create cache files.")
+
+        # File listing — what's actually on disk right now
+        _diag_existing = []
+        try:
+            for p in sorted(SCAN_CACHE_DIR.glob("*")):
+                if p.is_file():
+                    size_kb = p.stat().st_size / 1024
+                    mtime = datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                    _diag_existing.append({"File": p.name, "Size (KB)": round(size_kb, 1), "Modified": mtime})
+        except Exception:
+            pass
+        if _diag_existing:
+            st.markdown(f"**Files currently in cache ({len(_diag_existing)}):**")
+            st.dataframe(pd.DataFrame(_diag_existing), hide_index=True, width="stretch")
+        else:
+            st.info(
+                "📭 **No cache files yet.** Click 🚀 Scan to create them. "
+                "After a successful scan you should see 4 files per market: "
+                "`<m>_long_setups.csv`, `<m>_short_setups.csv`, "
+                "`<m>_operator_activity.csv`, `<m>_scan_meta.json` "
+                "(where `<m>` is `us`, `sgx`, or `india`)."
+            )
+
+        st.caption(
+            "**Open this folder from a terminal:**  \n"
+            f"• macOS: `open '{_diag_cache_abs}'`  \n"
+            f"• Linux: `xdg-open '{_diag_cache_abs}'`  \n"
+            f"• Windows (cmd): `explorer \"{_diag_cache_abs}\"`"
+        )
 
     st.markdown("**Stocks scanned in last scan**")
     if last_scanned_tickers:
