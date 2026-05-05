@@ -983,6 +983,70 @@ def _extract_closes(raw, ticker, n_tickers):
     return pd.Series(dtype=float)
 
 
+# ─────────────────────────────────────────────────────────────
+# OHLCV CLEANING FOR STREAMLIT CLOUD / YFINANCE PARTIAL BARS
+# ─────────────────────────────────────────────────────────────
+def _clean_scan_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
+    """Clean yfinance OHLCV before signal calculation.
+
+    On Streamlit Cloud, Yahoo sometimes returns the current in-progress day
+    as a partial/empty row. The old code used `ffill().dropna()`, which could
+    forward-fill that empty row with yesterday's Close. Then the latest Close
+    and previous Close became identical and `Today %` showed 0.00% for many
+    or all stocks.
+
+    This cleaner drops incomplete / zero-volume OHLCV rows BEFORE any forward
+    fill so Today % is calculated from the last two real trading bars.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    out = df.copy()
+    if isinstance(out.columns, pd.MultiIndex):
+        out.columns = out.columns.get_level_values(0)
+
+    # Keep only useful columns that exist.
+    cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in out.columns]
+    if "Close" not in cols:
+        return pd.DataFrame()
+    out = out[cols]
+
+    # Convert to numeric and remove fully invalid rows.
+    for c in cols:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+    out = out.replace([np.inf, -np.inf], np.nan)
+
+    required = [c for c in ["High", "Low", "Close"] if c in out.columns]
+    out = out.dropna(subset=required)
+
+    # For stocks, a zero/NaN volume row is usually a partial/stub Cloud row.
+    # Dropping it prevents false 0.00% Today values caused by forward fill.
+    if "Volume" in out.columns:
+        out = out.dropna(subset=["Volume"])
+        out = out[out["Volume"] > 0]
+
+    # De-duplicate and sort, then fill only small internal gaps after invalid
+    # trailing rows have been removed.
+    out = out[~out.index.duplicated(keep="last")].sort_index()
+    out = out.ffill().dropna(subset=required)
+    return out
+
+
+def _safe_today_change_pct(close: pd.Series) -> float:
+    """Return latest close vs previous real close in percent."""
+    try:
+        c = pd.to_numeric(close, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+        if len(c) < 2:
+            return 0.0
+        prev = float(c.iloc[-2])
+        last = float(c.iloc[-1])
+        if prev == 0:
+            return 0.0
+        return float((last - prev) / prev * 100.0)
+    except Exception:
+        return 0.0
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # MARKET REGIME  — v5 exact logic
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2593,7 +2657,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     df_t = raw_batch.copy()
                 else:
                     continue
-                df_t = df_t.ffill().dropna()
+                df_t = _clean_scan_ohlcv(df_t)
                 if len(df_t) >= 60:
                     batch_cache[tkr] = df_t
             except Exception:
@@ -2638,7 +2702,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     continue
                 if isinstance(raw_ind.columns, pd.MultiIndex):
                     raw_ind.columns = raw_ind.columns.get_level_values(0)
-                df = raw_ind.ffill().dropna()
+                df = _clean_scan_ohlcv(raw_ind)
 
             if len(df) < 60:
                 progress_bar.progress((i + 1) / total)
@@ -2673,9 +2737,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             p    = raw["p"]
             atrv = raw["atr"]
             vr   = raw["vr"]
-            today_chg = float(
-                (close.iloc[-1] - close.iloc[-2]) / close.iloc[-2] * 100
-            ) if len(close) >= 2 else 0.0
+            today_chg = _safe_today_change_pct(close)
 
             # ── Operator + Trap detection (universe-wide) ─────────────────────
             # Runs for every scanned ticker so the Operator Activity tab can
@@ -4739,7 +4801,7 @@ with tab_stock:
                     c1,c2,c3 = st.columns(3)
                     c4,c5,c6 = st.columns(3)
                     c1.metric("Price",    f"${rv_sa['p']:.2f}")
-                    c2.metric("Today %",  f"{float((close_sa.iloc[-1]-close_sa.iloc[-2])/close_sa.iloc[-2]*100):+.2f}%")
+                    c2.metric("Today %",  f"{_safe_today_change_pct(close_sa):+.2f}%")
                     c3.metric("Sector",   sector_sa)
                     c4.metric("Mkt Cap",  mktcap_str)
                     c5.metric("52W High", f"${week52hi:.2f}" if week52hi else "–")
@@ -7912,7 +7974,7 @@ with tab_backtest:
     def _bt_flatten(df: pd.DataFrame) -> pd.DataFrame:
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
-        return df.ffill().dropna()
+        return _clean_scan_ohlcv(df)
 
     def _bt_pct(x):
         try:
