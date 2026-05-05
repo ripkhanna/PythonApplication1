@@ -7656,11 +7656,6 @@ with tab_lt:
                    "Consider Irish-domiciled UCITS equivalents (CSPX.L, VUAA.L, XNAS.L) in the 🇸🇬 SG Funds tab instead. "
                    "Not financial advice.")
 
-with tab_diag:
-    st.caption("🔍 Diagnostics")
-
-   
-
 CACHE_DIR = Path("scanner_cache")
 
 def clear_scanner_cache(cache_dir: Path):
@@ -7693,27 +7688,30 @@ def clear_scanner_cache(cache_dir: Path):
     return errors
 
 
-st.subheader("🧹 Cache Management")
+with tab_diag:
+    st.caption("🔍 Diagnostics")
 
-st.info(f"Cache folder: {CACHE_DIR.resolve()}")
+    st.subheader("🧹 Cache Management")
 
-if st.button("🗑️ Clear scanner cache files"):
-    try:
-        # Clear Streamlit memory cache first
-        st.cache_data.clear()
+    st.info(f"Cache folder: {CACHE_DIR.resolve()}")
 
-        errors = clear_scanner_cache(CACHE_DIR)
+    if st.button("🗑️ Clear scanner cache files"):
+        try:
+            # Clear Streamlit memory cache first
+            st.cache_data.clear()
 
-        if errors:
-            st.warning("Some cache files could not be deleted:")
-            st.code("\n".join(errors))
-            st.info("Close VS Code/Visual Studio/File Explorer windows opened inside scanner_cache, then try again.")
-        else:
-            st.success("scanner_cache files cleared successfully.")
-            st.rerun()
+            errors = clear_scanner_cache(CACHE_DIR)
 
-    except Exception as e:
-        st.error(f"Could not clear scanner cache: {e}")
+            if errors:
+                st.warning("Some cache files could not be deleted:")
+                st.code("\n".join(errors))
+                st.info("Close VS Code/Visual Studio/File Explorer windows opened inside scanner_cache, then try again.")
+            else:
+                st.success("scanner_cache files cleared successfully.")
+                st.rerun()
+
+        except Exception as e:
+            st.error(f"Could not clear scanner cache: {e}")
 
     st.markdown("**CSV cache refresh status**")
     _diag_meta = st.session_state.get("scan_cache_meta", {})
