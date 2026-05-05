@@ -32,6 +32,11 @@ import json
 from pathlib import Path
 import streamlit.components.v1 as components
 from datetime import datetime, timedelta
+import os
+import stat
+import shutil
+from pathlib import Path
+import streamlit as st
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE CONFIG
@@ -7653,6 +7658,62 @@ with tab_lt:
 
 with tab_diag:
     st.caption("🔍 Diagnostics")
+
+   
+
+CACHE_DIR = Path("scanner_cache")
+
+def clear_scanner_cache(cache_dir: Path):
+    cache_dir.mkdir(exist_ok=True)
+
+    errors = []
+
+    for item in cache_dir.iterdir():
+        try:
+            if item.is_file() or item.is_symlink():
+                try:
+                    os.chmod(item, stat.S_IWRITE)
+                except Exception:
+                    pass
+                item.unlink()
+
+            elif item.is_dir():
+                def on_rm_error(func, path, exc_info):
+                    try:
+                        os.chmod(path, stat.S_IWRITE)
+                        func(path)
+                    except Exception as e:
+                        errors.append(f"{path}: {e}")
+
+                shutil.rmtree(item, onerror=on_rm_error)
+
+        except Exception as e:
+            errors.append(f"{item}: {e}")
+
+    return errors
+
+
+st.subheader("🧹 Cache Management")
+
+st.info(f"Cache folder: {CACHE_DIR.resolve()}")
+
+if st.button("🗑️ Clear scanner cache files"):
+    try:
+        # Clear Streamlit memory cache first
+        st.cache_data.clear()
+
+        errors = clear_scanner_cache(CACHE_DIR)
+
+        if errors:
+            st.warning("Some cache files could not be deleted:")
+            st.code("\n".join(errors))
+            st.info("Close VS Code/Visual Studio/File Explorer windows opened inside scanner_cache, then try again.")
+        else:
+            st.success("scanner_cache files cleared successfully.")
+            st.rerun()
+
+    except Exception as e:
+        st.error(f"Could not clear scanner cache: {e}")
 
     st.markdown("**CSV cache refresh status**")
     _diag_meta = st.session_state.get("scan_cache_meta", {})
