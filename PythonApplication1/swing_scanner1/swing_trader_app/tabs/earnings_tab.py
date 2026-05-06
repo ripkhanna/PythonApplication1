@@ -14,13 +14,20 @@ def render_earnings(ctx: dict) -> None:
     st.caption("📅 Upcoming Earnings · Verdict: price vs MAs + analyst target + EPS trend")
 
     # ── Controls ──────────────────────────────────────────────────────────────
-    ec1, ec2, ec3 = st.columns([1, 1, 2])
+    ec1, ec2, ec3, ec4 = st.columns([1, 1, 1, 2])
     with ec1:
         earn_days = st.slider("Days ahead", 5, 30, 15, key="earn_days")
     with ec2:
         earn_market = st.radio("Market", ["🇺🇸 US", "🇸🇬 SGX", "🇮🇳 India"],
                                horizontal=True, key="earn_market_sel")
     with ec3:
+        # v13.49: avoid scanning the entire market by default. Yahoo earnings
+        # calls are slow/rate-limited on Streamlit Cloud, so scan a practical
+        # capped list and allow the user to raise the limit when needed.
+        earn_max = st.selectbox("Max scan", [50, 100, 150, 250, 500, 1000],
+                                index=1, key="earn_max_scan",
+                                help="Keeps Earnings Calendar fast. Extra tickers are always scanned first.")
+    with ec4:
         # Custom tickers — always include these even if not in base list
         extra_earn = st.text_input("➕ Add tickers",
             placeholder="UUUU, NVDA, AAPL", key="earn_extra").strip().upper()
@@ -32,11 +39,28 @@ def render_earnings(ctx: dict) -> None:
     else:
         earn_base = list(INDIA_TICKERS)
 
-    # Inject extra tickers at the front so they're scanned first
+    # Prioritize latest scan results first, then curated market list.
+    # This makes the tab useful and faster after a scan because it checks the
+    # stocks you are actually looking at before the rest of the universe.
+    try:
+        scan_priority = []
+        for _df_name in ("df_long", "df_short", "df_swing_picks"):
+            _df = st.session_state.get(_df_name, pd.DataFrame())
+            if isinstance(_df, pd.DataFrame) and not _df.empty and "Ticker" in _df.columns:
+                scan_priority.extend([str(x).strip().upper() for x in _df["Ticker"].head(150).tolist()])
+        for _t in reversed([x for x in scan_priority if x]):
+            if _t in earn_base:
+                earn_base.remove(_t)
+            earn_base.insert(0, _t)
+    except Exception:
+        pass
+
+    # Inject extra tickers at the very front so they're scanned first.
     if extra_earn:
-        for t in [x.strip() for x in extra_earn.split(",") if x.strip()]:
-            if t not in earn_base:
-                earn_base.insert(0, t)
+        for t in reversed([x.strip().upper() for x in extra_earn.split(",") if x.strip()]):
+            if t in earn_base:
+                earn_base.remove(t)
+            earn_base.insert(0, t)
 
     # ── Search + filter — always visible ─────────────────────────────────────
     sf1, sf2 = st.columns([2, 2])
@@ -60,13 +84,17 @@ def render_earnings(ctx: dict) -> None:
             fetch_earnings_calendar.clear()
         except Exception:
             pass
-        earn_df = fetch_earnings_calendar(tuple(earn_base), earn_days)
+        with st.spinner(f"Scanning earnings for up to {earn_max} tickers…"):
+            earn_df = fetch_earnings_calendar(tuple(earn_base), earn_days, int(earn_max))
         st.session_state["earn_df"] = earn_df
+        st.session_state["earn_last_scan_count"] = min(len(earn_base), int(earn_max))
+
+    st.caption(f"Fast mode: checks earnings dates first, then loads full Yahoo info only for matching candidates. Current cap: {earn_max} tickers.")
 
     earn_df = st.session_state.get("earn_df", pd.DataFrame())
 
     if earn_df.empty:
-        st.info("Click 📅 Fetch Earnings Calendar. Add UUUU in the ➕ Add tickers box to include it.")
+        st.info("Click 📅 Fetch Earnings Calendar. Add UUUU in the ➕ Add tickers box to include it. Default scan is capped for speed; raise Max scan only when needed.")
     else:
         buys   = (earn_df["_vcol"] == "buy").sum()
         watch  = (earn_df["_vcol"] == "watch").sum()

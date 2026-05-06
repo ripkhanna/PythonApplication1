@@ -1,73 +1,122 @@
-"""Extracted runtime section from app_runtime.py lines 4201-4495.
-Loaded by app_runtime with exec(..., globals()) to preserve the original single-file behavior.
+"""Fast earnings/event helper functions.
+
+v13.49 change: the original earnings calendar called ``yf.Ticker(ticker).info``
+for every ticker in the market list. That is very slow on Streamlit Cloud and
+can make the Earnings tab feel frozen. This version uses a two-step flow:
+
+1. Fetch only the earnings date first, using ``Ticker.calendar`` where possible.
+2. Fetch the heavy ``Ticker.info`` payload only for tickers whose earnings date
+   is inside the requested window.
+
+Both ticker-level calls are cached, so repeated button clicks are fast.
 """
 
-@st.cache_data(ttl=3600)
-def fetch_earnings_calendar(tickers: tuple, days_ahead: int = 15) -> pd.DataFrame:
-    import time
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def _fast_earnings_date_for_ticker(ticker: str):
+    """Return next earnings date as ISO string, or an empty string.
+
+    Uses Yahoo calendar first because it is generally lighter than ``info``.
+    Falls back to selected timestamp fields from ``info`` only if needed.
+    """
+    try:
+        tkr = yf.Ticker(ticker)
+        today = datetime.today().date()
+
+        # Newer yfinance may return a DataFrame or dict-like calendar.
+        try:
+            cal = tkr.calendar
+            ed = None
+            if cal is not None:
+                if hasattr(cal, "empty") and not cal.empty:
+                    # Common DataFrame form: index contains "Earnings Date".
+                    if "Earnings Date" in getattr(cal, "index", []):
+                        val = cal.loc["Earnings Date"]
+                        if hasattr(val, "iloc"):
+                            ed = val.iloc[0]
+                        else:
+                            ed = val
+                    elif "Earnings Date" in getattr(cal, "columns", []):
+                        ed = cal["Earnings Date"].iloc[0]
+                    elif len(cal.values.flatten()) > 0:
+                        ed = cal.values.flatten()[0]
+                elif isinstance(cal, dict):
+                    ed = cal.get("Earnings Date") or cal.get("EarningsDate")
+            if ed is not None and not pd.isna(ed):
+                if isinstance(ed, (list, tuple)) and ed:
+                    ed = ed[0]
+                d = pd.Timestamp(ed).date()
+                if d >= today:
+                    return str(d)
+        except Exception:
+            pass
+
+        # Fallback: info timestamps, but only once per ticker and cached.
+        try:
+            info = tkr.info or {}
+            for key in ("earningsTimestamp", "earningsTimestampStart", "earningsTimestampEnd", "earningsDate"):
+                val = info.get(key)
+                if not val:
+                    continue
+                try:
+                    d = pd.Timestamp(val, unit="s").date() if isinstance(val, (int, float)) and val > 0 else pd.Timestamp(val).date()
+                    if d >= today:
+                        return str(d)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return ""
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def _earnings_info_for_candidate(ticker: str) -> dict:
+    """Return the heavier info payload only for confirmed earnings candidates."""
+    try:
+        return yf.Ticker(ticker).info or {}
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_earnings_calendar(tickers: tuple, days_ahead: int = 15, max_tickers: int = 120) -> pd.DataFrame:
     today  = datetime.today().date()
     cutoff = today + pd.Timedelta(days=days_ahead)
     rows   = []
 
-    prog     = st.progress(0, text="Scanning earnings dates…")
-    status   = st.empty()
-    total    = len(tickers)
-    found    = 0
-    skipped  = 0   # rate-limited / empty responses
+    # Keep order but remove duplicates / blanks.
+    clean_tickers = []
+    seen = set()
+    for t in tickers:
+        t = str(t).strip().upper()
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        clean_tickers.append(t)
 
-    def _get_info_with_retry(ticker, retries=2, delay=1.5):
-        """Fetch tkr.info with retry on empty response (rate limit)."""
-        for attempt in range(retries + 1):
-            try:
-                info = yf.Ticker(ticker).info or {}
-                # If info is suspiciously empty (rate limited), retry
-                if not info.get("regularMarketPrice") and not info.get("currentPrice") \
-                   and not info.get("earningsTimestamp") and attempt < retries:
-                    time.sleep(delay)
-                    continue
-                return info
-            except Exception:
-                if attempt < retries:
-                    time.sleep(delay)
-        return {}
+    if max_tickers and max_tickers > 0:
+        clean_tickers = clean_tickers[:int(max_tickers)]
 
+    total = len(clean_tickers)
+    if total == 0:
+        return pd.DataFrame()
+
+    prog   = st.progress(0, text="Scanning earnings dates…")
+    status = st.empty()
     candidates = []
 
-    for i, ticker in enumerate(tickers):
-        status.caption(f"Checking {ticker} ({i+1}/{total}) · {found} with earnings found · {skipped} skipped")
+    # Phase 1: light earnings-date scan only.
+    for i, ticker in enumerate(clean_tickers):
         try:
-            info = _get_info_with_retry(ticker)
-
-            if not info:
-                skipped += 1
-                prog.progress((i + 1) / total)
-                continue
-
-            earn_date = None
-            for key in ("earningsTimestamp", "earningsTimestampStart",
-                        "earningsTimestampEnd", "earningsDate"):
-                val = info.get(key)
-                if val:
-                    try:
-                        d = pd.Timestamp(val, unit="s").date() \
-                            if isinstance(val, (int, float)) and val > 0 \
-                            else pd.Timestamp(val).date()
-                        if d >= today:
-                            earn_date = d
-                            break
-                    except Exception:
-                        continue
-
-            if earn_date and earn_date <= cutoff:
-                candidates.append((ticker, earn_date, info))
-                found += 1
-
-            # Small delay every 10 tickers to avoid rate limiting
-            if (i + 1) % 10 == 0:
-                time.sleep(0.3)
-
+            status.caption(f"Checking earnings date {ticker} ({i+1}/{total}) · {len(candidates)} found")
+            ed_str = _fast_earnings_date_for_ticker(ticker)
+            if ed_str:
+                earn_date = pd.Timestamp(ed_str).date()
+                if today <= earn_date <= cutoff:
+                    candidates.append((ticker, earn_date))
         except Exception:
-            skipped += 1
+            pass
         prog.progress((i + 1) / total)
 
     prog.empty()
@@ -76,8 +125,16 @@ def fetch_earnings_calendar(tickers: tuple, days_ahead: int = 15) -> pd.DataFram
     if not candidates:
         return pd.DataFrame()
 
-    for ticker, earn_date, info in candidates:
+    # Phase 2: enrich only candidates with heavier info fields.
+    prog2 = st.progress(0, text="Loading details for earnings candidates…")
+    status2 = st.empty()
+    cand_total = len(candidates)
+
+    for i, (ticker, earn_date) in enumerate(candidates):
         try:
+            status2.caption(f"Loading details {ticker} ({i+1}/{cand_total})…")
+            info = _earnings_info_for_candidate(ticker)
+
             days_out    = (earn_date - today).days
             eps_est     = info.get("forwardEps") or info.get("epsForward")
             eps_last    = info.get("trailingEps")
@@ -131,11 +188,14 @@ def fetch_earnings_calendar(tickers: tuple, days_ahead: int = 15) -> pd.DataFram
             })
         except Exception:
             pass
+        prog2.progress((i + 1) / cand_total)
+
+    prog2.empty()
+    status2.empty()
 
     if not rows:
         return pd.DataFrame()
     return pd.DataFrame(rows).sort_values("_days").reset_index(drop=True)
-
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -144,7 +204,6 @@ def fetch_earnings_calendar(tickers: tuple, days_ahead: int = 15) -> pd.DataFram
 _POSITIVE_NEWS_WORDS = ["beat", "beats", "raise", "raised", "upgrade", "upgraded", "buyback", "record", "strong", "growth", "profit", "surge", "rally", "partnership", "deal", "contract", "order", "award", "backlog", "approval", "launch", "expansion", "guidance raised"]
 _NEGATIVE_NEWS_WORDS = ["miss", "misses", "cut", "cuts", "downgrade", "downgraded", "lawsuit", "probe", "investigation", "fraud", "weak", "loss", "decline", "falls", "plunge", "warning", "guidance cut", "delay", "cancel", "cancelled", "recall"]
 _ORDER_WORDS = ["contract", "order", "award", "awarded", "backlog", "tender", "project", "supply", "shipbuilding", "data centre", "data center", "defence", "defense", "semiconductor", "government", "framework agreement", "purchase agreement"]
-
 def _safe_float_event(v, default=0.0):
     try:
         if v is None or pd.isna(v):
