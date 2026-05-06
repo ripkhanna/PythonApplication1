@@ -1,0 +1,1344 @@
+"""
+Swing Scanner v13.45 — Bayesian Ensemble
+====================================================================
+Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
+Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
+v11 add-ons  : weekly trend, earnings guard, regime-adjusted thresholds
+v12 add-ons  : options-derived signals — call/put unusual flow, IV term
+               structure, 10% OTM skew, P/C volume, IV vs RV regime,
+               ATM-straddle implied move (informs Smart TP and downgrades
+               fresh BUYs to WATCH on front-month IV inversion).
+               Backends:
+                 • US tickers     → yfinance Ticker.options
+                 • India .NS F&O  → nsepython (only ~200 stocks)
+                 • SGX            → no options market exists, layer skipped
+
+Install:
+  pip install financedatabase ta streamlit yfinance pandas numpy nsepython requests streamlit-autorefresh
+"""
+# v13.45: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
+# NotImplementedError from __annotate__ when @st.cache_data wraps functions
+# with bare unsubscripted generics like `-> tuple`. This `from __future__`
+# downgrades all annotations in this module to strings at parse time,
+# bypassing __annotate__ entirely. Annotations here are documentation only.
+from __future__ import annotations
+
+import streamlit as st
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import ta
+import json
+from pathlib import Path
+import streamlit.components.v1 as components
+from datetime import datetime, timedelta
+import os
+import stat
+import shutil
+from pathlib import Path
+import streamlit as st
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PAGE CONFIG
+# ─────────────────────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="Swing Scanner v13.45",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+# ── Mobile-responsive CSS ─────────────────────────────────────────────────────
+st.markdown("""
+<style>
+/* ── Global font size reduction ───────────────────────────────── */
+.stMarkdown, .stDataFrame, .stAlert, .stCaption,
+.stRadio, .stCheckbox, .stSlider, .stSelectbox,
+.stTextInput, .stButton, .stExpander { font-size: 12px !important; }
+
+/* ── Top padding: give room for title ─────────────────────────── */
+.block-container {
+    padding-top: 3.0rem !important;
+    padding-bottom: 0.5rem !important;
+    padding-left: 1rem !important;
+    padding-right: 1rem !important;
+    max-width: 100% !important;
+}
+
+/* ── Title / headers smaller ──────────────────────────────────── */
+h1 { font-size: 1.4rem !important; font-weight: 700 !important; margin: 0 0 4px !important; text-align: center !important; }
+h2 { font-size: 0.9rem !important; margin: 0 0 2px !important; }
+h3 { font-size: 0.85rem !important;margin: 2px 0 !important; }
+p, .stMarkdown p { font-size: 11px !important; margin: 2px 0 !important; }
+
+/* ── Metrics compact ──────────────────────────────────────────── */
+[data-testid="metric-container"] {
+    padding: 3px 6px !important;
+    border-radius: 4px !important;
+}
+[data-testid="metric-container"] label {
+    font-size: 9px !important;
+    line-height: 1.1 !important;
+}
+[data-testid="metric-container"] [data-testid="stMetricValue"] {
+    font-size: 13px !important;
+    line-height: 1.2 !important;
+}
+[data-testid="metric-container"] [data-testid="stMetricDelta"] {
+    font-size: 9px !important;
+}
+
+/* ── Tabs compact ─────────────────────────────────────────────── */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 1px !important;
+    flex-wrap: wrap !important;
+}
+.stTabs [data-baseweb="tab"] {
+    font-size: 10px !important;
+    padding: 3px 8px !important;
+    min-width: 0 !important;
+    height: auto !important;
+}
+
+/* ── Dataframe smaller text ───────────────────────────────────── */
+.stDataFrame {
+    font-size: 11px !important;
+    overflow-x: auto !important;
+}
+.stDataFrame th { font-size: 10px !important; padding: 2px 6px !important; }
+.stDataFrame td { font-size: 11px !important; padding: 2px 6px !important; }
+
+/* ── Buttons compact ──────────────────────────────────────────── */
+.stButton button {
+    font-size: 11px !important;
+    padding: 4px 10px !important;
+    height: auto !important;
+}
+
+/* ── Inputs compact ───────────────────────────────────────────── */
+.stTextInput input, .stSelectbox select,
+.stMultiSelect div[data-baseweb] {
+    font-size: 11px !important;
+    min-height: 28px !important;
+}
+
+/* ── Radio horizontal tight ───────────────────────────────────── */
+.stRadio > div {
+    gap: 6px !important;
+    flex-wrap: wrap !important;
+}
+.stRadio label { font-size: 11px !important; }
+
+/* ── Caption / info / warning smaller ────────────────────────── */
+.stAlert { padding: 4px 8px !important; font-size: 11px !important; }
+.stAlert p { font-size: 11px !important; margin: 0 !important; }
+[data-testid="stCaptionContainer"] { font-size: 10px !important; }
+
+/* ── Sidebar compact ──────────────────────────────────────────── */
+[data-testid="stSidebar"] .block-container {
+    padding-top: 0.5rem !important;
+}
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] .stCheckbox label,
+[data-testid="stSidebar"] .stSlider label {
+    font-size: 11px !important;
+}
+
+/* ── Expander compact ─────────────────────────────────────────── */
+.streamlit-expanderHeader {
+    font-size: 11px !important;
+    padding: 4px 8px !important;
+}
+.streamlit-expanderContent { padding: 4px 8px !important; }
+
+/* ── Remove default element spacing ──────────────────────────── */
+div[data-testid="stVerticalBlock"] > div {
+    gap: 0.2rem !important;
+}
+
+/* ── Mobile ───────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+    /* Mobile browser + Streamlit toolbar can cover the first lines.
+       Keep a larger top padding so the title is never hidden. */
+    .block-container {
+        padding-top: 4.2rem !important;
+        padding-left: 0.4rem !important;
+        padding-right: 0.4rem !important;
+        padding-bottom: 0.3rem !important;
+    }
+    h1 {
+        font-size: 1.05rem !important;
+        line-height: 1.25 !important;
+        white-space: normal !important;
+        overflow: visible !important;
+        text-align: left !important;
+        margin-top: 0 !important;
+        margin-bottom: 0.15rem !important;
+    }
+    [data-testid="stCaptionContainer"] { font-size: 0.78rem !important; }
+    .stTabs [data-baseweb="tab"] { font-size: 9px !important; padding: 2px 5px !important; }
+    .stButton button { width: 100% !important; }
+    [data-testid="metric-container"] [data-testid="stMetricValue"] { font-size: 12px !important; }
+}
+
+
+
+/* ── Top scan-status spinner ───────────────────────────────────── */
+.top-scan-box {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    margin: 4px 0 8px 0;
+    border-radius: 8px;
+    background: rgba(49, 130, 206, 0.12);
+    border: 1px solid rgba(49, 130, 206, 0.35);
+    color: inherit;
+    font-size: 12px;
+    line-height: 1.35;
+}
+.top-scan-spinner {
+    width: 15px;
+    height: 15px;
+    min-width: 15px;
+    border: 2px solid rgba(49, 130, 206, 0.25);
+    border-top-color: #3182ce;
+    border-radius: 50%;
+    animation: topScanSpin 0.8s linear infinite;
+}
+@keyframes topScanSpin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+@media (max-width: 768px) {
+    .top-scan-box {
+        position: sticky;
+        top: 0;
+        z-index: 999;
+        font-size: 11px;
+        padding: 7px 8px;
+    }
+}
+
+/* Title uses native Streamlit elements so it remains visible on mobile. */
+
+</style>
+""", unsafe_allow_html=True)
+
+st.title("📈 Swing/Long Term Scanner v13.45")
+
+# v13.45: COMPACT SELF-STAMP
+# The build identity (path, mtime, hash, size) is still computed so it can
+# self-prove the running file, but only the short hash and mtime are visible
+# in the caption. The full path and size are tucked into the tooltip — hover
+# the caption to see them — so the page header stays compact.
+try:
+    import hashlib
+    _src_path = Path(__file__).resolve()
+    _src_mtime = datetime.fromtimestamp(_src_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+    _src_hash = hashlib.sha256(_src_path.read_bytes()).hexdigest()[:8]
+    _src_size = _src_path.stat().st_size
+    st.caption(
+        f"Bayesian Ensemble · build `{_src_hash}` · {_src_mtime}",
+        help=f"Running file: {_src_path}\nSize: {_src_size:,} bytes\n"
+             f"Full SHA-256 prefix: {_src_hash}\n\n"
+             f"Hover this caption to verify which file Streamlit loaded. "
+             f"To compare against your file on disk:\n"
+             f"  PowerShell: Get-FileHash '{_src_path.name}' -Algorithm SHA256",
+    )
+except Exception as _e:
+    st.caption(f"Bayesian Ensemble · build 2026-05-04 "
+               f"(stamp failed: {type(_e).__name__})")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EXTRACTED CORE RUNTIME SECTIONS
+# ─────────────────────────────────────────────────────────────────────────────
+# The original working monolith kept constants, cache, signal engine, market
+# data, options, scan, event, trade-desk, strategy and long-term helper
+# functions in this file. They now live under swing_trader_app/core_runtime/.
+#
+# They are executed into this module's globals instead of imported normally so
+# functions see the exact same global namespace they had in the original
+# single-file app. This preserves behavior while making app_runtime.py smaller.
+from pathlib import Path as _RuntimePath
+
+def _load_runtime_piece(relative_path: str) -> None:
+    _piece_path = _RuntimePath(__file__).resolve().parent / relative_path
+    _code = _piece_path.read_text(encoding="utf-8")
+    exec(compile(_code, str(_piece_path), "exec"), globals())
+
+for _runtime_piece in [
+    "core_runtime/cache_core.py",
+    "core_runtime/config_core.py",
+    "core_runtime/table_utils_core.py",
+    "core_runtime/market_data_core.py",
+    "core_runtime/signals_core.py",
+    "core_runtime/options_core.py",
+    "core_runtime/universe_core.py",
+    "core_runtime/analysis_scan_core.py",
+    "core_runtime/diagnose_core.py",
+    "core_runtime/event_core.py",
+    "core_runtime/swing_picks_core.py",
+    "core_runtime/trade_desk_core.py",
+    "core_runtime/strategy_core.py",
+    "core_runtime/long_term_core.py",
+    "core_runtime/cache_management_core.py",
+]:
+    _load_runtime_piece(_runtime_piece)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SIDEBAR
+# ─────────────────────────────────────────────────────────────────────────────
+# v13.9: PERSISTENT UI STATE
+# Every sidebar widget binds to st.session_state via a stable `key=` and
+# defaults are pre-seeded in one block below. This guarantees user changes
+# survive every rerun, including cache-clear reruns, until the user
+# explicitly resets them or restarts the Streamlit server.
+#
+# v13.31: DISK PERSISTENCE — settings now also survive browser reloads,
+# server restarts, and new tabs. On first widget render of each session we
+# overlay any saved values from ui_state.json on top of the factory defaults.
+# After the sidebar finishes rendering, we write the current state back if
+# anything changed. Crucially this is the same script-anchored directory as
+# the CSV cache, so it lives next to the .py file and never gets lost.
+#
+# Pattern: widgets must NOT use both `key=` and `value=` — Streamlit
+# deprecates that and the value parameter is silently ignored. The correct
+# pattern is to seed defaults into session_state once, then pass key= only.
+# ─────────────────────────────────────────────────────────────────────────────
+_SIDEBAR_DEFAULTS = {
+    # Top-of-page market selector (lives outside sidebar but persisted here)
+    "market_selector":        "🇺🇸 US",
+    # Scan settings
+    "ui_top_n_sectors":       3,
+    "ui_min_prob_long":       62,
+    "ui_min_prob_short":      60,
+    "ui_skip_earnings":       False,
+    "ui_use_live_universe":   True,
+    "ui_max_live_universe":   1000,
+    "ui_always_include":      "",
+    # Options layer
+    "ui_enable_options":      False,
+    "ui_opt_required":        False,
+    # Bayesian / engine controls
+    "ui_use_bucket_cap":      True,
+    # Long filters
+    "ui_req_stoch":           False,
+    "ui_req_bb":              False,
+    "ui_req_accel":           False,
+    # Short filters
+    "ui_req_s_stoch":         False,
+    "ui_req_s_bb":            False,
+    "ui_req_s_decel":         False,
+    # Misc
+    "ui_extra_input":         "",
+    "ui_load_csv_on_start":   True,
+    "ui_refresh_choice":      "15 min",
+}
+
+# Disk-backed persistence: load saved settings once per session
+_UI_STATE_FILE = SCAN_CACHE_DIR / "ui_state.json"
+
+def _load_ui_state() -> dict:
+    """Load saved UI state from disk. Returns empty dict on any error."""
+    try:
+        if _UI_STATE_FILE.exists():
+            return json.loads(_UI_STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+def _save_ui_state(state_dict: dict) -> None:
+    """Save UI state to disk. Silent on error to avoid breaking the app."""
+    try:
+        _UI_STATE_FILE.write_text(
+            json.dumps(state_dict, indent=2, default=str), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+# Once per session: seed defaults, then overlay saved overrides
+if not st.session_state.get("_ui_state_loaded"):
+    _saved = _load_ui_state()
+    for _k, _v in _SIDEBAR_DEFAULTS.items():
+        # Saved value takes precedence over factory default
+        st.session_state[_k] = _saved.get(_k, _v)
+    st.session_state["_ui_state_loaded"] = True
+    # Track baseline so we can detect changes
+    st.session_state["_ui_state_baseline"] = {
+        _k: st.session_state.get(_k) for _k in _SIDEBAR_DEFAULTS
+    }
+else:
+    # On every subsequent rerun, just ensure defaults exist for any keys
+    # that might have been deleted (e.g. by Reset)
+    for _k, _v in _SIDEBAR_DEFAULTS.items():
+        if _k not in st.session_state:
+            st.session_state[_k] = _v
+
+st.sidebar.header("Scan settings")
+
+# v13.9: One-click reset for users who want defaults back, plus cache-status
+# diagnostic panel so the user can SEE whether scanner_cache/*.csv are
+# being written and where.
+with st.sidebar.expander("⚙️ UI settings · save & reset", expanded=False):
+    if st.button("↩️ Reset all sidebar settings to defaults",
+                 key="ui_reset_btn",
+                 help="Reverts all sidebar controls to factory defaults AND "
+                      "deletes the saved ui_state.json from disk. Does not "
+                      "affect ML models, calibrated weights, or scan results.",
+                 use_container_width=True):
+        for _k, _v in _SIDEBAR_DEFAULTS.items():
+            st.session_state[_k] = _v
+        # v13.31: also delete the on-disk file, otherwise the next rerun
+        # would re-load the old saved values and the reset would silently
+        # not stick.
+        try:
+            _UI_STATE_FILE.unlink(missing_ok=True)
+        except Exception:
+            pass
+        st.session_state["_ui_state_baseline"] = dict(_SIDEBAR_DEFAULTS)
+        st.rerun()
+    st.caption(
+        f"Settings persist across reruns, browser reloads, and server "
+        f"restarts via `{_UI_STATE_FILE.name}` next to the script. "
+        f"Click reset above to clear both memory and disk state."
+    )
+
+# v13.31: Cache & directory diagnostics moved to the 🔍 Diagnostics tab.
+# This block previously lived in the sidebar; it's now merged with the
+# existing CSV cache refresh block in the Diagnostics tab so all
+# cache/storage-related signals are in one place.
+
+top_n_sectors  = st.sidebar.slider(
+    "Top N green/red sectors to scan", 1, 6, key="ui_top_n_sectors",
+)
+min_prob_long  = st.sidebar.slider(
+    "Min LONG rise prob (%)",  40, 95, key="ui_min_prob_long",
+)
+min_prob_short = st.sidebar.slider(
+    "Min SHORT fall prob (%)", 40, 95, key="ui_min_prob_short",
+)
+skip_earnings  = st.sidebar.checkbox(
+    "Skip earnings within 7 days", key="ui_skip_earnings",
+)
+use_live_universe = st.sidebar.checkbox(
+    "Use live market universe",
+    key="ui_use_live_universe",
+    help="When ON, the scanner and Operator Activity tab fetch the market universe "
+         "from live/public market sources first (Yahoo movers + index constituents, "
+         "SGX securities feed, NSE index API), then merges them with the full existing "
+         "curated ticker list. Tickers in 'Always include tickers' are also forced in. "
+         "This means stocks like UUUU/APP remain scanned even if they are not in today's movers.",
+)
+max_live_universe = st.sidebar.slider(
+    "Max live stocks to scan", 50, 1000, step=25,
+    key="ui_max_live_universe",
+    help="Limits only the live/Yahoo side of the universe. Existing curated tickers "
+         "and always-include tickers are added on top of this limit.",
+)
+always_include_text = st.sidebar.text_area(
+    "Always include tickers",
+    key="ui_always_include",
+    height=68,
+    help="Comma- or line-separated tickers that are always scanned, even when "
+         "Use live market universe is ON. Example: UUUU, APP, NVDA, D05.SI",
+)
+always_include_tickers = [
+    t.strip().upper()
+    for t in always_include_text.replace("\n", ",").split(",")
+    if t.strip()
+]
+enable_options = st.sidebar.checkbox(
+    "Use options data (US + India F&O, +30–60s)",
+    key="ui_enable_options",
+    help="Adds call/put flow, IV term structure, skew, and implied-move "
+         "signals on top of the technical Bayesian engine. "
+         "US tickers use yfinance; Indian .NS tickers use nsepython "
+         "(only F&O-listed stocks have option chains). SGX has no liquid "
+         "single-stock options market and is skipped automatically. "
+         "After toggling this, you must click 🚀 Scan again — results are "
+         "only recomputed on Scan, not on checkbox change.",
+)
+# v12: When the toggle flips, invalidate ONLY fetch_analysis' cache so the
+# next Scan click is guaranteed fresh. Other caches (sectors, holdings,
+# regime) are untouched.
+_prev_opt = st.session_state.get("_prev_enable_options")
+if _prev_opt is not None and _prev_opt != enable_options:
+    try:
+        fetch_analysis.clear()
+    except Exception:
+        pass
+st.session_state["_prev_enable_options"] = enable_options
+
+# v12: Hard filter — when ON, only show stocks that fired ≥1 option signal.
+# This is the surefire way to make the toggle's effect unmistakable: turn it
+# on with the main toggle ON and you see only options-confirmed setups; turn
+# the main toggle OFF and the tables empty out (because Opt Flow is "–" for
+# every row). It's also the cleanest way to diagnose whether the options
+# pipeline is reaching your machine — if the table empties even on a US
+# scan with the main toggle ON, yfinance options aren't loading.
+opt_required = st.sidebar.checkbox(
+    "Filter: only options-confirmed setups",
+    key="ui_opt_required",
+    help="Hides any stock that didn't fire at least one option signal. "
+         "Requires 'Use options data' ON. If the table empties on a US "
+         "scan, it means yfinance is not returning option-chain data — "
+         "try `pip install --upgrade yfinance` and `streamlit cache clear`.",
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v13.7: Bucket-cap toggle for correlated-signal handling
+# Default ON — this is a real fix for evidence over-counting in the
+# Bayesian engine. Off only for A/B comparison or to debug a borderline
+# case. Toggling this invalidates fetch_analysis cache so probabilities
+# are recomputed on the next scan.
+# ─────────────────────────────────────────────────────────────────────────────
+use_bucket_cap = st.sidebar.checkbox(
+    "Bucket-cap correlated signals (recommended)",
+    key="ui_use_bucket_cap",
+    help="Bayesian probability assumes signals are independent. They aren't — "
+         "trend_daily, weekly_trend, full_ma_stack, golden_cross all measure "
+         "the same uptrend. Default ON: within each bucket (trend / momentum / "
+         "volume / volatility / structure / relative / options), the strongest "
+         "signal counts in full, the next at half-strength, the third at "
+         "quarter, and so on. This stops 5 correlated 'uptrend' signals from "
+         "being scored as 5 independent witnesses, which previously pegged "
+         "probability at 95% on setups that historically win ~60%.",
+)
+st.session_state["use_bucket_cap"] = use_bucket_cap
+_prev_bucket = st.session_state.get("_prev_bucket_cap")
+if _prev_bucket is not None and _prev_bucket != use_bucket_cap:
+    try:
+        fetch_analysis.clear()
+    except Exception:
+        pass
+st.session_state["_prev_bucket_cap"] = use_bucket_cap
+
+st.sidebar.markdown("---")
+st.sidebar.header("Long signal filters")
+req_stoch = st.sidebar.checkbox("Must have Stoch bounce",      key="ui_req_stoch")
+req_bb    = st.sidebar.checkbox("Must have BB bull squeeze",   key="ui_req_bb")
+req_accel = st.sidebar.checkbox("Must have MACD acceleration", key="ui_req_accel")
+
+st.sidebar.markdown("---")
+st.sidebar.header("Short signal filters")
+req_s_stoch = st.sidebar.checkbox("Must have Stoch rollover",    key="ui_req_s_stoch")
+req_s_bb    = st.sidebar.checkbox("Must have BB bear squeeze",   key="ui_req_s_bb")
+req_s_decel = st.sidebar.checkbox("Must have MACD deceleration", key="ui_req_s_decel")
+
+st.sidebar.markdown("---")
+st.sidebar.header("Custom tickers")
+extra_input = st.sidebar.text_input(
+    "Add tickers (comma-separated)",
+    key="ui_extra_input",
+    placeholder="HIMS, NVTS",
+)
+
+st.sidebar.markdown("---")
+st.sidebar.header("CSV result cache")
+load_csv_on_start = st.sidebar.checkbox(
+    "Load latest CSV results on app start",
+    key="ui_load_csv_on_start",
+    help="Shows the last completed scan immediately from scanner_cache/*.csv so the UI does not stay blank while a new scan runs.",
+)
+refresh_choice = st.sidebar.radio(
+    "Auto refresh scan",
+    ["Off", "5 min","15 min", "30 min"],
+    key="ui_refresh_choice",
+    horizontal=True,
+    help="When enabled, the app re-runs on this interval to refresh data. "
+         "Requires `streamlit-autorefresh` (pip install streamlit-autorefresh) "
+         "to do this WITHOUT reloading the browser — which would otherwise "
+         "wipe your sidebar settings, market selection, and refresh interval. "
+         "If the package isn't installed, auto-refresh is disabled and a "
+         "manual 'Rerun now' button is shown instead.",
+)
+refresh_minutes = 0 if refresh_choice == "Off" else int(refresh_choice.split()[0])
+# v13.31: Non-destructive auto-refresh
+# OLD: <script>setTimeout(window.parent.location.reload, ...)</script>
+#      ^ This destroyed the entire Streamlit session — every widget reset to
+#      default, market selector flipped to US, refresh interval back to 15 min.
+# NEW: streamlit-autorefresh, which triggers a server-side rerun WITHOUT
+#      reloading the browser page. Session state is fully preserved.
+if refresh_minutes:
+    if _autorefresh_available:
+        # Returns a counter that increments each refresh — we don't use the
+        # value, but the call itself schedules the next rerun.
+        st_autorefresh(
+            interval=refresh_minutes * 60 * 1000,
+            limit=None,
+            key=f"_autorefresh_{refresh_minutes}m",
+        )
+    else:
+        st.sidebar.warning(
+            "⚠️ Auto-refresh disabled — `streamlit-autorefresh` not installed.\n\n"
+            "Install with `pip install streamlit-autorefresh` and restart "
+            "Streamlit. The previous browser-reload approach was removed "
+            "because it wiped all sidebar settings on every refresh."
+        )
+        if st.sidebar.button("🔄 Rerun now", key="manual_rerun_btn",
+                             use_container_width=True,
+                             help="Manual fallback for auto-refresh."):
+            st.rerun()
+
+# v13.31: After all sidebar widgets have rendered, persist any changes to disk
+# so a true browser reload, server restart, or new tab restores the user's
+# last-known settings. We compare to the per-session baseline; if anything
+# changed, write ui_state.json. Cheap because Python dict equality is fast,
+# and writes are skipped when nothing changed.
+_current_ui_state = {_k: st.session_state.get(_k) for _k in _SIDEBAR_DEFAULTS}
+_baseline = st.session_state.get("_ui_state_baseline", {})
+if _current_ui_state != _baseline:
+    _save_ui_state(_current_ui_state)
+    st.session_state["_ui_state_baseline"] = _current_ui_state
+
+st.sidebar.markdown("---")
+st.sidebar.markdown(
+    f"**Data sources**\n\n"
+    f"✅ yfinance · US options\n\n"
+    f"{'✅' if _fd_available else '⚠️'} FinanceDatabase "
+    f"({'installed' if _fd_available else 'pip install financedatabase'})\n\n"
+    f"{'✅' if _nse_opt_available else '⚠️'} nsepython · India F&O options "
+    f"({'installed' if _nse_opt_available else 'pip install nsepython'})\n\n"
+    f"{'✅' if _autorefresh_available else '⚠️'} streamlit-autorefresh "
+    f"({'installed' if _autorefresh_available else 'pip install streamlit-autorefresh'})"
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v12: OPTIONS PIPELINE DIAGNOSTICS
+# Lets the user run a live, single-ticker test against each backend and see
+# exactly what came back. This bypasses the technical pre-filter, the cache,
+# and every UI layer — so if the test fails here, the problem is in the data
+# layer (library install, IP block, library bug), not in our integration.
+# ─────────────────────────────────────────────────────────────────────────────
+with st.sidebar.expander("🩺 Options diagnostics"):
+    st.caption(
+        "Tests both backends with a single liquid ticker each. "
+        "Use this to find out *exactly* why options data isn't flowing."
+    )
+    st.write(f"**yfinance:** ✅ available")
+    st.write(
+        f"**nsepython:** {'✅ installed' if _nse_opt_available else '❌ NOT installed — `pip install nsepython` and restart Streamlit'}"
+    )
+
+    if st.button("Run live backend test", key="opt_diag_btn"):
+        # ── US backend ────────────────────────────────────────────────────────
+        st.markdown("**🇺🇸 US backend test — AAPL**")
+        try:
+            with st.spinner("Calling yfinance..."):
+                _yf_chain = _fetch_chain_yf("AAPL", 2)
+            if _yf_chain:
+                _exp, _c, _p = _yf_chain[0]
+                st.success(
+                    f"✅ {len(_yf_chain)} expirations · "
+                    f"front {_exp} · {len(_c)} calls · {len(_p)} puts"
+                )
+                if not _c.empty and "impliedVolatility" in _c.columns:
+                    _ivs = _c["impliedVolatility"].dropna()
+                    if not _ivs.empty:
+                        st.caption(f"IV sanity: median {_ivs.median():.3f}, range {_ivs.min():.3f}–{_ivs.max():.3f}")
+            else:
+                st.error("❌ Empty result. yfinance returned no chain. "
+                         "Try `pip install --upgrade yfinance` and restart.")
+        except Exception as _e:
+            st.error(f"❌ Exception: `{type(_e).__name__}: {_e}`")
+
+        # ── India backend ─────────────────────────────────────────────────────
+        st.markdown("**🇮🇳 India backend test — RELIANCE**")
+        if not _nse_opt_available:
+            st.warning(
+                "Skipped — `nsepython` is not installed. "
+                "Run `pip install nsepython` and restart Streamlit."
+            )
+        else:
+            try:
+                with st.spinner("Calling NSE (may take 5–10 seconds on first call)..."):
+                    _nse_chain = _fetch_chain_nse("RELIANCE.NS", 2)
+                if _nse_chain:
+                    _exp, _c, _p = _nse_chain[0]
+                    st.success(
+                        f"✅ {len(_nse_chain)} expirations · "
+                        f"front {_exp} · {len(_c)} calls · {len(_p)} puts"
+                    )
+                    if not _c.empty and "impliedVolatility" in _c.columns:
+                        _ivs = _c["impliedVolatility"][_c["impliedVolatility"] > 0]
+                        if not _ivs.empty:
+                            st.caption(
+                                f"IV sanity (should be 0.10–0.80 for RELIANCE): "
+                                f"median {_ivs.median():.3f}, "
+                                f"range {_ivs.min():.3f}–{_ivs.max():.3f}"
+                            )
+                        else:
+                            st.warning(
+                                "⚠️ Chain fetched but all IVs are 0. NSE often "
+                                "returns 0 IV for OTM strikes; the integration "
+                                "filters these out automatically."
+                            )
+                else:
+                    # Try to discover whether nsepython is reachable at all
+                    st.error(
+                        "❌ Empty result from NSE. Most likely causes:\n\n"
+                        "1. **NSE blocking your IP.** From Singapore (or any "
+                        "non-IN/cloud IP), NSE can rate-limit aggressively. "
+                        "Wait 60 seconds and retry.\n\n"
+                        "2. **Cloudflare challenge.** `nsepython`'s cookie/"
+                        "session bootstrap can fail silently if NSE returns a "
+                        "Cloudflare interstitial. Try `pip install --upgrade nsepython`.\n\n"
+                        "3. **Proxy/firewall.** If you're behind a corporate "
+                        "proxy or VPN, NSE may refuse the connection."
+                    )
+                    # Show raw nsepython response for debugging
+                    try:
+                        _raw = _nse_oc("RELIANCE")
+                        if not _raw:
+                            st.caption("Debug: nsepython returned an empty/falsy value.")
+                        elif isinstance(_raw, dict):
+                            _keys = list(_raw.keys())[:5]
+                            st.caption(f"Debug: nsepython returned a dict with keys {_keys} — "
+                                       f"but `records` was missing or unparseable.")
+                        else:
+                            st.caption(f"Debug: nsepython returned type `{type(_raw).__name__}`.")
+                    except Exception as _e2:
+                        st.caption(f"Debug: nsepython raised `{type(_e2).__name__}: {_e2}`")
+            except Exception as _e:
+                st.error(
+                    f"❌ Exception: `{type(_e).__name__}: {_e}`\n\n"
+                    f"This is usually a network or NSE-blocking issue, not a "
+                    f"code bug. Try again in 60 seconds."
+                )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MARKET REGIME BANNER
+# ─────────────────────────────────────────────────────────────────────────────
+mkt    = get_market_regime()
+regime = mkt["regime"]
+emojis = {"BULL":"🟢","CAUTION":"🟡","BEAR":"🔴","UNKNOWN":"⚪"}
+
+st.caption(
+    f"{emojis.get(regime,'⚪')} **{regime}** · "
+    f"SPY **${mkt['spy']}** (EMA20 ${mkt['spy_ema20']}) · "
+    f"VIX **{mkt['vix']}** · "
+    f"{'🟢 Normal' if regime=='BULL' else '🔴 Strict long / Short boost' if regime=='BEAR' else '🟡 Cautious'}"
+)
+if regime == "BEAR":
+    st.error("🔴 Bear market — Long thresholds raised · Short probability boosted +8%")
+elif regime == "CAUTION":
+    st.warning("🟡 Caution zone — Long probabilities reduced 12% · Short boosted +3%")
+
+market_sel = st.radio(
+    "🌍 Market", ["🇺🇸 US", "🇸🇬 SGX", "🇮🇳 India"],
+    horizontal=True, key="market_selector", label_visibility="collapsed"
+)
+
+# Map selection → ticker list, sector map, currency symbol
+if market_sel == "🇺🇸 US":
+    _active_tickers = US_TICKERS;  _active_sectors = SECTOR_ETFS
+    _currency_sym = "$";           _price_fmt = lambda p: f"${p:,.2f}"
+elif market_sel == "🇸🇬 SGX":
+    _active_tickers = SG_TICKERS;  _active_sectors = {}
+    _currency_sym = "S$";          _price_fmt = lambda p: f"S${p:,.3f}"
+else:
+    _active_tickers = INDIA_TICKERS; _active_sectors = INDIA_SECTOR_ETFS
+    _currency_sym = "₹";            _price_fmt = lambda p: f"₹{p:,.2f}"
+
+# ── Load cached CSV results immediately for the selected market ──────────────
+_cache_loaded_note = ""
+_cache_refresh_due = False
+_loaded_cache = None
+if load_csv_on_start:
+    _loaded_cache = _load_scan_cache(market_sel)
+    if _loaded_cache is not None:
+        _meta = _loaded_cache.get("meta", {})
+        _cache_age = _cache_age_minutes(_meta)
+        _cache_timing = _cache_timing_info(_meta, refresh_minutes)
+        st.session_state["scan_cache_meta"] = _meta
+        st.session_state["scan_cache_timing"] = _cache_timing
+        st.session_state["scan_cache_refresh_minutes"] = refresh_minutes
+        st.session_state["scan_cache_refresh_due"] = bool(_cache_timing.get("is_due", False))
+        _cache_market_key = f"{market_sel}:{_meta.get('saved_at','')}"
+        # Only replace session data when this market/cache is new, or when the
+        # selected market differs from the data currently in session.
+        if (st.session_state.get("_loaded_csv_cache_key") != _cache_market_key
+                or st.session_state.get("last_market") != market_sel):
+            st.session_state["df_long"] = _loaded_cache.get("df_long", pd.DataFrame())
+            st.session_state["df_short"] = _loaded_cache.get("df_short", pd.DataFrame())
+            st.session_state["df_operator"] = _loaded_cache.get("df_operator", pd.DataFrame())
+            st.session_state["last_market"] = market_sel
+            st.session_state["last_universe_source"] = _meta.get("universe_source", "CSV cached scan")
+            st.session_state["last_universe_count"] = int(_meta.get("universe_count", 0) or 0)
+            st.session_state["last_live_ticker_count"] = int(_meta.get("live_ticker_count", 0) or 0)
+            st.session_state["last_existing_ticker_count"] = int(_meta.get("existing_ticker_count", len(_active_tickers)) or len(_active_tickers))
+            _tickers_csv = _meta.get("scanned_tickers_csv", "")
+            st.session_state["last_scanned_tickers_csv"] = _tickers_csv
+            st.session_state["last_scanned_tickers"] = [t.strip() for t in _tickers_csv.split(",") if t.strip()]
+            st.session_state["last_scan_opt_enabled"] = bool(_meta.get("options_enabled", False))
+            st.session_state["last_scan_opt_count"] = int(_meta.get("options_count", 0) or 0)
+            st.session_state["last_scan_market"] = market_sel
+            st.session_state["_loaded_csv_cache_key"] = _cache_market_key
+        if _cache_age is not None:
+            _cache_loaded_note = (
+                f"📦 Loaded cached CSV scan from {_meta.get('saved_at','unknown')} "
+                f"({ _cache_age:.0f} min old) · Long {int(_meta.get('long_rows',0))} · "
+                f"Short {int(_meta.get('short_rows',0))}"
+            )
+            if refresh_minutes and _cache_age >= refresh_minutes:
+                _cache_refresh_due = True
+    else:
+        st.session_state["scan_cache_meta"] = {}
+        st.session_state["scan_cache_timing"] = _cache_timing_info({}, refresh_minutes)
+        st.session_state["scan_cache_refresh_minutes"] = refresh_minutes
+        st.session_state["scan_cache_refresh_due"] = False
+        if refresh_minutes:
+            _cache_loaded_note = "📦 No CSV cache found yet. Click Scan once to create it."
+
+if st.session_state.get("scan_cache_warning"):
+    _cw = st.session_state.get("scan_cache_warning")
+    cw_cols = st.columns([10, 1])
+    with cw_cols[0]:
+        st.error(f"⚠️ {_cw}\n\n"
+                 "See sidebar → 📦 CSV cache status for the directory and "
+                 "writability check.")
+    with cw_cols[1]:
+        if st.button("✕", key="dismiss_cache_warning",
+                     help="Dismiss this warning"):
+            st.session_state.pop("scan_cache_warning", None)
+            st.rerun()
+elif _cache_loaded_note:
+    st.caption(_cache_loaded_note)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TOP SCAN STATUS PLACEHOLDER
+# Shows loading / scan progress near the top of the page, before tab content.
+# This avoids scan messages appearing below the Sector Heatmap on mobile.
+# ─────────────────────────────────────────────────────────────────────────────
+_top_scan_status = st.empty()
+
+
+def _show_top_spinner(message: str):
+    """Render a lightweight spinner in the top scan-status placeholder.
+    This stays visible above the tabs, unlike normal st.spinner lower in the page.
+    """
+    try:
+        _top_scan_status.markdown(
+            f"""
+            <div class="top-scan-box">
+                <span class="top-scan-spinner"></span>
+                <span>{message}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    except Exception:
+        _top_scan_status.info(message)
+
+
+tab_sectors, tab_trade_desk, tab_long, tab_swing_picks, tab_short, tab_operator, tab_both, tab_etf, tab_stock, tab_earn, tab_event, tab_lt, tab_diag, tab_backtest, tab_strategy, tab_help = st.tabs([
+    "🗂️ Sector Heatmap",
+    "📋 Trade Desk",
+    "📈 Long Setups",
+    "🎯 Swing Picks",
+    "📉 Short Setups",
+    "🪤 Operator Activity",
+    "🔄 Side by Side",
+    "📊 ETF Holdings",
+    "🔬 Stock Analysis",
+    "📅 Earnings",
+    "📰 Event Predictor",
+    "🌱 Long Term",
+    "🔍 Diagnostics",
+    "🧪 Accuracy Lab",
+    "🧠 Strategy Lab",
+    "❓ Help",
+])
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 1 — SECTOR HEATMAP  (market-aware)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB RENDERERS — extracted from the original working single-file script
+# Each renderer executes the original tab body with the same globals dict,
+# preserving behavior while keeping this runtime file much smaller.
+# ─────────────────────────────────────────────────────────────────────────────
+from swing_trader_app.tabs.accuracy_lab_tab import render_accuracy_lab
+from swing_trader_app.tabs.diagnostics_tab import render_diagnostics
+from swing_trader_app.tabs.earnings_tab import render_earnings
+from swing_trader_app.tabs.etf_holdings_tab import render_etf_holdings
+from swing_trader_app.tabs.event_predictor_tab import render_event_predictor
+from swing_trader_app.tabs.help_tab import render_help
+from swing_trader_app.tabs.long_term_tab import render_long_term
+from swing_trader_app.tabs.operator_activity_tab import render_operator_activity
+from swing_trader_app.tabs.scan_results_tabs import render_long, render_short, render_both
+from swing_trader_app.tabs.sectors_tab import render_sectors
+from swing_trader_app.tabs.stock_analysis_tab import render_stock_analysis
+from swing_trader_app.tabs.strategy_lab_tab import render_strategy_lab
+from swing_trader_app.tabs.swing_picks_tab import render_swing_picks
+from swing_trader_app.tabs.trade_desk_tab import render_trade_desk
+
+def _safe_render_tab(tab_name, render_fn):
+    try:
+        render_fn(globals())
+    except Exception as e:
+        import traceback as _traceback
+        st.error(f"{tab_name} failed: {type(e).__name__}: {e}")
+        with st.expander("Show traceback"):
+            st.code(_traceback.format_exc())
+
+with tab_sectors:
+    _safe_render_tab('sectors', render_sectors)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SCAN BUTTON  (market-aware)
+# ─────────────────────────────────────────────────────────────────────────────
+col_btn, col_info = st.columns([1, 3])
+
+with col_btn:
+    _manual_scan = st.button(f"🚀 Scan {market_sel} Stocks", type="primary")
+run = _manual_scan or _cache_refresh_due
+if _cache_refresh_due and not _manual_scan:
+    _show_top_spinner(
+        f"⏱️ Cached CSV is older than {refresh_minutes} min — refreshing scan and updating CSV files..."
+    )
+with col_info:
+    # Show sector preview for the active market
+    if market_sel == "🇺🇸 US":
+        sdf_preview = get_sector_performance()
+    elif market_sel == "🇸🇬 SGX":
+        sdf_preview = get_sg_sector_performance()
+    else:
+        sdf_preview = get_india_sector_performance()
+        sdf_preview = sdf_preview[sdf_preview["ETF"] != "^NSEI"]
+
+    if not sdf_preview.empty and "Today %" in sdf_preview.columns:
+        gn = sdf_preview[sdf_preview["Today %"] >  0.1]["Sector"].tolist()
+        rn = sdf_preview[sdf_preview["Today %"] < -0.1]["Sector"].tolist()
+        _always_note = f" + {len(always_include_tickers)} always-include" if always_include_tickers else ""
+        universe_note = (
+            f"Yahoo/live up to {max_live_universe} + existing {len(_active_tickers)} stocks{_always_note}"
+            if use_live_universe else
+            f"existing curated watchlist · {len(_active_tickers)} stocks{_always_note}"
+        )
+        st.info(
+            f"**{market_sel}** · {universe_note} · "
+            f"Top **{top_n_sectors} green** → longs: {', '.join(gn[:top_n_sectors]) or 'none'} · "
+            f"Top **{top_n_sectors} red** → shorts: {', '.join(rn[:top_n_sectors]) or 'none'}"
+        )
+
+if run:
+    # Get sector data for the selected market
+    if market_sel == "🇺🇸 US":
+        sdf = get_sector_performance()
+        active_sector_etfs = SECTOR_ETFS
+    elif market_sel == "🇸🇬 SGX":
+        sdf = get_sg_sector_performance()
+        active_sector_etfs = {}   # no ETF-based holdings for SGX
+    else:
+        sdf = get_india_sector_performance()
+        sdf = sdf[sdf["ETF"] != "^NSEI"]   # exclude benchmark
+        active_sector_etfs = INDIA_SECTOR_ETFS
+
+    if sdf.empty or "Today %" not in sdf.columns:
+        st.error("Cannot fetch sector data. Check connection or upgrade yfinance.")
+        st.stop()
+
+    green_sectors = sdf[sdf["Today %"] >  0.1]["Sector"].tolist()
+    red_sectors   = sdf[sdf["Today %"] < -0.1]["Sector"].tolist()
+
+    extra_tickers = [t.strip().upper() for t in extra_input.split(",") if t.strip()]
+
+    if not green_sectors and not red_sectors:
+        st.warning("All sectors flat — market may be closed or data unavailable.")
+    else:
+        # Fetch live ETF holdings only for US (India/SGX use static ticker lists)
+        live_sectors = {}
+        if market_sel == "🇺🇸 US":
+            _show_top_spinner("📡 Fetching live US ETF holdings...")
+            live_sectors = fetch_sector_constituents(target_per_sector=25)
+            if extra_tickers and green_sectors:
+                first_green = green_sectors[0]
+                existing    = live_sectors.get(first_green, {}).get("stocks", [])
+                merged      = list(dict.fromkeys(extra_tickers + existing))
+                if first_green in live_sectors:
+                    live_sectors[first_green]["stocks"] = merged
+
+            with st.expander("📋 Holdings per sector", expanded=False):
+                rows = [{"Sector": sn, "ETF": sd.get("etf",""),
+                         "Source": sd.get("source","–"),
+                         "# Stocks": sd.get("count", len(sd.get("stocks",[]))),
+                         "Top 8": ", ".join(sd.get("stocks",[])[:8])}
+                        for sn, sd in live_sectors.items()]
+                st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+
+        # Build active ticker list. In live mode this is deliberately:
+        #   Yahoo/live market tickers + the full existing curated ticker list
+        # Then forced tickers are added on top. This prevents existing names
+        # such as UUUU or APP from disappearing from the scan/Diagnostics tab.
+        if use_live_universe:
+            _show_top_spinner("🌐 Fetching Yahoo/live market universe...")
+            with st.spinner("🌐 Fetching Yahoo/live market universe..."):
+                live_tickers, live_source = fetch_live_market_universe(
+                    market_sel, max_symbols=max_live_universe
+                )
+            active_tickers = _unique_keep_order(list(live_tickers) + list(_active_tickers))
+            universe_source = (
+                f"{live_source} + existing curated watchlist"
+                if live_tickers else
+                "existing curated watchlist — live market universe unavailable"
+            )
+        else:
+            live_tickers = []
+            active_tickers = list(_active_tickers)
+            universe_source = "existing curated watchlist"
+
+        forced_tickers = _unique_keep_order(always_include_tickers + extra_tickers)
+        if forced_tickers:
+            active_tickers = _unique_keep_order(forced_tickers + active_tickers)
+            universe_source = f"{universe_source} + always-include/extra tickers"
+
+        _show_top_spinner(
+            f"📊 Scanning <b>{len(active_tickers)} {market_sel} stocks</b> for signals... "
+            f"Universe: <b>{universe_source}</b> · "
+            f"Live: <b>{len(live_tickers)}</b> · Existing: <b>{len(_active_tickers)}</b>"
+        )
+
+        with st.spinner(f"Scanning {len(active_tickers)} stocks..."):
+            df_long, df_short, df_operator = fetch_analysis(
+                tuple(green_sectors), tuple(red_sectors),
+                regime, skip_earnings, top_n_sectors,
+                live_sectors if live_sectors else None,
+                market_tickers=tuple(active_tickers),
+                enable_options=enable_options,
+            )
+
+        _top_scan_status.success(
+            f"✅ Scan complete for **{len(active_tickers)} {market_sel} stocks** · "
+            f"Long: **{len(df_long)}** · Short: **{len(df_short)}** · Operator: **{len(df_operator)}**"
+        )
+
+        # Apply sidebar filters
+        if not df_long.empty:
+            df_long["_p"] = df_long["Rise Prob"].str.rstrip("%").astype(float)
+            df_long = df_long[df_long["_p"] >= min_prob_long]
+            if req_stoch: df_long = df_long[df_long["Signals"].str.contains("STOCH")]
+            if req_bb:    df_long = df_long[df_long["BB Squeeze"] == "YES"]
+            if req_accel: df_long = df_long[df_long["Signals"].str.contains("MACD ACCEL")]
+            # v12: hard options filter
+            if opt_required and enable_options and "Opt Flow" in df_long.columns:
+                df_long = df_long[df_long["Opt Flow"] != "–"]
+            df_long = df_long.drop(columns="_p")
+
+        if not df_short.empty:
+            df_short["_p"] = df_short["Fall Prob"].str.rstrip("%").astype(float)
+            df_short = df_short[df_short["_p"] >= min_prob_short]
+            if req_s_stoch: df_short = df_short[df_short["Signals"].str.contains("STOCH")]
+            if req_s_bb:    df_short = df_short[df_short["Signals"].str.contains("BB BEAR")]
+            if req_s_decel: df_short = df_short[df_short["Signals"].str.contains("MACD DECEL")]
+            # v12: hard options filter
+            if opt_required and enable_options and "Opt Flow" in df_short.columns:
+                df_short = df_short[df_short["Opt Flow"] != "–"]
+            df_short = df_short.drop(columns="_p")
+
+        st.session_state["df_long"]            = df_long
+        st.session_state["df_short"]           = df_short
+        st.session_state["df_operator"]        = df_operator
+        st.session_state["live_sectors_cache"] = live_sectors
+        st.session_state["last_market"]        = market_sel
+        st.session_state["last_universe_source"] = universe_source
+        st.session_state["last_universe_count"]  = len(active_tickers)
+        st.session_state["last_live_ticker_count"] = len(live_tickers)
+        st.session_state["last_existing_ticker_count"] = len(_active_tickers)
+        st.session_state["last_scanned_tickers"] = list(active_tickers)
+        st.session_state["last_scanned_tickers_csv"] = ", ".join(active_tickers)
+        # v12: record the options state at scan time + how many candidates
+        # actually received option-chain data. Used by the banner below to
+        # tell the user when their toggle differs from the displayed scan.
+        _opt_count_l = int((df_long["Implied Move 2W"] != "–").sum())  \
+                       if (not df_long.empty and "Implied Move 2W" in df_long.columns) else 0
+        _opt_count_s = int((df_short["Implied Move 2W"] != "–").sum()) \
+                       if (not df_short.empty and "Implied Move 2W" in df_short.columns) else 0
+        st.session_state["last_scan_opt_enabled"] = enable_options
+        st.session_state["last_scan_opt_count"]   = _opt_count_l + _opt_count_s
+        st.session_state["last_scan_market"]      = market_sel
+
+        # Persist completed scan to CSV so future app starts load instantly.
+        _saved_cache_meta = _save_scan_cache(
+            market_sel,
+            df_long,
+            df_short,
+            df_operator,
+            {
+                "universe_source": universe_source,
+                "universe_count": len(active_tickers),
+                "live_ticker_count": len(live_tickers),
+                "existing_ticker_count": len(_active_tickers),
+                "scanned_tickers_csv": ", ".join(active_tickers),
+                "options_enabled": bool(enable_options),
+                "options_count": int(_opt_count_l + _opt_count_s),
+                "bucket_cap": bool(use_bucket_cap),
+                "top_n_sectors": int(top_n_sectors),
+                "min_prob_long": int(min_prob_long),
+                "min_prob_short": int(min_prob_short),
+                "skip_earnings": bool(skip_earnings),
+            },
+        )
+        if _saved_cache_meta:
+            st.session_state["scan_cache_meta"] = _saved_cache_meta
+            st.session_state["scan_cache_timing"] = _cache_timing_info(_saved_cache_meta, refresh_minutes)
+            st.session_state["scan_cache_refresh_minutes"] = refresh_minutes
+            st.session_state["scan_cache_refresh_due"] = False
+
+df_long  = st.session_state.get("df_long",  pd.DataFrame())
+df_short = st.session_state.get("df_short", pd.DataFrame())
+df_operator = st.session_state.get("df_operator", pd.DataFrame())
+last_market = st.session_state.get("last_market", market_sel)
+last_universe_source = st.session_state.get("last_universe_source", "curated hard-coded watchlist")
+last_universe_count = st.session_state.get("last_universe_count", len(_active_tickers))
+last_scanned_tickers = st.session_state.get("last_scanned_tickers", [])
+last_scanned_tickers_csv = st.session_state.get("last_scanned_tickers_csv", "")
+last_live_ticker_count = st.session_state.get("last_live_ticker_count", 0)
+last_existing_ticker_count = st.session_state.get("last_existing_ticker_count", len(_active_tickers))
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v12: Toggle-state banner
+# Tells the user when the current "Use options data" checkbox value differs
+# from what was used to produce the displayed tables, so they know whether
+# they need to click 🚀 Scan again. Also reports how many candidates in the
+# last scan actually received option-chain data — useful for diagnosing
+# yfinance rate limits or non-US universes where options aren't available.
+# ─────────────────────────────────────────────────────────────────────────────
+if "last_scan_opt_enabled" in st.session_state:
+    _last_state = st.session_state["last_scan_opt_enabled"]
+    _last_n     = st.session_state.get("last_scan_opt_count", 0)
+    _last_mkt   = st.session_state.get("last_scan_market", "")
+    if _last_state != enable_options:
+        st.warning(
+            f"⚠️ Options toggle changed since the last scan "
+            f"(was **{'ON' if _last_state else 'OFF'}**, now "
+            f"**{'ON' if enable_options else 'OFF'}**). "
+            f"Click **🚀 Scan** to refresh — toggling alone does not re-run the scan."
+        )
+    elif enable_options:
+        if _last_n > 0:
+            st.caption(
+                f"🧩 Options enrichment was ON in the last scan · "
+                f"{_last_n} candidate(s) received option-chain data "
+                f"(market: {_last_mkt})."
+            )
+        elif _last_mkt == "🇸🇬 SGX":
+            st.caption(
+                "🧩 Options enrichment is ON, but SGX has no liquid single-stock "
+                "options market — there is no option chain to fetch. The toggle "
+                "has no effect on SGX scans by design."
+            )
+        elif _last_mkt == "🇮🇳 India" and not _nse_opt_available:
+            st.caption(
+                "🧩 Options enrichment is ON, but `nsepython` is not installed. "
+                "Run `pip install nsepython` and restart Streamlit to enable "
+                "India F&O option signals."
+            )
+        elif _last_mkt == "🇮🇳 India":
+            st.caption(
+                "🧩 Options enrichment was ON for India, but no candidates "
+                "received option-chain data. Likely causes: NSE rate-limited "
+                "(wait ~60 seconds and retry), no candidate cleared the "
+                "technical pre-filter, or the tickers scanned aren't in NSE's "
+                "F&O list (~200 stocks have option chains)."
+            )
+        else:
+            st.caption(
+                "🧩 Options enrichment was ON in the last scan, but no candidates "
+                "received option-chain data. Likely causes: yfinance rate-limited, "
+                "or no candidate cleared the technical pre-filter "
+                "(≥4 long signals or ≥3 short signals)."
+            )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 2 — LONG
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_long:
+    _safe_render_tab('long', render_long)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 3 — SHORT
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_short:
+    _safe_render_tab('short', render_short)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 3b — OPERATOR ACTIVITY (universe-wide manipulation footprint scan)
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_operator:
+    _safe_render_tab('operator', render_operator_activity)
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 4 — SIDE BY SIDE
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_both:
+    _safe_render_tab('both', render_both)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 5 — ETF HOLDINGS
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_etf:
+    _safe_render_tab('etf', render_etf_holdings)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 6 — INDIVIDUAL STOCK ANALYSIS
+# Full chart + all indicators + signal scorecard + risk levels
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_stock:
+    _safe_render_tab('stock', render_stock_analysis)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 7 — DIAGNOSTICS
+# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB — EARNINGS CALENDAR
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_swing_picks:
+    _safe_render_tab('swing_picks', render_swing_picks)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB — TRADE DESK / EXECUTION TOOLS
+# Adds practical swing-trading workflow tools without changing scanner logic:
+# trade plans, position sizing, setup quality, market breadth/risk mode, journal.
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_trade_desk:
+    _safe_render_tab('trade_desk', render_trade_desk)
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB — STRATEGY LAB / OPTIONAL ML QUALITY FILTER
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_strategy:
+    _safe_render_tab('strategy', render_strategy_lab)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB — EARNINGS CALENDAR
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_earn:
+    _safe_render_tab('earn', render_earnings)
+
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB — EVENT PREDICTOR: Earnings + News + Orders
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_event:
+    _safe_render_tab('event', render_event_predictor)
+
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LONG-TERM TAB — ETF-sourced holdings with quality scoring
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ETFs/funds with strong long-term track records — we pull their TOP HOLDINGS
+LT_ETF_US = {
+    # ── Core Quality/Growth ───────────────────────────────────────────────────
+    "QQQ":   {"name": "Invesco Nasdaq-100",           "theme": "US Tech/Growth",      "ret1y": 11.2, "ret3y": 14.8, "ret5y": 18.2},
+    "VGT":   {"name": "Vanguard IT ETF",              "theme": "US Technology",        "ret1y": 12.1, "ret3y": 15.9, "ret5y": 19.4},
+    "SCHG":  {"name": "Schwab US Large Cap Growth",   "theme": "US Growth",            "ret1y": 10.8, "ret3y": 14.1, "ret5y": 17.8},
+    "QUAL":  {"name": "iShares MSCI USA Quality",     "theme": "Quality Factor",       "ret1y":  9.4, "ret3y": 12.3, "ret5y": 14.6},
+    "MOAT":  {"name": "VanEck Wide Moat ETF",         "theme": "Wide Moat",            "ret1y":  8.7, "ret3y": 11.4, "ret5y": 13.9},
+    "VUG":   {"name": "Vanguard Growth ETF",          "theme": "US Large Growth",      "ret1y": 10.2, "ret3y": 13.5, "ret5y": 16.2},
+    "DGRW":  {"name": "WisdomTree Div Growth",        "theme": "US Div Growth",        "ret1y":  8.1, "ret3y": 10.9, "ret5y": 13.1},
+    # ── High-returning sector ETFs ────────────────────────────────────────────
+    "SOXX":  {"name": "iShares Semiconductor",        "theme": "Semiconductors",       "ret1y":  8.3, "ret3y": 16.2, "ret5y": 22.1},
+    "IGV":   {"name": "iShares Software ETF",         "theme": "Software",             "ret1y": 10.4, "ret3y": 13.7, "ret5y": 16.8},
+    "XLK":   {"name": "SPDR Technology",              "theme": "Technology",           "ret1y": 11.5, "ret3y": 14.9, "ret5y": 18.3},
+    "XLV":   {"name": "SPDR Healthcare",              "theme": "Healthcare",           "ret1y":  6.2, "ret3y":  8.8, "ret5y": 11.4},
+    "XLF":   {"name": "SPDR Financials",              "theme": "Financials",           "ret1y": 14.1, "ret3y": 11.2, "ret5y": 12.7},
+    "CIBR":  {"name": "First Trust Cybersecurity",    "theme": "Cybersecurity",        "ret1y": 10.3, "ret3y": 12.1, "ret5y": 14.2},
+    "PAVE":  {"name": "Global X US Infrastructure",   "theme": "Infrastructure",       "ret1y": 11.8, "ret3y": 13.4, "ret5y": 15.3},
+    # ── Thematic ─────────────────────────────────────────────────────────────
+    "BOTZ":  {"name": "Global X Robotics & AI",       "theme": "AI & Robotics",        "ret1y":  6.4, "ret3y":  8.9, "ret5y": 11.8},
+    "AIQ":   {"name": "Global X AI & Tech",           "theme": "Artificial Intel",     "ret1y":  9.1, "ret3y": 11.2, "ret5y": 13.5},
+    "CLOU":  {"name": "Global X Cloud Computing",     "theme": "Cloud Computing",      "ret1y":  7.8, "ret3y":  9.4, "ret5y": 10.9},
+    "ARKK":  {"name": "ARK Innovation ETF",           "theme": "Disruptive Innov",     "ret1y": -2.1, "ret3y":  1.4, "ret5y":  8.1},
+    "WCLD":  {"name": "WisdomTree Cloud",             "theme": "Cloud/SaaS",           "ret1y":  7.2, "ret3y":  9.1, "ret5y": 11.2},
+    "DRIV":  {"name": "Global X Autonomous/EV",       "theme": "EV/Auto",              "ret1y":  5.1, "ret3y":  7.8, "ret5y": 10.3},
+    "ICLN":  {"name": "iShares Clean Energy",         "theme": "Clean Energy",         "ret1y": -8.4, "ret3y": -3.1, "ret5y":  6.2},
+    # ── India ────────────────────────────────────────────────────────────────
+    "INDA":  {"name": "iShares MSCI India",           "theme": "India Broad",          "ret1y":  8.9, "ret3y": 10.2, "ret5y": 12.4},
+    "INDY":  {"name": "iShares India 50",             "theme": "India Large Cap",      "ret1y":  8.4, "ret3y":  9.8, "ret5y": 11.9},
+    "SMIN":  {"name": "iShares India Small Cap",      "theme": "India Small Cap",      "ret1y": 10.2, "ret3y": 12.4, "ret5y": 14.8},
+    "EPI":   {"name": "WisdomTree India Earnings",    "theme": "India Value",          "ret1y":  9.1, "ret3y": 10.5, "ret5y": 12.1},
+}
+
+LT_ETF_SG = {
+    # ── ETFs that hold actual SGX-listed stocks ───────────────────────────────
+    "EWS":    {"name": "iShares MSCI Singapore",      "theme": "SG Broad Market",    "ret1y": 12.4, "ret3y":  6.8, "ret5y":  8.3},
+    "EWS.SI": {"name": "iShares MSCI Singapore (SGX)","theme": "SG Broad Market",    "ret1y": 12.4, "ret3y":  6.8, "ret5y":  8.3},
+    "VPL":    {"name": "Vanguard Pacific ETF",        "theme": "Asia Pacific",       "ret1y":  8.1, "ret3y":  5.9, "ret5y":  7.4},
+    "AAXJ":   {"name": "iShares MSCI Asia ex-Japan",  "theme": "Asia ex-Japan",      "ret1y": 10.3, "ret3y":  7.2, "ret5y":  8.9},
+    "EPHE":   {"name": "iShares MSCI Philippines",    "theme": "SE Asia",            "ret1y":  3.1, "ret3y":  2.4, "ret5y":  4.1},
+    "ASEA":   {"name": "Global X ASEAN ETF",          "theme": "SE Asia",            "ret1y":  6.2, "ret3y":  4.1, "ret5y":  5.2},
+    "AIA":    {"name": "iShares Asia 50 ETF",         "theme": "Asia Large Cap",     "ret1y": 11.2, "ret3y":  8.3, "ret5y":  9.1},
+    # ── SGX-listed ETFs ───────────────────────────────────────────────────────
+    "SRT.SI": {"name": "CSOP iEdge S-REIT Leaders",  "theme": "SG REITs",           "ret1y":  9.1, "ret3y":  4.2, "ret5y":  5.8},
+    "CLR.SI": {"name": "Lion-Phillip S-REIT ETF",    "theme": "SG REITs",           "ret1y":  8.8, "ret3y":  4.0, "ret5y":  5.6},
+    "ES3.SI": {"name": "SPDR STI ETF",               "theme": "STI Blue Chips",     "ret1y": 29.1, "ret3y": 13.4, "ret5y":  9.8},
+    "G3B.SI": {"name": "Nikko AM STI ETF",           "theme": "STI Blue Chips",     "ret1y": 29.0, "ret3y": 13.3, "ret5y":  9.7},
+}
+
+# Funds/instruments giving 10-12%+ returns for Singapore investors
+HIGH_RETURN_FUNDS = [
+    # ETF / Index
+    {"Name":"Vanguard S&P 500 (VUAA.L)",     "Type":"UCITS ETF",      "Ret5Y":"~15%", "Min":"S$1",    "Risk":"Med",  "Access":"IBKR/Moomoo","Note":"Irish-domiciled, 0% withholding tax for SG investors"},
+    {"Name":"iShares S&P 500 (CSPX.L)",      "Type":"UCITS ETF",      "Ret5Y":"~15%", "Min":"S$1",    "Risk":"Med",  "Access":"IBKR",        "Note":"Accumulating — no dividend drag"},
+    {"Name":"Nasdaq-100 (XNAS.L / ANAU.DE)", "Type":"UCITS ETF",      "Ret5Y":"~17%", "Min":"S$1",    "Risk":"Med-H","Access":"IBKR",        "Note":"Higher vol than S&P 500"},
+    {"Name":"Semiconductor (SOXX)",           "Type":"US ETF",         "Ret5Y":"~22%", "Min":"S$1",    "Risk":"High", "Access":"IBKR/Tiger",  "Note":"High beta — best in upcycles"},
+    {"Name":"iShares India Smallcap (SMIN)",  "Type":"US ETF",         "Ret5Y":"~15%", "Min":"S$1",    "Risk":"High", "Access":"IBKR",        "Note":"India structural growth + smallcap premium"},
+    # RSPs / Regular savings
+    {"Name":"POEMS Share Builders Plan",      "Type":"RSP",            "Ret5Y":"~12%", "Min":"S$100/m","Risk":"Med",  "Access":"Phillip",     "Note":"Monthly DCA into STI ETF or blue chips"},
+    {"Name":"Endowus Fund Smart",             "Type":"Robo/Fund",      "Ret5Y":"~12%", "Min":"S$1k",   "Risk":"Med",  "Access":"Endowus",     "Note":"100% equity portfolio — Dimensional/Vanguard"},
+    {"Name":"Syfe Equity100",                 "Type":"Robo",           "Ret5Y":"~14%", "Min":"S$1",    "Risk":"Med-H","Access":"Syfe",        "Note":"Global equity, auto-rebalanced"},
+    {"Name":"StashAway 36% Risk",             "Type":"Robo",           "Ret5Y":"~11%", "Min":"S$0",    "Risk":"Med",  "Access":"StashAway",   "Note":"ERAA risk-managed, diversified"},
+    {"Name":"Manulife Global Multi-Asset",    "Type":"Unit Trust",     "Ret5Y":"~10%", "Min":"S$1k",   "Risk":"Med",  "Access":"Banks/FAs",   "Note":"Available via CPF-OA investment scheme"},
+    # CPF-investible
+    {"Name":"NIKKO AM STI ETF (G3B)",         "Type":"CPF-investible", "Ret5Y":"~10%", "Min":"S$500",  "Risk":"Med",  "Access":"CPF-OA",      "Note":"29% STI return over 12m to Apr 2026"},
+    {"Name":"SPDR STI ETF (ES3)",             "Type":"CPF-investible", "Ret5Y":"~10%", "Min":"S$500",  "Risk":"Med",  "Access":"CPF-OA",      "Note":"Track STI, liquid, low TER 0.30%"},
+    # Bonds / alternatives
+    {"Name":"Singapore Savings Bonds (SSB)",  "Type":"Capital-safe",   "Ret5Y":"~3%",  "Min":"S$500",  "Risk":"None", "Access":"DBS/OCBC/UOB","Note":"Govt-backed, current 10Y avg ~3.0% pa"},
+    {"Name":"T-bills (6-month)",              "Type":"Capital-safe",   "Ret5Y":"~3.7%","Min":"S$1k",   "Risk":"None", "Access":"SGX/Banks",   "Note":"Current yield ~3.7% — parking cash"},
+]
+
+
+with tab_lt:
+    _safe_render_tab('lt', render_long_term)
+
+
+CACHE_DIR = Path("scanner_cache")
+
+with tab_diag:
+    _safe_render_tab('diag', render_diagnostics)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB — ACCURACY LAB / WALK-FORWARD BACKTEST
+# Keeps the scanner logic unchanged. This tab only validates past signal quality.
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_backtest:
+    _safe_render_tab('backtest', render_accuracy_lab)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 8 — HELP
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_help:
+    _safe_render_tab('help', render_help)
+

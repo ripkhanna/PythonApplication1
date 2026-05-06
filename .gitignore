@@ -361,3 +361,6 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+/PythonApplication1/swing_scanner
+/PythonApplication1/scanner_cache
+/PythonApplication1/swing_scanner1/swing_trader_app/scanner_cache

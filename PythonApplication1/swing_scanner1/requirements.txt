@@ -1,0 +1,11 @@
+streamlit
+yfinance
+pandas
+numpy
+ta
+financedatabase
+nsepython
+requests
+streamlit-autorefresh
+lightgbm
+scikit-learn
