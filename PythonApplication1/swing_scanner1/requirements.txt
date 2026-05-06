@@ -9,3 +9,4 @@ requests
 streamlit-autorefresh
 lightgbm
 scikit-learn
+plotly
