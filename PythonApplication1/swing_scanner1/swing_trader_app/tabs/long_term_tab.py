@@ -449,7 +449,7 @@ def render_long_term(ctx: dict) -> None:
         with st.expander("⚙️ Scan settings", expanded=True):
             sc1, sc2 = st.columns([1, 1])
             with sc1:
-                sg_min_sc = st.slider("Min quality score (0-10)", 1, 10, 3,
+                sg_min_sc = st.slider("Min quality score (0-10)", 1, 10, 2,
                                       key="lt_sg_min")
             with sc2:
                 lt_sg_max = st.slider("Max scan", 25, 1000, 250, step=25,
@@ -476,15 +476,17 @@ def render_long_term(ctx: dict) -> None:
                 if src not in sg_sources[sym]:
                     sg_sources[sym].append(src)
 
+            sgx_fallback = globals().get("SGX_LIQUID_FALLBACK_TICKERS", [])
             for t in SG_LT_TICKERS: _add_sg(t, "LT curated")
             for t in SG_TICKERS:    _add_sg(t, "Existing")
+            for t in sgx_fallback:  _add_sg(t, "SGX fallback")
             for t in LT_ETF_SG:     _add_sg(_clean_symbol(t), "ETF")
             for t in live_sg:        _add_sg(t, "SGX/live")
 
             sg_scan = _unique_keep_order([
                 (_clean_symbol(t) if str(t).upper().endswith(".SI")
                  else _clean_symbol(t + ".SI"))
-                for t in SG_LT_TICKERS + SG_TICKERS
+                for t in SG_LT_TICKERS + SG_TICKERS + list(sgx_fallback)
                        + list(LT_ETF_SG.keys()) + list(live_sg)
             ])[:lt_sg_max]
 
@@ -493,7 +495,12 @@ def render_long_term(ctx: dict) -> None:
             for i, ticker in enumerate(sg_scan):
                 st_s.caption(f"Scoring {ticker} ({i+1}/{len(sg_scan)})…")
                 row = score_lt_stock(ticker)
-                if row and row.get("_score", 0) >= sg_min_sc:
+                # For SGX, Yahoo often lacks fundamental fields. Accept either
+                # the quality score OR a reasonable support/dividend signal so
+                # the grid is not empty just because ROE/EPS/analyst data is blank.
+                if row and (row.get("_score", 0) >= sg_min_sc
+                            or row.get("_supp_score", 0) >= 2
+                            or row.get("Div Yield", "–") != "–"):
                     row["Sources"] = ", ".join(sg_sources.get(ticker, []))
                     results.append(row)
                 p.progress((i + 1) / max(1, len(sg_scan)))

@@ -397,8 +397,22 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             _atr_pct   = float(ta.volatility.average_true_range(
                              high, low, close, window=14).iloc[-1]) / _p_chk * 100 \
                          if _p_chk > 0 else 0
-            # Skip if dollar volume < $500k/day (illiquid) or ATR < 0.8% (can't swing 5-10%)
-            if _p_chk * _vol_avg_s < 500_000 or _atr_pct < 0.8:
+            # Market-aware liquidity gate. The old single threshold was tuned
+            # for US names and was too harsh for SGX on Streamlit Cloud, where
+            # only a smaller universe may load and many valid Singapore stocks
+            # trade with lower SGD turnover. Keep US strict, but allow SGX to
+            # pass when it is reasonably liquid and has enough movement.
+            if str(ticker).upper().endswith(".SI"):
+                _min_turnover = 120_000   # SGD/day approximation from yfinance price × volume
+                _min_atr_pct  = 0.30
+            elif str(ticker).upper().endswith(".NS"):
+                _min_turnover = 250_000
+                _min_atr_pct  = 0.50
+            else:
+                _min_turnover = 500_000
+                _min_atr_pct  = 0.80
+
+            if _p_chk * _vol_avg_s < _min_turnover or _atr_pct < _min_atr_pct:
                 scan_debug["skipped_liquidity"] += 1
                 progress_bar.progress((i + 1) / total)
                 continue

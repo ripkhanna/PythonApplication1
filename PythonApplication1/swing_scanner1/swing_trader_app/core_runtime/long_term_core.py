@@ -70,11 +70,27 @@ def score_lt_stock(ticker: str) -> dict:
     in scope regardless of how this module is loaded.
     """
     try:
-        info = yf.Ticker(ticker).info or {}
-        if not info.get("regularMarketPrice") and not info.get("currentPrice"):
-            return {}
+        tkr_obj = yf.Ticker(ticker)
+        info = tkr_obj.info or {}
 
-        price      = info.get("currentPrice") or info.get("regularMarketPrice") or 0
+        # Yahoo often omits currentPrice/regularMarketPrice for .SI symbols on
+        # Streamlit Cloud. Fall back to fast_info and then recent history so SGX
+        # rows are not discarded before scoring.
+        price = info.get("currentPrice") or info.get("regularMarketPrice") or 0
+        if not price:
+            try:
+                fi = getattr(tkr_obj, "fast_info", {}) or {}
+                price = fi.get("last_price") or fi.get("lastPrice") or fi.get("regular_market_price") or 0
+            except Exception:
+                price = 0
+        _hist_for_fallback = None
+        if not price:
+            try:
+                _hist_for_fallback = tkr_obj.history(period="18mo", auto_adjust=True)
+                if _hist_for_fallback is not None and not _hist_for_fallback.empty and "Close" in _hist_for_fallback.columns:
+                    price = float(_hist_for_fallback["Close"].dropna().iloc[-1])
+            except Exception:
+                price = 0
         if not price:
             return {}
 
@@ -142,7 +158,7 @@ def score_lt_stock(ticker: str) -> dict:
         trailing_1y = 0.0
         vol_ratio   = 1.0
         try:
-            hist = yf.Ticker(ticker).history(period="18mo", auto_adjust=True)
+            hist = _hist_for_fallback if _hist_for_fallback is not None else tkr_obj.history(period="18mo", auto_adjust=True)
             if hist is not None and not hist.empty and "Close" in hist.columns:
                 closes = hist["Close"].dropna()
 
@@ -169,6 +185,20 @@ def score_lt_stock(ticker: str) -> dict:
                         rsi14 = float(round(rsi_s.iloc[-1], 1))
                 except Exception:
                     rsi14 = 50.0
+
+                # Fill missing Yahoo moving averages/52W levels from the
+                # downloaded history when .SI metadata is incomplete.
+                try:
+                    if not ma50 and len(closes) >= 50:
+                        ma50 = float(closes.iloc[-50:].mean())
+                    if not ma200 and len(closes) >= 200:
+                        ma200 = float(closes.iloc[-200:].mean())
+                    if not w52hi and len(closes) >= 60:
+                        w52hi = float(closes.iloc[-252:].max() if len(closes) >= 252 else closes.max())
+                    if not w52lo and len(closes) >= 60:
+                        w52lo = float(closes.iloc[-252:].min() if len(closes) >= 252 else closes.min())
+                except Exception:
+                    pass
 
                 # 20d vs 60d volume ratio (accumulation signal)
                 if "Volume" in hist.columns:
@@ -311,6 +341,26 @@ def score_lt_stock(ticker: str) -> dict:
         div_yield = div_return / 100
         if div_return > 0:
             exp_parts.append(f"Div {div_return:.1f}%")
+        # SGX fundamentals are frequently sparse in Yahoo. Add a conservative
+        # Singapore fallback score from dividend, trend/support and volume so
+        # good SGX names do not all fail the quality filter only because Yahoo
+        # returned blank ROE/EPS/analyst fields.
+        if str(ticker).upper().endswith(".SI") and score < 4:
+            sgx_added = []
+            if div_return >= 3.0:
+                score += 1; sgx_added.append("Dividend")
+            if trailing_1y > 0:
+                score += 1; sgx_added.append("1Y momentum")
+            if price and ma200 and price > ma200:
+                score += 1; sgx_added.append("Above MA200")
+            if supp_score >= 2:
+                score += 1; sgx_added.append("Near support")
+            if vol_ratio >= 1.05:
+                score += 1; sgx_added.append("Volume improving")
+            if sgx_added:
+                notes.extend([x for x in sgx_added if x not in notes])
+            score = min(score, 6)
+
         exp_1y     = _clip(price_return + div_return, -10, 24)
         exp_1y_str = f"+{exp_1y:.1f}%" if exp_1y > 0 else f"{exp_1y:.1f}%"
         exp_1y_note = " + ".join(exp_parts) if exp_parts else "–"

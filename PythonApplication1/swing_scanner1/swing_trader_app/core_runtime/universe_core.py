@@ -340,6 +340,17 @@ def fetch_sgx_market_universe(max_symbols: int = 180) -> list:
         except Exception:
             pass
 
+    # Final cloud-safe fallback. On Streamlit Cloud the SGX endpoint can be
+    # blocked/empty and Wikipedia parsing can also fail. Do not return an empty
+    # live universe in that case; merge the curated SGX fallback so scans still
+    # cover a useful number of Singapore names.
+    try:
+        fallback = globals().get("SGX_LIQUID_FALLBACK_TICKERS", []) or globals().get("SG_TICKERS", [])
+        if len(tickers) < 60 and fallback:
+            tickers.extend([_clean_symbol(x, ".SI") for x in fallback])
+    except Exception:
+        pass
+
     return _unique_keep_order(tickers)[:max_symbols]
 
 
@@ -399,7 +410,7 @@ def fetch_live_market_universe(market_name: str, max_symbols: int = 350) -> tupl
         source = "Yahoo expanded live screeners + current US index constituents"
     elif market_name == "🇸🇬 SGX":
         tickers = fetch_sgx_market_universe(max_symbols=max_symbols)
-        source = "SGX securities feed / current STI constituents"
+        source = "SGX securities feed + STI/current curated SGX fallback"
     else:
         tickers = fetch_nse_market_universe(max_symbols=max_symbols)
         source = "NSE live index constituents"

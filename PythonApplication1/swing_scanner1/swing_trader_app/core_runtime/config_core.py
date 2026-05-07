@@ -294,6 +294,24 @@ SG_TICKERS = [
     "NO4.SI",   # Geo Energy
 ]
 
+# Cloud-safe SGX fallback universe. The SGX public endpoint and Yahoo SGX
+# metadata often fail or return partial data on Streamlit Cloud, so keep a
+# broader liquid-ish fallback list instead of scanning only 40-55 names.
+SGX_LIQUID_FALLBACK_TICKERS = [
+    "D01.SI","D05.SI","O39.SI","U11.SI","Z74.SI","S68.SI","BN4.SI","BS6.SI",
+    "S58.SI","C6L.SI","U96.SI","F34.SI","V03.SI","C52.SI","H78.SI","U14.SI",
+    "S51.SI","C31.SI","Y92.SI","G13.SI","C07.SI","A17U.SI","C38U.SI","M44U.SI",
+    "N2IU.SI","ME8U.SI","AJBU.SI","J69U.SI","J91U.SI","K71U.SI","T82U.SI",
+    "BUOU.SI","BTOU.SI","SK6U.SI","P9D.SI","C2PU.SI","HMN.SI","CLR.SI",
+    "SRT.SI","ES3.SI","G3B.SI","AIY.SI","558.SI","E28.SI","AWX.SI","I07.SI",
+    "5EB.SI","MZH.SI","8AZ.SI","40B.SI","OYY.SI","Q0F.SI","AEM.SI","BVA.SI",
+    "5WH.SI","41B.SI","5LY.SI","NO4.SI","RE4.SI","E6R.SI","T14.SI","S63.SI",
+    "C09.SI","S08.SI","B58.SI","C6L.SI","C52.SI","M01.SI","OV8.SI","H02.SI",
+    "D03.SI","U06.SI","Y03.SI","B61.SI","M04.SI","F99.SI","N01.SI","S59.SI",
+    "G92.SI","B7K.SI","1D0.SI","5JS.SI","5AB.SI","BN2.SI","TQ5.SI","P40U.SI",
+]
+SG_TICKERS = list(dict.fromkeys(SG_TICKERS + SGX_LIQUID_FALLBACK_TICKERS))
+
 INDIA_TICKERS = [
     # Nifty 50 Blue Chips
     "RELIANCE.NS","TCS.NS","INFY.NS","HDFCBANK.NS","ICICIBANK.NS",

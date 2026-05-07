@@ -1,22 +1,22 @@
-"""Help tab renderer for Swing Scanner v13.53."""
+"""Help tab renderer for Swing Scanner v13.55."""
 
 
 def render_help(ctx: dict) -> None:
     """Render the Help tab using objects supplied by the main runtime context."""
     st = ctx["st"]
 
-    st.markdown("## ❓ How to Use the Swing/Long Term Scanner v13.53")
+    st.markdown("## ❓ How to Use the Swing/Long Term Scanner v13.55")
     st.caption(
-        "Latest guide: v13.53 help refresh for the v13.52 live-market swing criteria, "
+        "Latest guide: v13.55 help refresh for the v13.52 live-market swing criteria, "
         "v13.51 cloud diagnostics, fast earnings calendar, expanded US/SGX ticker universe, "
         "Trade Desk execution tools, Swing Picks ranking, and readable modular tabs/core files."
     )
 
     with st.expander("🆕 What changed recently", expanded=True):
         st.markdown("""
-### v13.53
+### v13.55
 - Help tab updated for the latest app behavior.
-- Version labels updated to **v13.53**.
+- Version labels updated to **v13.55**.
 - Guide now explains the latest Long / Short / Swing Picks / Trade Desk / Stock Analysis criteria.
 
 ### v13.52 — better live-market swing criteria
@@ -81,7 +81,7 @@ Setup Type + VWAP + Operator Score + Trap Risk + Earnings Risk + Stop level
 | 🔍 **Diagnostics** | Debug Cloud/data issues | App errors, scan debug summary, cache status, ticker counts, scanned ticker list |
 | 🧪 **Accuracy Lab** | Signal validation | Backtest/validation notes for swing target logic |
 | 🧠 **Strategy Lab** | Optional ML research | ML is only a research/filter layer; Bayesian remains primary unless ML clearly beats it |
-| ❓ **Help** | This guide | Updated for v13.53 |
+| ❓ **Help** | This guide | Updated for v13.55 |
         """)
 
     with st.expander("🎚️ Swing signal mode — Strict vs Balanced vs Discovery"):
@@ -528,4 +528,4 @@ This tool does not provide financial advice. All outputs are estimates and signa
         """)
 
     st.markdown("---")
-    st.caption("Swing/Long Term Scanner v13.53 · Practical live-market swing criteria · Cloud diagnostics · US + SGX + India · Not financial advice · Created by Ripin")
+    st.caption("Swing/Long Term Scanner v13.55 · Practical live-market swing criteria · Cloud diagnostics · US + SGX + India · Not financial advice · Created by Ripin")
