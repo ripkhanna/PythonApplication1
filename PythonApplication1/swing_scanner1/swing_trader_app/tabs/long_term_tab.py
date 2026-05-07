@@ -435,6 +435,87 @@ def render_long_term(ctx: dict) -> None:
                 st.text_area("Comma-separated", value=csv_tickers,
                              height=90, key=f"{session_key}_universe_text")
 
+    # ── SG cloud-offline safety net ───────────────────────────────────────────
+    def _sgx_cloud_fallback_rows(sg_scan, sg_sources, sg_min_sc):
+        """Return conservative SGX rows when yfinance returns no usable .SI rows.
+
+        This prevents the cloud deployment from showing an empty grid when SGX
+        Yahoo requests are blocked/rate-limited. These rows are clearly marked
+        as fallback/seed rows and should be refreshed by re-running the scan
+        later or locally.
+        """
+        seed = {
+            "D05.SI":  ("DBS Group", "Financial Services", 4.8, 5, "✅ BUY & HOLD (1–3yr)"),
+            "O39.SI":  ("OCBC Bank", "Financial Services", 5.2, 5, "✅ BUY & HOLD (1–3yr)"),
+            "U11.SI":  ("UOB", "Financial Services", 5.0, 5, "✅ BUY & HOLD (1–3yr)"),
+            "S68.SI":  ("Singapore Exchange", "Financial Services", 3.5, 4, "👀 ACCUMULATE on dips"),
+            "Z74.SI":  ("Singtel", "Communication Services", 5.5, 4, "👀 ACCUMULATE on dips"),
+            "U96.SI":  ("Sembcorp Industries", "Utilities", 3.8, 4, "👀 ACCUMULATE on dips"),
+            "BN4.SI":  ("Keppel", "Industrials", 4.7, 4, "👀 ACCUMULATE on dips"),
+            "C38U.SI": ("CapitaLand Integrated Commercial Trust", "REIT", 5.4, 4, "👀 ACCUMULATE on dips"),
+            "A17U.SI": ("CapitaLand Ascendas REIT", "REIT", 5.6, 4, "👀 ACCUMULATE on dips"),
+            "M44U.SI": ("Mapletree Logistics Trust", "REIT", 6.0, 3, "⏳ MONITOR only"),
+            "ME8U.SI": ("Mapletree Industrial Trust", "REIT", 5.9, 4, "👀 ACCUMULATE on dips"),
+            "AJBU.SI": ("Keppel DC REIT", "REIT", 4.0, 3, "⏳ MONITOR only"),
+            "C6L.SI":  ("Singapore Airlines", "Industrials", 4.0, 3, "⏳ MONITOR only"),
+            "BS6.SI":  ("Yangzijiang Shipbuilding", "Industrials", 4.5, 4, "👀 ACCUMULATE on dips"),
+            "S58.SI":  ("SATS", "Industrials", 1.5, 2, "⏳ MONITOR only"),
+            "C52.SI":  ("ComfortDelGro", "Industrials", 4.5, 3, "⏳ MONITOR only"),
+            "F34.SI":  ("Wilmar", "Consumer Defensive", 5.0, 3, "⏳ MONITOR only"),
+            "V03.SI":  ("Venture", "Technology", 5.0, 3, "⏳ MONITOR only"),
+            "AIY.SI":  ("iFAST", "Financial Services", 1.0, 3, "⏳ MONITOR only"),
+            "C31.SI":  ("CapitaLand Investment", "Real Estate", 4.0, 3, "⏳ MONITOR only"),
+        }
+        rows = []
+        for t in sg_scan:
+            t = str(t).upper().strip()
+            if t not in seed:
+                continue
+            name, sector, dy, score, horizon = seed[t]
+            if score < sg_min_sc:
+                continue
+            exp_1y = min(14.0, max(2.0, dy + 3.0))
+            rows.append({
+                "Ticker": t,
+                "Name": name[:28],
+                "Sector": sector,
+                "Price": "–",
+                "Mkt Cap": "–",
+                "Exp 1Y Return": f"+{exp_1y:.1f}%",
+                "Return Breakdown": f"Cloud fallback: Div ~{dy:.1f}% + conservative price 3.0%",
+                "Rev Growth": "–",
+                "EPS Growth": "–",
+                "ROE": "–",
+                "Margin": "–",
+                "Fwd PE": "–",
+                "PEG": "–",
+                "Div Yield": f"~{dy:.1f}%",
+                "Beta": "–",
+                "MA200": "–",
+                "Target": "–",
+                "Upside": "–",
+                "Rec": "–",
+                "Score": f"{score}/10",
+                "Horizon": horizon,
+                "_score": score,
+                "_hcol": "wait" if score < 5 else "watch",
+                "_exp1y": exp_1y,
+                "Support": "⚪ Cloud fallback",
+                "SuppScore": "–",
+                "RSI14": "–",
+                "vsMA50%": "–",
+                "vsMA200%": "–",
+                "From52WHi%": "–",
+                "VolRatio": "–",
+                "FCFYield": "–",
+                "_supp_score": 0,
+                "_rsi14": 50.0,
+                "_supp_flags": ["Yahoo SGX data unavailable on cloud"],
+                "Sources": ", ".join(sg_sources.get(t, [])) + ", cloud fallback seed",
+            })
+        rows.sort(key=lambda x: -x.get("_score", 0))
+        return rows
+
     # ── SG standalone scan ────────────────────────────────────────────────────
     def run_sg_lt_scan():
         SG_LT_TICKERS = [
@@ -505,6 +586,16 @@ def render_long_term(ctx: dict) -> None:
                     results.append(row)
                 p.progress((i + 1) / max(1, len(sg_scan)))
             p.empty(); st_s.empty()
+
+            if not results:
+                results = _sgx_cloud_fallback_rows(sg_scan, sg_sources, sg_min_sc)
+                if results:
+                    st.warning(
+                        "Yahoo/SGX price or fundamentals returned no usable rows on cloud, "
+                        "so I loaded conservative SGX fallback rows instead of showing an empty grid. "
+                        "Price/MA/RSI fields are marked as unavailable. Try re-running later for live values."
+                    )
+
             results.sort(key=lambda x: -x.get("_score", 0))
             st.session_state["lt_sg"] = results
             st.session_state["lt_sg_universe_csv"] = ", ".join(sg_scan)

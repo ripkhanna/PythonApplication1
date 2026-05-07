@@ -91,6 +91,34 @@ def score_lt_stock(ticker: str) -> dict:
                     price = float(_hist_for_fallback["Close"].dropna().iloc[-1])
             except Exception:
                 price = 0
+
+        # Streamlit Cloud sometimes blocks/ratelimits yf.Ticker(...).history for
+        # Singapore symbols but yf.download still works. Try a single-symbol
+        # download before giving up; this is the most common cause of
+        # "Scanned 91 SGX stocks · found 0".
+        if not price and str(ticker).upper().endswith(".SI"):
+            try:
+                dl = yf.download(ticker, period="18mo", auto_adjust=True,
+                                 progress=False, threads=False)
+                if dl is not None and not dl.empty:
+                    # yfinance may return either flat columns or MultiIndex columns
+                    # for single tickers depending on version. Normalise to flat.
+                    try:
+                        if hasattr(dl.columns, "nlevels") and dl.columns.nlevels > 1:
+                            if "Close" in dl.columns.get_level_values(0):
+                                dl = dl.xs("Close", axis=1, level=0).to_frame("Close")
+                            elif "Close" in dl.columns.get_level_values(-1):
+                                dl = dl.xs("Close", axis=1, level=-1).to_frame("Close")
+                    except Exception:
+                        pass
+                    if "Close" in dl.columns:
+                        _hist_for_fallback = dl
+                        close_s = dl["Close"].dropna()
+                        if len(close_s):
+                            price = float(close_s.iloc[-1])
+            except Exception:
+                price = 0
+
         if not price:
             return {}
 
