@@ -19,6 +19,83 @@ SCAN_CACHE_DIR = _SCRIPT_DIR / "scanner_cache"
 SCAN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CENTRAL ERROR / DIAGNOSTICS LOGGING
+# ─────────────────────────────────────────────────────────────────────────────
+APP_ERROR_LOG_FILE = SCAN_CACHE_DIR / "app_error_log.jsonl"
+
+def _trim_session_errors(max_items: int = 250) -> None:
+    try:
+        events = st.session_state.get("app_error_events", [])
+        if len(events) > max_items:
+            st.session_state["app_error_events"] = events[-max_items:]
+    except Exception:
+        pass
+
+def _record_app_error(context: str, exc: Exception | None = None, message: str | None = None,
+                      severity: str = "error", ticker: str | None = None, extra: dict | None = None) -> dict:
+    """Record an app/scan error to session state and a JSONL file for Diagnostics.
+
+    This must never raise. It is intentionally dependency-light so it can be
+    called from scan code, tab renderers, cache functions, and Cloud fallback paths.
+    """
+    import traceback as _traceback
+    record = {
+        "time": datetime.now().isoformat(timespec="seconds"),
+        "severity": severity,
+        "context": str(context),
+        "ticker": ticker or "",
+        "message": str(message if message is not None else (exc if exc is not None else "")),
+        "type": type(exc).__name__ if exc is not None else "",
+        "traceback": _traceback.format_exc() if exc is not None else "",
+        "extra": extra or {},
+    }
+    try:
+        events = st.session_state.setdefault("app_error_events", [])
+        events.append(record)
+        _trim_session_errors()
+    except Exception:
+        pass
+    try:
+        SCAN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        with APP_ERROR_LOG_FILE.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, default=str) + "\n")
+    except Exception:
+        pass
+    return record
+
+def _record_app_warning(context: str, message: str, ticker: str | None = None, extra: dict | None = None) -> dict:
+    return _record_app_error(context=context, message=message, severity="warning", ticker=ticker, extra=extra)
+
+def _record_scan_note(message: str, context: str = "scan", extra: dict | None = None) -> dict:
+    return _record_app_error(context=context, message=message, severity="info", extra=extra)
+
+def _read_app_error_log(limit: int = 200) -> list[dict]:
+    try:
+        if not APP_ERROR_LOG_FILE.exists():
+            return []
+        lines = APP_ERROR_LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()[-int(limit):]
+        out = []
+        for line in lines:
+            try:
+                out.append(json.loads(line))
+            except Exception:
+                out.append({"time":"", "severity":"error", "context":"log_parse", "message":line})
+        return out
+    except Exception:
+        return []
+
+def _clear_app_error_log() -> None:
+    try:
+        st.session_state["app_error_events"] = []
+    except Exception:
+        pass
+    try:
+        APP_ERROR_LOG_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def _market_cache_key(market: str) -> str:
     if "US" in market:
         return "us"
@@ -43,8 +120,11 @@ def _read_csv_if_exists(path: Path) -> pd.DataFrame:
     try:
         if path.exists() and path.stat().st_size > 0:
             return pd.read_csv(path, keep_default_na=False)
-    except Exception:
-        pass
+    except Exception as e:
+        try:
+            _record_app_error("cache_read_csv", e, extra={"path": str(path)})
+        except Exception:
+            pass
     return pd.DataFrame()
 
 
@@ -95,6 +175,10 @@ def _save_scan_cache(market: str, df_long: pd.DataFrame, df_short: pd.DataFrame,
             f"CSV cache save failed: {type(e).__name__}: {e}\n"
             f"Attempted directory: {abs_dir}"
         )
+        try:
+            _record_app_error("scan_cache_save", e, extra={"market": market, "abs_dir": str(abs_dir)})
+        except Exception:
+            pass
         st.session_state["scan_cache_last_save"] = {
             "ok":      False,
             "market":  market,
@@ -119,6 +203,10 @@ def _load_scan_cache(market: str):
         }
     except Exception as e:
         st.session_state["scan_cache_warning"] = f"CSV cache load failed: {type(e).__name__}: {e}"
+        try:
+            _record_app_error("scan_cache_load", e, extra={"market": market, "paths": {k: str(v) for k, v in paths.items()}})
+        except Exception:
+            pass
         return None
 
 

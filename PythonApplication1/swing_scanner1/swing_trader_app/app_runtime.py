@@ -264,8 +264,16 @@ from pathlib import Path as _RuntimePath
 
 def _load_runtime_piece(relative_path: str) -> None:
     _piece_path = _RuntimePath(__file__).resolve().parent / relative_path
-    _code = _piece_path.read_text(encoding="utf-8")
-    exec(compile(_code, str(_piece_path), "exec"), globals())
+    try:
+        _code = _piece_path.read_text(encoding="utf-8")
+        exec(compile(_code, str(_piece_path), "exec"), globals())
+    except Exception as _e:
+        try:
+            if "_record_app_error" in globals():
+                _record_app_error("load_runtime_piece", _e, extra={"piece": relative_path, "path": str(_piece_path)})
+        except Exception:
+            pass
+        raise
 
 for _runtime_piece in [
     "core_runtime/cache_core.py",
@@ -880,12 +888,35 @@ def _safe_render_tab(tab_name, render_fn):
         render_fn(globals())
     except Exception as e:
         import traceback as _traceback
+        try:
+            _record_app_error(f"tab:{tab_name}", e)
+        except Exception:
+            pass
         st.error(f"{tab_name} failed: {type(e).__name__}: {e}")
         with st.expander("Show traceback"):
             st.code(_traceback.format_exc())
 
 with tab_sectors:
     _safe_render_tab('sectors', render_sectors)
+
+
+def _safe_sector_df_for_market(_market_sel: str, _context: str = "sector") -> pd.DataFrame:
+    """Fetch sector data without allowing yfinance/cloud errors to break the page."""
+    try:
+        if _market_sel == "🇺🇸 US":
+            return get_sector_performance()
+        if _market_sel == "🇸🇬 SGX":
+            return get_sg_sector_performance()
+        _df = get_india_sector_performance()
+        if isinstance(_df, pd.DataFrame) and not _df.empty and "ETF" in _df.columns:
+            _df = _df[_df["ETF"] != "^NSEI"]
+        return _df
+    except Exception as _e:
+        try:
+            _record_app_error(_context, _e, extra={"market": _market_sel})
+        except Exception:
+            pass
+        return pd.DataFrame(columns=["Sector", "ETF", "Today %", "5d %", "Price", "Status"])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -901,14 +932,8 @@ if _cache_refresh_due and not _manual_scan:
         f"⏱️ Cached CSV is older than {refresh_minutes} min — refreshing scan and updating CSV files..."
     )
 with col_info:
-    # Show sector preview for the active market
-    if market_sel == "🇺🇸 US":
-        sdf_preview = get_sector_performance()
-    elif market_sel == "🇸🇬 SGX":
-        sdf_preview = get_sg_sector_performance()
-    else:
-        sdf_preview = get_india_sector_performance()
-        sdf_preview = sdf_preview[sdf_preview["ETF"] != "^NSEI"]
+    # Show sector preview for the active market; never let Cloud/yfinance errors blank the UI
+    sdf_preview = _safe_sector_df_for_market(market_sel, "sector_preview")
 
     if not sdf_preview.empty and "Today %" in sdf_preview.columns:
         gn = sdf_preview[sdf_preview["Today %"] >  0.1]["Sector"].tolist()
@@ -926,28 +951,30 @@ with col_info:
         )
 
 if run:
-    # Get sector data for the selected market
-    if market_sel == "🇺🇸 US":
-        sdf = get_sector_performance()
-        active_sector_etfs = SECTOR_ETFS
-    elif market_sel == "🇸🇬 SGX":
-        sdf = get_sg_sector_performance()
-        active_sector_etfs = {}   # no ETF-based holdings for SGX
-    else:
-        sdf = get_india_sector_performance()
-        sdf = sdf[sdf["ETF"] != "^NSEI"]   # exclude benchmark
-        active_sector_etfs = INDIA_SECTOR_ETFS
+    # Get sector data for the selected market; if unavailable, continue scanning the ticker universe
+    sdf = _safe_sector_df_for_market(market_sel, "scan_sector_fetch")
+    active_sector_etfs = SECTOR_ETFS if market_sel == "🇺🇸 US" else (INDIA_SECTOR_ETFS if market_sel == "🇮🇳 India" else {})
 
     if sdf.empty or "Today %" not in sdf.columns:
-        st.error("Cannot fetch sector data. Check connection or upgrade yfinance.")
-        st.stop()
+        try:
+            _record_app_warning("scan_sector_fetch", "Sector data unavailable; continuing scan without sector filtering", extra={"market": market_sel})
+        except Exception:
+            pass
+        st.warning("Sector data unavailable. Continuing scan using the selected market ticker universe without sector filtering.")
+        sdf = pd.DataFrame({"Sector": ["Mixed"], "ETF": [""], "Today %": [0.0], "5d %": [0.0], "Price": [0.0], "Status": ["⚪ FLAT"]})
 
     green_sectors = sdf[sdf["Today %"] >  0.1]["Sector"].tolist()
     red_sectors   = sdf[sdf["Today %"] < -0.1]["Sector"].tolist()
+    if not green_sectors and not red_sectors:
+        try:
+            _record_app_warning("scan_flat_sectors", "All sectors flat or sector data unavailable; scanner will still run on the selected ticker universe", extra={"market": market_sel})
+        except Exception:
+            pass
+        st.warning("All sectors are flat or sector data is unavailable — scanner will still run on the selected ticker universe.")
 
     extra_tickers = [t.strip().upper() for t in extra_input.split(",") if t.strip()]
 
-    if not green_sectors and not red_sectors:
+    if False and not green_sectors and not red_sectors:
         st.warning("All sectors flat — market may be closed or data unavailable.")
     else:
         # Fetch live ETF holdings only for US (India/SGX use static ticker lists)
@@ -1002,19 +1029,37 @@ if run:
             f"Live: <b>{len(live_tickers)}</b> · Existing: <b>{len(_active_tickers)}</b>"
         )
 
-        with st.spinner(f"Scanning {len(active_tickers)} stocks..."):
-            df_long, df_short, df_operator = fetch_analysis(
-                tuple(green_sectors), tuple(red_sectors),
-                regime, skip_earnings, top_n_sectors,
-                live_sectors if live_sectors else None,
-                market_tickers=tuple(active_tickers),
-                enable_options=enable_options,
-            )
+        try:
+            with st.spinner(f"Scanning {len(active_tickers)} stocks..."):
+                df_long, df_short, df_operator = fetch_analysis(
+                    tuple(green_sectors), tuple(red_sectors),
+                    regime, skip_earnings, top_n_sectors,
+                    live_sectors if live_sectors else None,
+                    market_tickers=tuple(active_tickers),
+                    enable_options=enable_options,
+                )
+        except Exception as _scan_e:
+            try:
+                _record_app_error("fetch_analysis_call", _scan_e, extra={"market": market_sel, "ticker_count": len(active_tickers)})
+            except Exception:
+                pass
+            _top_scan_status.error(f"❌ Scan failed: {type(_scan_e).__name__}: {_scan_e}. Open 🔍 Diagnostics → App errors for details.")
+            df_long, df_short, df_operator = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
         _top_scan_status.success(
             f"✅ Scan complete for **{len(active_tickers)} {market_sel} stocks** · "
             f"Long: **{len(df_long)}** · Short: **{len(df_short)}** · Operator: **{len(df_operator)}**"
         )
+        if df_long.empty and df_short.empty and df_operator.empty:
+            try:
+                _record_app_warning(
+                    "scan_no_results_after_fetch",
+                    "Scan completed but returned no long/short/operator rows before sidebar filters",
+                    extra={"market": market_sel, "ticker_count": len(active_tickers), "debug": st.session_state.get("last_scan_debug", {})},
+                )
+            except Exception:
+                pass
+            st.warning("Scan completed but no stocks passed the current data/filters. Check 🔍 Diagnostics → App errors and Scan debug summary.")
 
         # Apply sidebar filters
         if not df_long.empty:

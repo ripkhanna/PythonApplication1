@@ -219,7 +219,26 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 all_tickers.append(t)
 
     total = len(all_tickers)
+    scan_debug = {
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "total_tickers": int(total),
+        "batch_loaded": 0,
+        "individual_loaded": 0,
+        "skipped_history": 0,
+        "skipped_liquidity": 0,
+        "skipped_earnings": 0,
+        "ticker_errors": 0,
+        "ticker_error_samples": [],
+        "batch_error": "",
+        "empty_reason": "",
+    }
     if total == 0:
+        scan_debug["empty_reason"] = "No tickers were passed to fetch_analysis"
+        try:
+            st.session_state["last_scan_debug"] = scan_debug
+            _record_app_warning("fetch_analysis", "No tickers were passed to fetch_analysis")
+        except Exception:
+            pass
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
     green_set = set(green_sectors[:top_n_sectors])
@@ -292,8 +311,14 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     batch_cache[tkr] = df_t
             except Exception:
                 continue
+        scan_debug["batch_loaded"] = int(len(batch_cache))
         status_text.text(f"✅ {len(batch_cache)}/{total} stocks loaded")
     except Exception as e:
+        scan_debug["batch_error"] = f"{type(e).__name__}: {e}"
+        try:
+            _record_app_error("batch_yfinance_download", e, extra={"total_tickers": total})
+        except Exception:
+            pass
         status_text.text(f"Batch failed ({e}), fetching individually...")
 
     # ── Regime thresholds — lowered to catch more real swing candidates ──────
@@ -316,6 +341,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                         if not pd.isnull(ed):
                             days_out = (pd.Timestamp(ed).date() - datetime.today().date()).days
                             if 0 <= days_out <= 7:   # 7-day guard (was 14)
+                                scan_debug["skipped_earnings"] += 1
                                 progress_bar.progress((i + 1) / total)
                                 continue
                 except Exception:
@@ -328,13 +354,17 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 raw_ind = yf.download(ticker, period="6mo", interval="1d",
                                       progress=False, auto_adjust=True)
                 if raw_ind.empty or len(raw_ind) < 60:
+                    scan_debug["skipped_history"] += 1
                     progress_bar.progress((i + 1) / total)
                     continue
                 if isinstance(raw_ind.columns, pd.MultiIndex):
                     raw_ind.columns = raw_ind.columns.get_level_values(0)
                 df = _clean_scan_ohlcv(raw_ind)
+                if len(df) >= 60:
+                    scan_debug["individual_loaded"] += 1
 
             if len(df) < 60:
+                scan_debug["skipped_history"] += 1
                 progress_bar.progress((i + 1) / total)
                 continue
 
@@ -351,6 +381,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                          if _p_chk > 0 else 0
             # Skip if dollar volume < $500k/day (illiquid) or ATR < 0.8% (can't swing 5-10%)
             if _p_chk * _vol_avg_s < 500_000 or _atr_pct < 0.8:
+                scan_debug["skipped_liquidity"] += 1
                 progress_bar.progress((i + 1) / total)
                 continue
 
@@ -790,8 +821,14 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "Opt Flow":       " | ".join(opt_s_tags) if opt_s_tags else "–",
                 })
 
-        except Exception:
-            pass
+        except Exception as e:
+            scan_debug["ticker_errors"] += 1
+            if len(scan_debug["ticker_error_samples"]) < 25:
+                scan_debug["ticker_error_samples"].append({"ticker": ticker, "error": f"{type(e).__name__}: {e}"})
+            try:
+                _record_app_error("scan_ticker", e, ticker=ticker, extra={"index": i + 1, "total": total})
+            except Exception:
+                pass
         progress_bar.progress((i + 1) / total)
 
     status_text.empty()
@@ -812,9 +849,29 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             ascending=[False, False, False]
         )
 
-    return (make_df(long_results, "Rise Prob"),
-            make_df(short_results, "Fall Prob"),
-            make_op_df(operator_results))
+    df_long_out = make_df(long_results, "Rise Prob")
+    df_short_out = make_df(short_results, "Fall Prob")
+    df_operator_out = make_op_df(operator_results)
+    scan_debug.update({
+        "finished_at": datetime.now().isoformat(timespec="seconds"),
+        "long_rows_raw": int(len(df_long_out)),
+        "short_rows_raw": int(len(df_short_out)),
+        "operator_rows_raw": int(len(df_operator_out)),
+    })
+    if df_long_out.empty and df_short_out.empty and df_operator_out.empty:
+        scan_debug["empty_reason"] = (
+            "No rows passed filters. Check: Yahoo returned data count, liquidity/ATR filter, "
+            "min probability filters, market closed/flat sectors, and any ticker errors below."
+        )
+        try:
+            _record_app_warning("fetch_analysis_empty", scan_debug["empty_reason"], extra=scan_debug)
+        except Exception:
+            pass
+    try:
+        st.session_state["last_scan_debug"] = scan_debug
+    except Exception:
+        pass
+    return (df_long_out, df_short_out, df_operator_out)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -136,6 +136,94 @@ def render_diagnostics(ctx: dict) -> None:
             f"• Windows (cmd): `explorer \"{_diag_cache_abs}\"`"
         )
 
+
+    st.markdown("**App errors / Cloud diagnostics**")
+    st.caption("Any caught scan, Yahoo/yfinance, cache, tab, or startup errors are stored here instead of silently failing.")
+
+    e_col1, e_col2, e_col3 = st.columns([1, 1, 2])
+    with e_col1:
+        if st.button("🧹 Clear app error log", key="diag_clear_app_errors"):
+            try:
+                _clear_app_error_log()
+                st.success("App error log cleared.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Could not clear app error log: {e}")
+    with e_col2:
+        st.metric("Session errors", len(st.session_state.get("app_error_events", [])))
+    with e_col3:
+        try:
+            st.caption(f"Log file: `{APP_ERROR_LOG_FILE.resolve()}`")
+        except Exception:
+            st.caption("Log file path unavailable")
+
+    _session_events = list(st.session_state.get("app_error_events", []))
+    _file_events = []
+    try:
+        _file_events = _read_app_error_log(200)
+    except Exception:
+        _file_events = []
+
+    # Merge recent session + file events, de-duplicate by key, latest first
+    _seen = set()
+    _events = []
+    for _ev in (_session_events + _file_events):
+        _key = (_ev.get("time"), _ev.get("context"), _ev.get("ticker"), _ev.get("message"))
+        if _key in _seen:
+            continue
+        _seen.add(_key)
+        _events.append(_ev)
+    _events = sorted(_events, key=lambda x: x.get("time", ""), reverse=True)[:100]
+
+    if _events:
+        _err_rows = []
+        for _ev in _events:
+            _err_rows.append({
+                "Time": _ev.get("time", ""),
+                "Level": _ev.get("severity", ""),
+                "Context": _ev.get("context", ""),
+                "Ticker": _ev.get("ticker", ""),
+                "Type": _ev.get("type", ""),
+                "Message": str(_ev.get("message", ""))[:300],
+            })
+        st.dataframe(pd.DataFrame(_err_rows), hide_index=True, width="stretch", height=220)
+        with st.expander("Show latest error tracebacks / full details", expanded=False):
+            for _ev in _events[:25]:
+                st.markdown(f"**{_ev.get('time','')} · {_ev.get('context','')} · {_ev.get('ticker','')}**")
+                st.write(_ev.get("message", ""))
+                if _ev.get("extra"):
+                    st.json(_ev.get("extra"))
+                if _ev.get("traceback"):
+                    st.code(_ev.get("traceback"))
+                st.divider()
+    else:
+        st.success("No captured app errors in this session/log file.")
+
+    st.markdown("**Scan debug summary**")
+    _scan_dbg = st.session_state.get("last_scan_debug", {})
+    if _scan_dbg:
+        d1, d2, d3, d4 = st.columns(4)
+        d1.metric("Tickers attempted", _scan_dbg.get("total_tickers", 0))
+        d2.metric("Batch loaded", _scan_dbg.get("batch_loaded", 0))
+        d3.metric("Ticker errors", _scan_dbg.get("ticker_errors", 0))
+        d4.metric("Skipped liquidity", _scan_dbg.get("skipped_liquidity", 0))
+        d5, d6, d7, d8 = st.columns(4)
+        d5.metric("Skipped history", _scan_dbg.get("skipped_history", 0))
+        d6.metric("Skipped earnings", _scan_dbg.get("skipped_earnings", 0))
+        d7.metric("Raw long rows", _scan_dbg.get("long_rows_raw", 0))
+        d8.metric("Raw short rows", _scan_dbg.get("short_rows_raw", 0))
+        if _scan_dbg.get("empty_reason"):
+            st.warning(_scan_dbg.get("empty_reason"))
+        if _scan_dbg.get("batch_error"):
+            st.error(f"Batch yfinance error: {_scan_dbg.get('batch_error')}")
+        if _scan_dbg.get("ticker_error_samples"):
+            st.caption("Ticker error samples")
+            st.dataframe(pd.DataFrame(_scan_dbg.get("ticker_error_samples")), hide_index=True, width="stretch")
+        with st.expander("Full scan debug JSON", expanded=False):
+            st.json(_scan_dbg)
+    else:
+        st.info("No scan debug summary yet. Run 🚀 Scan to populate it.")
+
     st.markdown("**Stocks scanned in last scan**")
     if last_scanned_tickers:
         st.caption(
