@@ -106,7 +106,7 @@ def render_earnings(ctx: dict) -> None:
         df_filtered = earn_df.copy()
         if earn_search:
             df_filtered = df_filtered[
-                df_filtered["Ticker"].str.contains(earn_search, case=False, na=False)
+                df_filtered["Ticker"].astype(str).str.contains(earn_search, case=False, na=False)
             ]
         if verdict_filter:
             df_filtered = df_filtered[

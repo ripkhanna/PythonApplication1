@@ -121,7 +121,7 @@ def grid_search_filter(df, label):
     search = st.text_input(f"🔎 Search {label}", key=f"search_{label}",
                            placeholder="ticker…").strip().upper()
     if search and "Ticker" in df.columns:
-        df = df[df["Ticker"].str.contains(search, case=False, na=False)]
+        df = df[df["Ticker"].astype(str).str.contains(search, case=False, na=False)]
     return df
 
 def show_table(df, label, prob_col="Rise Prob"):
@@ -139,7 +139,7 @@ def show_table(df, label, prob_col="Rise Prob"):
         df = df.sort_values(["_eq_sort", prob_col],
                             ascending=[True, False],
                             key=lambda s: s if s.name != prob_col
-                                          else s.str.rstrip("%").astype(float))
+                                          else s.astype(str).str.rstrip("%").astype(float))
         df = df.drop(columns="_eq_sort")
 
     # ── Column selection ──────────────────────────────────────────────────────

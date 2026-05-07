@@ -1,62 +1,22 @@
-"""Long-term scoring core — v4 (cloud-robust + full diagnostics).
+"""Long-term scoring core — v3 (near-support fixed).
 
-v4 fixes vs v3:
-  1. _record_app_error called at every failure point inside score_lt_stock,
-     so Diagnostics tab shows exactly which step failed for each ticker.
-  2. For .SI symbols yf.download is attempted FIRST (not as last resort)
-     because it uses a different Yahoo endpoint less prone to cloud 429s.
-  3. Per-ticker fetch result stored in st.session_state["lt_ticker_log"]
-     so the SG scan section can show a "last scan diagnostics" expander.
-  4. Outer except no longer silently swallows — it logs before returning {}.
-  5. History-based MA/52W backfill confirmed to run before support scoring.
+v3 changes vs v2:
+  • RSI and support logic INLINED inside score_lt_stock — eliminates any
+    exec/scope issue where helper functions defined outside the cached
+    function body might not resolve at call time.
+  • Thresholds FIXED after calibrating against real stocks:
+        MA50 zone:   -20% … +8%   (was -3%…+8%, broke for any 10%+ pullback)
+        MA200 zone:  -8%  … +18%  (was -5%…+12%)
+        RSI zone:    25   … 58    (was 28…54)
+        Pullback:    8%   … 45%   (was 15%…40%, missed mild corrections)
+        Floor:       8%   … 65%   (was 15%…55%)
+  • Filter threshold raised from >=2 to >=3 in the tab (see long_term_tab.py)
+    so that overbought/barely-off-high stocks don't leak through.
+  • Support block wrapped in its own try/except — a data quirk never
+    silently prevents the entire row from being returned.
 """
 
-# st, yf, pd, np, datetime, _record_app_error injected by exec context
-
-
-def _lt_dl_history(ticker: str):
-    """Download 18-month history for a ticker via yf.download.
-    Returns a flat-column DataFrame with at least a 'Close' column,
-    or None on any failure.
-    """
-    try:
-        dl = yf.download(
-            ticker, period="18mo", auto_adjust=True,
-            progress=False, threads=False
-        )
-        if dl is None or dl.empty:
-            return None
-        # yfinance ≥0.2.18 may return MultiIndex columns for single tickers.
-        # Normalise to flat so the rest of the code is version-agnostic.
-        if getattr(dl.columns, "nlevels", 1) > 1:
-            lvl0 = dl.columns.get_level_values(0)
-            lvl1 = dl.columns.get_level_values(1)
-            if "Close" in lvl0:
-                # (field, ticker) ordering
-                dl = dl.xs("Close", axis=1, level=0).to_frame("Close")
-                # Bring other columns back if available
-                for col in ("High", "Low", "Volume", "Open"):
-                    try:
-                        s = dl.xs(col, axis=1, level=0) if col in lvl0 else None
-                        if s is not None:
-                            dl[col] = s
-                    except Exception:
-                        pass
-            elif "Close" in lvl1:
-                # (ticker, field) ordering
-                dl = dl.xs("Close", axis=1, level=1).to_frame("Close")
-        # Final safety: keep only the Close column if anything above went wrong
-        if "Close" not in dl.columns:
-            return None
-        return dl
-    except Exception as e:
-        _record_app_error(
-            "lt_dl_history",
-            e,
-            ticker=ticker,
-            message=f"yf.download failed for {ticker}: {type(e).__name__}: {e}",
-        )
-        return None
+# st, yf, pd, np injected by exec context (app_runtime.py)
 
 
 @st.cache_data(ttl=21600)
@@ -73,11 +33,10 @@ def fetch_lt_holdings(etf_ticker: str) -> list:
                     (c for c in ["Symbol", "symbol", "Ticker", "ticker"]
                      if c in df_h.columns), None
                 )
-                syms = (
-                    df_h[sym_col].dropna().astype(str).tolist()
-                    if sym_col else
-                    [str(x) for x in df_h.index.tolist()]
-                )
+                if sym_col:
+                    syms = df_h[sym_col].dropna().astype(str).tolist()
+                else:
+                    syms = [str(x) for x in df_h.index.tolist()]
                 clean = [s.strip().upper() for s in syms
                          if s.strip().replace("-", "").isalpha()
                          and 1 <= len(s.strip()) <= 6
@@ -86,8 +45,8 @@ def fetch_lt_holdings(etf_ticker: str) -> list:
                     return clean[:30]
             except Exception:
                 continue
-    except Exception as e:
-        _record_app_error("fetch_lt_holdings", e, ticker=etf_ticker)
+    except Exception:
+        pass
     return []
 
 
@@ -95,137 +54,99 @@ def fetch_lt_holdings(etf_ticker: str) -> list:
 def score_lt_stock(ticker: str) -> dict:
     """
     Long-term quality + support score for a single stock.
-    Logs every failure step to _record_app_error so the Diagnostics tab
-    shows exactly what went wrong for each ticker on cloud deployments.
 
-    Returns {} only when a price cannot be obtained at all.
-    Returns a partial row (price present, fundamentals may be "–") rather
-    than {} when yf.info is empty but history worked — this way the ticker
-    still appears in the grid even when Yahoo omits SGX fundamentals.
+    Quality score  0-10 (unchanged):
+        RevGrw>10%(+2)  EPSGrw>15%(+2)  ROE>15%(+1)  Margin>15%(+1)
+        LowDebt(+1)     AboveMA200(+1)  Target(+1)   BuyRated(+1)
+
+    Support score  0-5 (all 5 criteria computed from data already fetched):
+        1. Near MA50    price in −20% … +8%  of MA50
+        2. Near MA200   price in  −8% … +18% of MA200
+        3. RSI zone     RSI-14 in 25 … 58
+        4. Healthy pull price 8–45% below 52W high
+        5. Floor intact price 8–65% above 52W low
+
+    All helpers (RSI calc, support signals) are INLINED so they're always
+    in scope regardless of how this module is loaded.
     """
-    _log_steps = []   # per-ticker mini-log stored in session_state after return
-
-    def _step(msg):
-        _log_steps.append(msg)
-
-    def _fail(step_msg, exc=None):
-        full = f"{step_msg}: {type(exc).__name__}: {exc}" if exc else step_msg
-        _log_steps.append(f"FAIL {full}")
-        _record_app_error(
-            context="score_lt_stock",
-            exc=exc,
-            message=full,
-            ticker=ticker,
-            severity="warning",
-        )
-
     try:
-        is_sgx = str(ticker).upper().endswith(".SI")
         tkr_obj = yf.Ticker(ticker)
+        info = tkr_obj.info or {}
 
-        # ── STEP 1: info (fundamental metadata) ───────────────────────────
-        info = {}
-        try:
-            info = tkr_obj.info or {}
-            if not isinstance(info, dict):
-                info = {}
-            _step(f"info ok, keys={len(info)}")
-        except Exception as e:
-            _fail("info fetch", e)
-            info = {}
-
-        # ── STEP 2: price — try info first, then fast_info, then history ──
-        # For .SI symbols on cloud, info regularly omits price, so we try
-        # yf.download early rather than as a last resort.
-        price = (
-            info.get("currentPrice")
-            or info.get("regularMarketPrice")
-            or 0
-        )
-        _hist = None  # shared history DataFrame, filled below
-
+        # Yahoo often omits currentPrice/regularMarketPrice for .SI symbols on
+        # Streamlit Cloud. Fall back to fast_info and then recent history so SGX
+        # rows are not discarded before scoring.
+        price = info.get("currentPrice") or info.get("regularMarketPrice") or 0
         if not price:
             try:
-                fi = getattr(tkr_obj, "fast_info", None) or {}
-                price = (
-                    fi.get("last_price") or fi.get("lastPrice")
-                    or fi.get("regular_market_price") or 0
-                )
-                if price:
-                    _step(f"price from fast_info: {price:.3f}")
-            except Exception as e:
-                _fail("fast_info", e)
-
-        if not price:
-            # For .SI symbols try yf.download first — it hits a different
-            # Yahoo endpoint that is more reliable on Streamlit Cloud.
-            if is_sgx:
-                _hist = _lt_dl_history(ticker)
-                if _hist is not None and "Close" in _hist.columns:
-                    closes = _hist["Close"].dropna()
-                    if len(closes):
-                        price = float(closes.iloc[-1])
-                        _step(f"price from yf.download: {price:.3f}")
-            if not price:
-                try:
-                    raw_hist = tkr_obj.history(period="18mo", auto_adjust=True)
-                    if (raw_hist is not None and not raw_hist.empty
-                            and "Close" in raw_hist.columns):
-                        closes = raw_hist["Close"].dropna()
-                        if len(closes):
-                            price = float(closes.iloc[-1])
-                            _hist = raw_hist
-                            _step(f"price from tkr.history: {price:.3f}")
-                except Exception as e:
-                    _fail("tkr.history for price", e)
-
-            # Non-.SI: also try download if still no price
-            if not price and not is_sgx:
-                _hist = _lt_dl_history(ticker)
-                if _hist is not None and "Close" in _hist.columns:
-                    closes = _hist["Close"].dropna()
-                    if len(closes):
-                        price = float(closes.iloc[-1])
-                        _step(f"price from yf.download (non-.SI): {price:.3f}")
-
-        if not price:
-            _fail("no price after all fallbacks — returning {}")
-            # Flush the step log before returning
-            try:
-                log = st.session_state.setdefault("lt_ticker_log", {})
-                log[ticker] = {"steps": _log_steps, "ok": False, "price": 0}
+                fi = getattr(tkr_obj, "fast_info", {}) or {}
+                price = fi.get("last_price") or fi.get("lastPrice") or fi.get("regular_market_price") or 0
             except Exception:
-                pass
+                price = 0
+        _hist_for_fallback = None
+        if not price:
+            try:
+                _hist_for_fallback = tkr_obj.history(period="18mo", auto_adjust=True)
+                if _hist_for_fallback is not None and not _hist_for_fallback.empty and "Close" in _hist_for_fallback.columns:
+                    price = float(_hist_for_fallback["Close"].dropna().iloc[-1])
+            except Exception:
+                price = 0
+
+        # Streamlit Cloud sometimes blocks/ratelimits yf.Ticker(...).history for
+        # Singapore symbols but yf.download still works. Try a single-symbol
+        # download before giving up; this is the most common cause of
+        # "Scanned 91 SGX stocks · found 0".
+        if not price and str(ticker).upper().endswith(".SI"):
+            try:
+                dl = yf.download(ticker, period="18mo", auto_adjust=True,
+                                 progress=False, threads=False)
+                if dl is not None and not dl.empty:
+                    # yfinance may return either flat columns or MultiIndex columns
+                    # for single tickers depending on version. Normalise to flat.
+                    try:
+                        if hasattr(dl.columns, "nlevels") and dl.columns.nlevels > 1:
+                            if "Close" in dl.columns.get_level_values(0):
+                                dl = dl.xs("Close", axis=1, level=0).to_frame("Close")
+                            elif "Close" in dl.columns.get_level_values(-1):
+                                dl = dl.xs("Close", axis=1, level=-1).to_frame("Close")
+                    except Exception:
+                        pass
+                    if "Close" in dl.columns:
+                        _hist_for_fallback = dl
+                        close_s = dl["Close"].dropna()
+                        if len(close_s):
+                            price = float(close_s.iloc[-1])
+            except Exception:
+                price = 0
+
+        if not price:
             return {}
 
-        _step(f"price confirmed: {price:.3f}")
-
-        # ── STEP 3: pull fundamental fields from info ─────────────────────
-        fwd_pe      = info.get("forwardPE")
-        peg         = info.get("trailingPegRatio") or info.get("pegRatio")
-        roe         = info.get("returnOnEquity")
-        profit_mg   = info.get("profitMargins")
-        rev_growth  = info.get("revenueGrowth")
+        fwd_pe     = info.get("forwardPE")
+        trail_pe   = info.get("trailingPE")
+        peg        = info.get("trailingPegRatio") or info.get("pegRatio")
+        roe        = info.get("returnOnEquity")
+        roa        = info.get("returnOnAssets")
+        profit_mg  = info.get("profitMargins")
+        rev_growth = info.get("revenueGrowth")
         earn_growth = (info.get("earningsGrowth")
                        or info.get("earningsQuarterlyGrowth"))
-        debt_eq     = info.get("debtToEquity")
-        fcf         = info.get("freeCashflow")
-        mktcap      = info.get("marketCap") or 0
-        tgt         = info.get("targetMeanPrice")
-        rec         = (info.get("recommendationKey", "")
-                       .upper().replace("_", " "))
-        ma50        = info.get("fiftyDayAverage") or 0
-        ma200       = info.get("twoHundredDayAverage") or 0
-        w52hi       = info.get("fiftyTwoWeekHigh") or 0
-        w52lo       = info.get("fiftyTwoWeekLow") or 0
-        beta        = info.get("beta") or 1.0
-        sector      = info.get("sector", "–")
-        name        = info.get("longName") or info.get("shortName") or ticker
+        debt_eq    = info.get("debtToEquity")
+        fcf        = info.get("freeCashflow")
+        mktcap     = info.get("marketCap") or 0
+        div_yield  = info.get("dividendYield") or 0
+        tgt        = info.get("targetMeanPrice")
+        rec        = (info.get("recommendationKey", "")
+                      .upper().replace("_", " "))
+        ma50       = info.get("fiftyDayAverage") or 0
+        ma200      = info.get("twoHundredDayAverage") or 0
+        w52hi      = info.get("fiftyTwoWeekHigh") or 0
+        w52lo      = info.get("fiftyTwoWeekLow") or 0
+        beta       = info.get("beta") or 1.0
+        sector     = info.get("sector", "–")
+        name       = (info.get("longName") or info.get("shortName") or ticker)
 
-        has_fundamentals = any([roe, profit_mg, rev_growth, earn_growth, tgt, rec])
-        _step(f"fundamentals present: {has_fundamentals}")
-
-        # ── STEP 4: quality scoring (0-10) ────────────────────────────────
+        # ── Quality scoring (0-10) ─────────────────────────────────────────
         score = 0
         notes = []
 
@@ -259,25 +180,15 @@ def score_lt_stock(ticker: str) -> dict:
         if rec in ("BUY", "STRONG BUY"):
             score += 1; notes.append(rec)
 
-        _step(f"quality score before history: {score}/10")
-
-        # ── STEP 5: history for RSI, MA backfill, volume ──────────────────
-        rsi14       = 50.0
+        # ── History fetch (18 months) ─────────────────────────────────────
+        # Used for: momentum, RSI-14, volume ratio. One fetch, three signals.
+        rsi14      = 50.0
         trailing_1y = 0.0
         vol_ratio   = 1.0
-
         try:
-            # Re-use history already fetched in the price step if available
-            if _hist is None:
-                try:
-                    _hist = tkr_obj.history(period="18mo", auto_adjust=True)
-                except Exception as e:
-                    _fail("history for indicators", e)
-                    _hist = None
-
-            if _hist is not None and not _hist.empty and "Close" in _hist.columns:
-                closes = _hist["Close"].dropna()
-                _step(f"history bars: {len(closes)}")
+            hist = _hist_for_fallback if _hist_for_fallback is not None else tkr_obj.history(period="18mo", auto_adjust=True)
+            if hist is not None and not hist.empty and "Close" in hist.columns:
+                closes = hist["Close"].dropna()
 
                 # Trailing 1Y return
                 if len(closes) >= 252:
@@ -287,7 +198,9 @@ def score_lt_stock(ticker: str) -> dict:
                     trailing_1y = (float(closes.iloc[-1])
                                    / float(closes.iloc[0]) - 1) * 100
 
-                # RSI-14 (Wilder EWM, inlined)
+                # ── RSI-14 (inlined) — no separate function call ───────────
+                # Wilder EWM. Inlined here so it's always in scope regardless
+                # of how this module was loaded (exec vs import).
                 try:
                     if len(closes) >= 16:
                         delta = closes.diff().dropna()
@@ -298,159 +211,134 @@ def score_lt_stock(ticker: str) -> dict:
                         rs    = avg_g / avg_l.replace(0, 1e-9)
                         rsi_s = 100 - (100 / (1 + rs))
                         rsi14 = float(round(rsi_s.iloc[-1], 1))
-                        _step(f"RSI14={rsi14:.1f}")
-                except Exception as e:
-                    _fail("RSI calc", e)
+                except Exception:
+                    rsi14 = 50.0
 
-                # Backfill MA/52W from history when info omitted them
+                # Fill missing Yahoo moving averages/52W levels from the
+                # downloaded history when .SI metadata is incomplete.
                 try:
                     if not ma50 and len(closes) >= 50:
                         ma50 = float(closes.iloc[-50:].mean())
                     if not ma200 and len(closes) >= 200:
                         ma200 = float(closes.iloc[-200:].mean())
                     if not w52hi and len(closes) >= 60:
-                        w52hi = float(
-                            closes.iloc[-252:].max()
-                            if len(closes) >= 252 else closes.max()
-                        )
+                        w52hi = float(closes.iloc[-252:].max() if len(closes) >= 252 else closes.max())
                     if not w52lo and len(closes) >= 60:
-                        w52lo = float(
-                            closes.iloc[-252:].min()
-                            if len(closes) >= 252 else closes.min()
-                        )
-                    if any([ma50, ma200, w52hi, w52lo]):
-                        _step(
-                            f"MA backfill: ma50={ma50:.2f} ma200={ma200:.2f} "
-                            f"hi={w52hi:.2f} lo={w52lo:.2f}"
-                        )
-                except Exception as e:
-                    _fail("MA backfill", e)
+                        w52lo = float(closes.iloc[-252:].min() if len(closes) >= 252 else closes.min())
+                except Exception:
+                    pass
 
-                # Give AboveMA200 quality point now that ma200 may be filled
-                if price and ma200 and price > ma200 and "Above MA200" not in notes:
-                    score += 1; notes.append("Above MA200 (hist)")
-                    _step("AboveMA200 from history backfill +1")
+                # 20d vs 60d volume ratio (accumulation signal)
+                if "Volume" in hist.columns:
+                    vol = hist["Volume"].dropna()
+                    if len(vol) >= 60:
+                        v20 = float(vol.iloc[-20:].mean())
+                        v60 = float(vol.iloc[-60:].mean())
+                        if v60 > 0:
+                            vol_ratio = round(v20 / v60, 2)
+        except Exception:
+            pass
 
-                # Volume ratio 20d/60d
-                if "Volume" in _hist.columns:
-                    try:
-                        vol = _hist["Volume"].dropna()
-                        if len(vol) >= 60:
-                            v20 = float(vol.iloc[-20:].mean())
-                            v60 = float(vol.iloc[-60:].mean())
-                            if v60 > 0:
-                                vol_ratio = round(v20 / v60, 2)
-                    except Exception:
-                        pass
-            else:
-                _fail("history empty or missing Close column — using defaults for indicators")
-
-        except Exception as e:
-            _fail("history block outer", e)
-
-        # ── STEP 6: SGX sparse-data bonus ─────────────────────────────────
-        if is_sgx and score < 4:
-            sgx_added = []
-            div_pct = 0.0
-            try:
-                for k in ("trailingAnnualDividendRate", "dividendRate"):
-                    v = info.get(k)
-                    if v and price:
-                        p = float(v) / float(price) * 100
-                        if 0 < p <= 15:
-                            div_pct = p
-                            break
-                if not div_pct:
-                    for k in ("trailingAnnualDividendYield", "dividendYield"):
-                        v = info.get(k)
-                        if v:
-                            p = float(v) * 100 if float(v) < 1 else float(v)
-                            if 0 < p <= 15:
-                                div_pct = p
-                                break
-            except Exception:
-                pass
-            if div_pct >= 3.0:
-                score += 1; sgx_added.append(f"Div {div_pct:.1f}%")
-            if trailing_1y > 0:
-                score += 1; sgx_added.append("1Y momentum")
-            if price and ma200 and price > ma200 and "Above MA200" not in notes and "Above MA200 (hist)" not in notes:
-                score += 1; sgx_added.append("Above MA200")
-            if vol_ratio >= 1.05:
-                score += 1; sgx_added.append("Volume improving")
-            score = min(score, 6)
-            if sgx_added:
-                notes.extend(sgx_added)
-                _step(f"SGX bonus: {sgx_added} → score={score}")
-
-        _step(f"final quality score: {score}/10")
-
-        # ── STEP 7: support scoring (0-5) — inlined ───────────────────────
+        # ── Support scoring (0-5) — inlined, no external function ─────────
+        # Computed from ma50/ma200/w52hi/w52lo already in `info` + rsi14 from
+        # history. Zero extra API calls.
         supp_score = 0
         supp_label = "⚪ Approaching"
         supp_flags = []
-        vs_ma50_v = vs_ma200_v = from_hi_v = from_lo_v = None
-
+        vs_ma50_v  = None
+        vs_ma200_v = None
+        from_hi_v  = None
+        from_lo_v  = None
         try:
             def _pct(a, b):
                 try:
-                    return round((float(a) / float(b) - 1) * 100, 1) if b and float(b) != 0 else None
+                    if not b or float(b) == 0:
+                        return None
+                    return round((float(a) / float(b) - 1) * 100, 1)
                 except Exception:
                     return None
 
             vs_ma50_v  = _pct(price, ma50)
             vs_ma200_v = _pct(price, ma200)
-            from_hi_v  = _pct(price, w52hi)
-            from_lo_v  = _pct(price, w52lo)
+            from_hi_v  = _pct(price, w52hi)   # negative = below high
+            from_lo_v  = _pct(price, w52lo)   # positive = above low
 
-            if vs_ma50_v  is not None and -20 <= vs_ma50_v  <= 8:
-                supp_score += 1; supp_flags.append(f"At MA50 ({vs_ma50_v:+.0f}%)")
-            if vs_ma200_v is not None and -8  <= vs_ma200_v <= 18:
-                supp_score += 1; supp_flags.append(f"At MA200 ({vs_ma200_v:+.0f}%)")
+            # 1. MA50 support zone — wider because MA50 lags during pullbacks.
+            #    A stock 15% below its 52W high is typically 8-15% below MA50.
+            if vs_ma50_v is not None and -20 <= vs_ma50_v <= 8:
+                supp_score += 1
+                supp_flags.append(f"At MA50 ({vs_ma50_v:+.0f}%)")
+
+            # 2. MA200 support zone — the key long-term entry zone.
+            if vs_ma200_v is not None and -8 <= vs_ma200_v <= 18:
+                supp_score += 1
+                supp_flags.append(f"At MA200 ({vs_ma200_v:+.0f}%)")
+
+            # 3. RSI in accumulation/near-oversold zone.
             if 25 <= rsi14 <= 58:
-                supp_score += 1; supp_flags.append(f"RSI {rsi14:.0f}")
-            if from_hi_v  is not None and -45 <= from_hi_v  <= -8:
-                supp_score += 1; supp_flags.append(f"Off hi {from_hi_v:.0f}%")
-            if from_lo_v  is not None and 8   <= from_lo_v  <= 65:
-                supp_score += 1; supp_flags.append(f"Floor +{from_lo_v:.0f}%")
+                supp_score += 1
+                supp_flags.append(f"RSI {rsi14:.0f}")
 
-            supp_label = (
-                "🟢 At support"       if supp_score >= 4 else
-                "🟡 Near support"     if supp_score >= 2 else
-                "⚪ Approaching"      if supp_score == 1 else
-                "🔴 Extended/Broken"
-            )
-            _step(
-                f"support {supp_score}/5 — {supp_label} — "
-                f"vsMA50={vs_ma50_v} vsMA200={vs_ma200_v} "
-                f"fromHi={from_hi_v} fromLo={from_lo_v} RSI={rsi14}"
-            )
-        except Exception as e:
-            _fail("support scoring", e)
+            # 4. Healthy pullback from 52W high (not just -3%, not totally broken).
+            if from_hi_v is not None and -45 <= from_hi_v <= -8:
+                supp_score += 1
+                supp_flags.append(f"Off hi {from_hi_v:.0f}%")
 
-        # ── STEP 8: expected 1Y return ────────────────────────────────────
+            # 5. Support floor intact above 52W low.
+            if from_lo_v is not None and 8 <= from_lo_v <= 65:
+                supp_score += 1
+                supp_flags.append(f"Floor +{from_lo_v:.0f}%")
+
+            if supp_score >= 4:
+                supp_label = "🟢 At support"
+            elif supp_score >= 2:
+                supp_label = "🟡 Near support"
+            elif supp_score == 1:
+                supp_label = "⚪ Approaching"
+            else:
+                supp_label = "🔴 Extended/Broken"
+        except Exception:
+            # Support scoring is best-effort — never prevent the quality row
+            supp_score = 0
+            supp_label = "⚪ –"
+
+        # ── FCF yield ─────────────────────────────────────────────────────
+        fcf_yield_pct = None
+        try:
+            if fcf and mktcap and mktcap > 0:
+                fcf_yield_pct = round(float(fcf) / float(mktcap) * 100, 1)
+        except Exception:
+            pass
+
+        # ── Expected 1Y return ────────────────────────────────────────────
         def _clip(x, lo, hi, d=0.0):
             try:
-                return d if (x is None or x != x) else max(lo, min(hi, float(x)))
+                if x is None or (isinstance(x, float) and
+                                 (x != x)):   # nan check
+                    return d
+                return max(lo, min(hi, float(x)))
             except Exception:
                 return d
 
         momentum_component = _clip(trailing_1y, -20, 35) * 0.10
         analyst_component  = 0.0
-        if tgt and price and float(tgt) > 0:
-            analyst_component = _clip((float(tgt) / float(price) - 1) * 100, -20, 30) * 0.35
-        quality_component = 6.0 if score >= 8 else 4.0 if score >= 6 else 2.0 if score >= 4 else 0.0
+        if tgt and price and float(tgt) > 0 and float(price) > 0:
+            analyst_component = _clip(
+                (float(tgt) / float(price) - 1) * 100, -20, 30) * 0.35
+        quality_component = (6.0 if score >= 8 else 4.0 if score >= 6
+                             else 2.0 if score >= 4 else 0.0)
         rg = _clip((rev_growth  or 0) * 100, -20, 30)
         eg = _clip((earn_growth or 0) * 100, -20, 30)
         growth_component = _clip(max(0.0, (rg + eg) / 2.0) * 0.10, 0, 4)
         price_return = _clip(
-            quality_component + momentum_component + analyst_component + growth_component,
-            -10, 18
-        )
+            quality_component + momentum_component
+            + analyst_component + growth_component, -10, 18)
+
         exp_parts = []
         if abs(price_return) >= 0.1:
             exp_parts.append(f"Price {price_return:.1f}%")
 
+        # Dividend
         div_return = 0.0
         try:
             candidates = []
@@ -461,7 +349,7 @@ def score_lt_stock(ticker: str) -> dict:
                     if 0 < p <= 15:
                         candidates.append(p)
             for k in ("trailingAnnualDividendYield", "dividendYield",
-                       "yield", "fiveYearAvgDividendYield"):
+                      "yield", "fiveYearAvgDividendYield"):
                 v = info.get(k)
                 if v is None:
                     continue
@@ -470,7 +358,10 @@ def score_lt_stock(ticker: str) -> dict:
                     candidates.append(p)
             if candidates:
                 dr = min(candidates)
-                dr = min(dr, 6.5 if ticker in ("D05.SI", "O39.SI", "U11.SI") else 8.0)
+                if ticker in ("D05.SI", "O39.SI", "U11.SI"):
+                    dr = min(dr, 6.5)
+                else:
+                    dr = min(dr, 8.0)
                 div_return = max(0.0, dr)
         except Exception:
             pass
@@ -478,11 +369,31 @@ def score_lt_stock(ticker: str) -> dict:
         div_yield = div_return / 100
         if div_return > 0:
             exp_parts.append(f"Div {div_return:.1f}%")
-        exp_1y = _clip(price_return + div_return, -10, 24)
-        exp_1y_str  = f"+{exp_1y:.1f}%" if exp_1y > 0 else f"{exp_1y:.1f}%"
+        # SGX fundamentals are frequently sparse in Yahoo. Add a conservative
+        # Singapore fallback score from dividend, trend/support and volume so
+        # good SGX names do not all fail the quality filter only because Yahoo
+        # returned blank ROE/EPS/analyst fields.
+        if str(ticker).upper().endswith(".SI") and score < 4:
+            sgx_added = []
+            if div_return >= 3.0:
+                score += 1; sgx_added.append("Dividend")
+            if trailing_1y > 0:
+                score += 1; sgx_added.append("1Y momentum")
+            if price and ma200 and price > ma200:
+                score += 1; sgx_added.append("Above MA200")
+            if supp_score >= 2:
+                score += 1; sgx_added.append("Near support")
+            if vol_ratio >= 1.05:
+                score += 1; sgx_added.append("Volume improving")
+            if sgx_added:
+                notes.extend([x for x in sgx_added if x not in notes])
+            score = min(score, 6)
+
+        exp_1y     = _clip(price_return + div_return, -10, 24)
+        exp_1y_str = f"+{exp_1y:.1f}%" if exp_1y > 0 else f"{exp_1y:.1f}%"
         exp_1y_note = " + ".join(exp_parts) if exp_parts else "–"
 
-        # ── STEP 9: horizon ───────────────────────────────────────────────
+        # ── Hold horizon ──────────────────────────────────────────────────
         if score >= 8:
             horizon = "⭐ CORE HOLD (3–5yr)";  hcol = "buy"
         elif score >= 6:
@@ -492,65 +403,56 @@ def score_lt_stock(ticker: str) -> dict:
         else:
             horizon = "⏳ MONITOR only";        hcol = "avoid"
 
-        fcf_yield_pct = None
-        try:
-            if fcf and mktcap and mktcap > 0:
-                fcf_yield_pct = round(float(fcf) / float(mktcap) * 100, 1)
-        except Exception:
-            pass
-
-        mktcap_str = (f"${mktcap/1e9:.1f}B" if mktcap > 1e9 else f"${mktcap/1e6:.0f}M") if mktcap else "–"
+        mktcap_str = (f"${mktcap/1e9:.1f}B" if mktcap > 1e9
+                      else f"${mktcap/1e6:.0f}M")
 
         def _fmt(v):
-            return "–" if v is None else f"{v:+.1f}%"
-
-        _step(f"OK — horizon={horizon} supp={supp_score}/5")
-
-        # Flush per-ticker log to session_state
-        try:
-            log = st.session_state.setdefault("lt_ticker_log", {})
-            log[ticker] = {
-                "ok": True, "price": round(float(price), 3),
-                "score": score, "supp": supp_score,
-                "has_fundamentals": has_fundamentals,
-                "steps": _log_steps,
-            }
-        except Exception:
-            pass
+            if v is None:
+                return "–"
+            return f"{v:+.1f}%"
 
         return {
+            # ── Quality fields (unchanged) ─────────────────────────────────
             "Ticker":           ticker,
-            "Name":             str(name)[:28],
+            "Name":             name[:28],
             "Sector":           sector,
             "Price":            f"${price:.2f}",
             "Mkt Cap":          mktcap_str,
             "Exp 1Y Return":    exp_1y_str,
             "Return Breakdown": exp_1y_note,
-            "Rev Growth":       (f"+{rev_growth*100:.0f}%" if rev_growth else "–"),
-            "EPS Growth":       (f"+{earn_growth*100:.0f}%" if earn_growth else "–"),
-            "ROE":              f"{roe*100:.0f}%" if roe else "–",
+            "Rev Growth":       (f"+{rev_growth*100:.0f}%"
+                                 if rev_growth else "–"),
+            "EPS Growth":       (f"+{earn_growth*100:.0f}%"
+                                 if earn_growth else "–"),
+            "ROE":              f"{roe*100:.0f}%"      if roe       else "–",
             "Margin":           f"{profit_mg*100:.0f}%" if profit_mg else "–",
-            "Fwd PE":           f"{fwd_pe:.1f}x" if fwd_pe else "–",
-            "PEG":              f"{peg:.2f}" if peg else "–",
-            "Div Yield":        f"{div_yield*100:.1f}%" if div_yield else "–",
-            "Beta":             f"{beta:.2f}" if beta else "–",
-            "MA200":            "✅" if (price and ma200 and price > ma200) else "❌",
-            "Target":           f"${tgt:.2f}" if tgt else "–",
-            "Upside":           f"+{upside_pct:.0f}%" if upside_pct else "–",
+            "Fwd PE":           f"{fwd_pe:.1f}x"        if fwd_pe   else "–",
+            "PEG":              f"{peg:.2f}"             if peg      else "–",
+            "Div Yield":        (f"{div_yield*100:.1f}%"
+                                 if div_yield else "–"),
+            "Beta":             f"{beta:.2f}"            if beta     else "–",
+            "MA200":            "✅" if (price and ma200 and price > ma200)
+                                else "❌",
+            "Target":           f"${tgt:.2f}"            if tgt      else "–",
+            "Upside":           (f"+{upside_pct:.0f}%"
+                                 if upside_pct else "–"),
             "Rec":              rec or "–",
             "Score":            f"{score}/10",
             "Horizon":          horizon,
             "_score":           score,
             "_hcol":            hcol,
             "_exp1y":           exp_1y,
+            # ── Support fields (new) ───────────────────────────────────────
             "Support":          supp_label,
             "SuppScore":        f"{supp_score}/5",
             "RSI14":            f"{rsi14:.0f}",
             "vsMA50%":          _fmt(vs_ma50_v),
             "vsMA200%":         _fmt(vs_ma200_v),
             "From52WHi%":       _fmt(from_hi_v),
-            "VolRatio":         f"{vol_ratio:.2f}x" if vol_ratio != 1.0 else "–",
-            "FCFYield":         f"{fcf_yield_pct:.1f}%" if fcf_yield_pct else "–",
+            "VolRatio":         (f"{vol_ratio:.2f}x"
+                                 if vol_ratio != 1.0 else "–"),
+            "FCFYield":         (f"{fcf_yield_pct:.1f}%"
+                                 if fcf_yield_pct else "–"),
             "_supp_score":      supp_score,
             "_rsi14":           rsi14,
             "_supp_flags":      supp_flags,
@@ -558,19 +460,5 @@ def score_lt_stock(ticker: str) -> dict:
             "_vs_ma200":        vs_ma200_v,
             "_from_hi":         from_hi_v,
         }
-
-    except Exception as e:
-        _record_app_error(
-            "score_lt_stock_outer",
-            e,
-            ticker=ticker,
-            message=f"Unhandled exception: {type(e).__name__}: {e}",
-            extra={"steps_so_far": _log_steps},
-        )
-        try:
-            log = st.session_state.setdefault("lt_ticker_log", {})
-            log[ticker] = {"ok": False, "price": 0,
-                           "error": str(e), "steps": _log_steps}
-        except Exception:
-            pass
+    except Exception:
         return {}

@@ -202,7 +202,7 @@ def summarize_traps(traps):
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600)
 def fetch_analysis(green_sectors, red_sectors, regime,
-                   skip_earnings, top_n_sectors, live_sectors=None,
+                   skip_earnings, top_n_sectors, strategy_mode="Balanced", live_sectors=None,
                    market_tickers=None, enable_options=True):
     sectors_data = live_sectors or {}
     sector_membership = {}
@@ -222,6 +222,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
     scan_debug = {
         "started_at": datetime.now().isoformat(timespec="seconds"),
         "total_tickers": int(total),
+        "strategy_mode": str(strategy_mode or "Balanced"),
         "batch_loaded": 0,
         "individual_loaded": 0,
         "skipped_history": 0,
@@ -328,7 +329,11 @@ def fetch_analysis(green_sectors, red_sectors, regime,
     # as WATCH or not at all. Keep Strict mode available, but default Balanced
     # is designed for real trading workflow: BUY = actionable setup with trend,
     # volume/operator support, above MA60, and no major trap; WATCH = forming.
-    swing_mode = str(st.session_state.get("ui_swing_mode", st.session_state.get("swing_mode", "Balanced"))).upper()
+    # IMPORTANT: strategy_mode is part of the @st.cache_data key.
+    # Do not read the strategy only from st.session_state here; otherwise
+    # Strict/Balanced/Discovery/Support/PM/High Volume can reuse the same
+    # cached result and appear identical until cache expires.
+    swing_mode = str(strategy_mode or "Balanced").upper()
     if swing_mode == "STRICT":
         min_score_strong_long  = 7 if regime == "BULL" else 8
         min_prob_strong_long   = 0.80 if regime == "BULL" else 0.84
@@ -339,6 +344,13 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         min_prob_strong_long   = 0.62 if regime == "BULL" else 0.68
         min_score_strong_short = 4 if regime in ("BEAR", "CAUTION") else 5
         min_prob_strong_short  = 0.60 if regime in ("BEAR", "CAUTION") else 0.64
+    elif swing_mode in ("SUPPORT ENTRY", "PREMARKET MOMENTUM", "HIGH VOLUME"):
+        # Both new strategies use the same probability thresholds as Balanced
+        # but add their own structural gates (support proximity / pre-market %).
+        min_score_strong_long  = 5 if regime == "BULL" else 6
+        min_prob_strong_long   = 0.65 if regime == "BULL" else 0.70
+        min_score_strong_short = 4 if regime in ("BEAR", "CAUTION") else 5
+        min_prob_strong_short  = 0.62 if regime in ("BEAR", "CAUTION") else 0.66
     else:  # Balanced
         min_score_strong_long  = 5 if regime == "BULL" else 6
         min_prob_strong_long   = 0.68 if regime == "BULL" else 0.72
@@ -412,10 +424,30 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 _min_turnover = 500_000
                 _min_atr_pct  = 0.80
 
-            if _p_chk * _vol_avg_s < _min_turnover or _atr_pct < _min_atr_pct:
-                scan_debug["skipped_liquidity"] += 1
-                progress_bar.progress((i + 1) / total)
-                continue
+            # In strategy modes, keep the liquidity gate light. Otherwise a whole
+            # strategy can show 0 rows simply because ATR/turnover is below the
+            # default US-style gate, especially for SGX and cloud Yahoo data.
+            if swing_mode == "HIGH VOLUME":
+                # High Volume mode must rank activity first.  Do not use the
+                # normal ATR/turnover gate here; it can remove every SGX/cloud
+                # candidate before the volume strategy gets a chance to score it.
+                # Only skip rows with unusable price/volume data.
+                if _p_chk <= 0 or _vol_avg_s <= 0:
+                    scan_debug["skipped_liquidity"] += 1
+                    progress_bar.progress((i + 1) / total)
+                    continue
+            elif swing_mode in ("SUPPORT ENTRY", "PREMARKET MOMENTUM"):
+                _strategy_min_turnover = max(_min_turnover * 0.25, 50_000)
+                _strategy_min_atr_pct = max(_min_atr_pct * 0.35, 0.15)
+                if _p_chk * _vol_avg_s < _strategy_min_turnover or _atr_pct < _strategy_min_atr_pct:
+                    scan_debug["skipped_liquidity"] += 1
+                    progress_bar.progress((i + 1) / total)
+                    continue
+            else:
+                if _p_chk * _vol_avg_s < _min_turnover or _atr_pct < _min_atr_pct:
+                    scan_debug["skipped_liquidity"] += 1
+                    progress_bar.progress((i + 1) / total)
+                    continue
 
             # Get sector ETF close for this ticker
             sec_name   = sector_membership.get(ticker, "")
@@ -602,6 +634,200 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 "Mixed"
             )
 
+            # ═══════════════════════════════════════════════════════════════════
+            # STRATEGY HELPERS: SUPPORT ENTRY / PREMARKET MOMENTUM
+            #
+            # Fix: do not depend only on exact dip_to_ma20/dip_to_ma60 flags or
+            # yfinance pre_market_price. Those are often False/blank on Cloud.
+            # Compute support proximity directly and use true PM data when
+            # available, otherwise a clearly-labelled LIVE momentum fallback.
+            # ═══════════════════════════════════════════════════════════════════
+            p_raw        = raw.get("p", 0) or p
+            rsi_now      = raw.get("rsi0", 50) or 50
+            today_pct    = raw.get("today_chg_pct", 0) or 0
+            ma20_now     = raw.get("ma20", 0) or 0
+            ma60_now     = raw.get("ma60", 0) or 0
+            ma200_now    = raw.get("e200", 0) or 0
+            vwap_now     = raw.get("vwap", 0) or 0
+            swing_lo_val = raw.get("last_swing_low", 0) or 0
+
+            def _pct_dist(price, level):
+                try:
+                    return (float(price) / float(level) - 1.0) if float(level) > 0 else 999.0
+                except Exception:
+                    return 999.0
+
+            dist_ma20  = _pct_dist(p_raw, ma20_now)
+            dist_ma60  = _pct_dist(p_raw, ma60_now)
+            dist_ma200 = _pct_dist(p_raw, ma200_now)
+            dist_vwap  = _pct_dist(p_raw, vwap_now)
+            dist_swing = _pct_dist(p_raw, swing_lo_val)
+
+            near_ma60      = (-0.020 <= dist_ma60  <= 0.040)
+            near_ma20      = (-0.020 <= dist_ma20  <= 0.035)
+            near_ma200     = (ma200_now > 0 and -0.020 <= dist_ma200 <= 0.040)
+            near_swing_lo  = (swing_lo_val > 0 and -0.010 <= dist_swing <= 0.045)
+            near_vwap      = (vwap_now > 0 and abs(dist_vwap) <= 0.018)
+            support_distance_abs = min(
+                abs(dist_ma20) if ma20_now > 0 else 999.0,
+                abs(dist_ma60) if ma60_now > 0 else 999.0,
+                abs(dist_ma200) if ma200_now > 0 else 999.0,
+                abs(dist_vwap) if vwap_now > 0 else 999.0,
+                abs(dist_swing) if swing_lo_val > 0 else 999.0,
+            )
+            near_any_support = support_distance_abs <= 0.080
+
+            trend_ok_for_support = bool(
+                raw.get("above_ma60", False) or
+                long_sig.get("trend_daily", False) or
+                long_sig.get("full_ma_stack", False) or
+                (ma20_now > 0 and p_raw >= ma20_now * 0.98)
+            )
+            not_extended = today_pct <= 5.0
+            rsi_support_ok = 25 <= rsi_now <= 72
+            support_quality_ok = bool(
+                l_prob >= 0.50 or l_score >= 3 or
+                long_sig.get("trend_daily", False) or
+                long_sig.get("higher_lows", False) or
+                long_sig.get("obv_rising", False)
+            )
+
+            if near_ma60 and trend_ok_for_support:
+                support_tier = 1; support_zone = "🔵 MA60 SUPPORT"
+            elif near_ma20 and trend_ok_for_support:
+                support_tier = 2; support_zone = "🟢 MA20 SUPPORT"
+            elif near_swing_lo and trend_ok_for_support:
+                support_tier = 3; support_zone = "🟡 SWING LOW SUPPORT"
+            elif near_ma200 and not major_trap_risk:
+                support_tier = 4; support_zone = "🟣 MA200 SUPPORT"
+            elif near_vwap and trend_ok_for_support and rsi_support_ok:
+                support_tier = 5; support_zone = "⚪ VWAP SUPPORT"
+            elif near_any_support and trend_ok_for_support and rsi_support_ok:
+                # Final fallback: still filtered, but prevents an empty Support
+                # Entry tab when no stock is exactly on MA20/MA60/VWAP today.
+                support_tier = 6; support_zone = "🟤 NEAR SUPPORT"
+            else:
+                support_tier = 0; support_zone = "–"
+
+            at_support_entry = bool(
+                support_tier >= 1 and
+                rsi_support_ok and
+                not raw.get("ma60_stop_triggered", False) and
+                not major_trap_risk and
+                (support_quality_ok or trend_ok_for_support or l_score >= 1 or l_prob >= 0.38)
+            )
+
+            pm_chg_pct    = 0.0
+            pm_price      = 0.0
+            pm_volume_str = "–"
+            pm_data_ok    = False
+            pm_source     = "PM"
+            try:
+                _fi = getattr(yf.Ticker(ticker), "fast_info", None)
+                if _fi is not None:
+                    _pm_p  = getattr(_fi, "pre_market_price", None)
+                    _pm_pc = getattr(_fi, "previous_close", None)
+                    if _pm_p is None and hasattr(_fi, "get"):
+                        _pm_p = _fi.get("preMarketPrice") or _fi.get("pre_market_price")
+                        _pm_pc = _fi.get("regularMarketPreviousClose") or _fi.get("previous_close")
+                    if _pm_p and _pm_pc and float(_pm_pc) > 0:
+                        pm_price = float(_pm_p)
+                        pm_chg_pct = round((pm_price / float(_pm_pc) - 1) * 100, 2)
+                        pm_data_ok = True
+                        pm_source = "PM"
+            except Exception:
+                pm_data_ok = False
+
+            # Premarket data is unreliable in yfinance/Streamlit Cloud.
+            # When true PM fields are missing, do NOT return an empty strategy.
+            # Fall back in this order:
+            #   1) LIVE day move versus previous daily close
+            #   2) recent technical momentum candidate when live % is flat/blank
+            if not pm_data_ok:
+                pm_chg_pct = round(float(today_pct or 0.0), 2)
+                pm_price = float(p_raw or 0.0)
+                pm_data_ok = pm_chg_pct > 0
+                pm_source = "LIVE"
+
+            if pm_data_ok and 3.0 <= pm_chg_pct <= 8.0:
+                pm_tier = "A"; pm_zone = f"🚀 {pm_source} +{pm_chg_pct:.1f}%"
+            elif pm_data_ok and 1.0 <= pm_chg_pct < 3.0:
+                pm_tier = "B"; pm_zone = f"📈 {pm_source} +{pm_chg_pct:.1f}%"
+            elif pm_source == "LIVE" and pm_data_ok and 0.2 <= pm_chg_pct < 1.0:
+                pm_tier = "C"; pm_zone = f"👀 LIVE +{pm_chg_pct:.1f}%"
+            elif (momentum_confirmed or volume_confirmed or long_sig.get("rs_momentum", False) or long_sig.get("trend_daily", False) or vr >= 1.00 or l_score >= 1) and \
+                 (core_long_trend or raw.get("above_ma60", False) or long_sig.get("full_ma_stack", False) or today_pct > -4.0 or l_score >= 2) and \
+                 (l_prob >= 0.35 or l_score >= 1 or vr >= 1.00):
+                # This is the important empty-result fix: outside premarket hours,
+                # many valid momentum stocks have no PM/live percentage available.
+                # Show them as technical momentum candidates instead of returning 0 rows.
+                pm_tier = "D"
+                pm_zone = "🟡 MOMENTUM CANDIDATE"
+                pm_source = "TECH"
+                pm_data_ok = True
+            else:
+                pm_tier = None; pm_zone = "–"
+
+            has_pm_signal = bool(
+                pm_tier is not None and
+                rsi_now < 88 and
+                not major_trap_risk and
+                -6.0 <= today_pct <= 18.0
+            )
+
+            # HIGH VOLUME strategy helper. Rank volume from raw OHLCV first.
+            # yfinance/Cloud can produce weak signal flags, so do not rely only
+            # on long_sig["vol_breakout"].  Use a robust relative-volume score.
+            try:
+                _last_vol = float(vol.iloc[-1])
+                _avg20_vol = float(vol.tail(21).iloc[:-1].mean()) if len(vol) >= 21 else float(vol.rolling(20).mean().iloc[-1])
+                _med50_vol = float(vol.tail(50).median()) if len(vol) >= 10 else _avg20_vol
+                _avg3_vol = float(vol.tail(3).mean()) if len(vol) >= 3 else _last_vol
+                _vr1 = _last_vol / _avg20_vol if _avg20_vol > 0 else 0.0
+                _vr_med = _last_vol / _med50_vol if _med50_vol > 0 else 0.0
+                _vr3 = _avg3_vol / _avg20_vol if _avg20_vol > 0 else 0.0
+                hv_vr = max(float(vr or 0.0), _vr1, _vr_med, _vr3)
+                _vol_rank = float((vol.tail(60) <= _last_vol).mean()) if len(vol) >= 10 else 0.0
+            except Exception:
+                hv_vr = float(vr or 0.0)
+                _vol_rank = 0.0
+
+            hv_score = 0
+            if hv_vr >= 3.0: hv_score += 4
+            elif hv_vr >= 2.0: hv_score += 3
+            elif hv_vr >= 1.5: hv_score += 2
+            elif hv_vr >= 1.15: hv_score += 1
+            if _vol_rank >= 0.90: hv_score += 2
+            elif _vol_rank >= 0.75: hv_score += 1
+            if long_sig.get("vol_breakout", False): hv_score += 3
+            if long_sig.get("vol_surge_up", False): hv_score += 2
+            if long_sig.get("pocket_pivot", False): hv_score += 2
+            if long_sig.get("strong_close", False): hv_score += 1
+            if long_sig.get("obv_rising", False): hv_score += 1
+            if today_pct >= 0.0: hv_score += 1
+            if today_pct >= 2.0: hv_score += 1
+            if core_long_trend or raw.get("above_ma60", False): hv_score += 1
+            if today_pct > 15.0 or rsi_now >= 92:
+                hv_score = max(0, hv_score - 2)
+
+            if hv_vr >= 3.0 and today_pct >= -1.0:
+                hv_tier = "A"; hv_zone = f"🔥 EXTREME VOLUME {hv_vr:.1f}x"
+            elif hv_vr >= 2.0 and today_pct >= -1.5:
+                hv_tier = "B"; hv_zone = f"🚀 VOLUME BREAKOUT {hv_vr:.1f}x"
+            elif long_sig.get("pocket_pivot", False) or (hv_vr >= 1.6 and today_pct >= 0 and raw.get("above_ma20", True)):
+                hv_tier = "C"; hv_zone = f"📌 POCKET PIVOT / ACCUMULATION {hv_vr:.1f}x"
+            elif hv_vr >= 1.15 and today_pct >= -3.0:
+                hv_tier = "D"; hv_zone = f"👀 UNUSUAL VOLUME {hv_vr:.1f}x"
+            elif swing_mode == "HIGH VOLUME" and _vol_rank >= 0.65 and today_pct >= -4.0:
+                # Last-resort but still volume-based: show the most active names
+                # instead of a blank strategy tab.
+                hv_tier = "E"; hv_zone = f"👀 ACTIVE VOLUME rank {int(_vol_rank*100)}%"
+                hv_score = max(hv_score, 1)
+            else:
+                hv_tier = None; hv_zone = "–"
+
+            has_hv_signal = bool(hv_tier is not None and rsi_now < 95 and -8.0 <= today_pct <= 25.0)
+
             high_accuracy_long = (
                 l_prob >= min_prob_strong_long and
                 l_score >= min_score_strong_long and
@@ -622,20 +848,109 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 (pullback_setup or breakout_setup or continuation_setup or operator_or_vwap)
             )
 
-            if high_accuracy_long:
-                l_action = "STRONG BUY"
-            elif actionable_long:
-                l_action = "WATCH – HIGH QUALITY"
-            elif trap_risk:
-                l_action = "WATCH – TRAP RISK"
-            elif l_score >= min_score_strong_long and l_prob >= min_prob_strong_long and l_top3:
-                l_action = "WATCH – HIGH QUALITY"
-            elif l_score >= 4 and l_prob >= 0.60 and core_long_trend:
-                l_action = "WATCH – DEVELOPING"
-            elif l_score >= 3 and core_long_trend:
-                l_action = "WATCH – EARLY"
+            if swing_mode == "SUPPORT ENTRY":
+                if not at_support_entry:
+                    l_action = None
+                elif support_tier == 1 and (l_prob >= 0.60 or l_score >= 4 or actionable_long):
+                    l_action = "BUY – MA60 SUPPORT"
+                elif support_tier == 2 and (l_prob >= 0.56 or l_score >= 4 or actionable_long):
+                    l_action = "BUY – MA20 SUPPORT"
+                elif support_tier == 3 and (l_prob >= 0.52 or l_score >= 3):
+                    l_action = "WATCH – SWING LOW SUPPORT"
+                elif support_tier == 4 and (l_prob >= 0.52 or l_score >= 3):
+                    l_action = "WATCH – MA200 SUPPORT"
+                elif support_tier == 5 and (l_prob >= 0.52 or l_score >= 3):
+                    l_action = "WATCH – VWAP SUPPORT"
+                elif support_tier == 6:
+                    l_action = "WATCH – NEAR SUPPORT"
+                else:
+                    l_action = "WATCH – SUPPORT CANDIDATE" if support_tier >= 1 else None
+
+            elif swing_mode == "PREMARKET MOMENTUM":
+                if not has_pm_signal:
+                    l_action = None
+                elif pm_tier == "A" and (high_accuracy_long or l_prob >= 0.56 or l_score >= 4 or momentum_confirmed):
+                    l_action = "BUY – PM MOMENTUM" if pm_source == "PM" else "BUY – LIVE MOMENTUM"
+                elif pm_tier == "B" and (l_prob >= 0.50 or l_score >= 3 or momentum_confirmed):
+                    l_action = "WATCH – PM BUILDING" if pm_source == "PM" else "WATCH – LIVE MOMENTUM"
+                elif pm_tier == "C" and (l_score >= 2 or momentum_confirmed or volume_confirmed):
+                    l_action = "WATCH – LIVE MOMENTUM"
+                elif pm_tier == "D":
+                    l_action = "WATCH – MOMENTUM CANDIDATE"
+                else:
+                    l_action = "WATCH – MOMENTUM CANDIDATE" if pm_tier else None
+
+            elif swing_mode == "HIGH VOLUME":
+                if not has_hv_signal:
+                    l_action = None
+                elif hv_tier == "A":
+                    l_action = "BUY – EXTREME VOLUME" if hv_score >= 4 else "WATCH – EXTREME VOLUME"
+                elif hv_tier == "B":
+                    l_action = "BUY – VOLUME BREAKOUT" if hv_score >= 4 else "WATCH – VOLUME BREAKOUT"
+                elif hv_tier == "C":
+                    l_action = "WATCH – POCKET PIVOT"
+                elif hv_tier == "D":
+                    l_action = "WATCH – UNUSUAL VOLUME"
+                elif hv_tier == "E":
+                    l_action = "WATCH – ACTIVE VOLUME"
+                else:
+                    l_action = "WATCH – VOLUME CANDIDATE" if hv_tier else None
+
             else:
-                l_action = None
+                # Standard strategy modes must be meaningfully different.
+                # Previous fallback rules were too broad, so Strict/Balanced/Discovery
+                # often displayed the same tickers.  Keep the same signal engine, but
+                # apply different final gates per mode.
+                if swing_mode == "STRICT":
+                    # A+ only: strong probability, score, trend and confirmation.
+                    if high_accuracy_long:
+                        l_action = "STRONG BUY – STRICT"
+                    elif (
+                        l_prob >= max(min_prob_strong_long, 0.78)
+                        and l_score >= max(min_score_strong_long, 7)
+                        and raw.get("above_ma60", False)
+                        and core_long_trend
+                        and momentum_confirmed
+                        and volume_confirmed
+                        and not trap_risk
+                        and not major_trap_risk
+                    ):
+                        l_action = "WATCH – STRICT QUALITY"
+                    else:
+                        l_action = None
+
+                elif swing_mode == "DISCOVERY":
+                    # Wide watchlist: allow earlier trend + probability combinations.
+                    if high_accuracy_long:
+                        l_action = "STRONG BUY – DISCOVERY"
+                    elif actionable_long:
+                        l_action = "WATCH – DISCOVERY QUALITY"
+                    elif trap_risk and l_score >= 4 and l_prob >= 0.58 and core_long_trend:
+                        l_action = "WATCH – TRAP RISK"
+                    elif l_score >= 4 and l_prob >= 0.58 and core_long_trend:
+                        l_action = "WATCH – DEVELOPING"
+                    elif l_score >= 3 and l_prob >= 0.52 and (core_long_trend or raw.get("above_ma60", False)):
+                        l_action = "WATCH – EARLY"
+                    else:
+                        l_action = None
+
+                else:  # BALANCED
+                    # Practical mode: stricter than Discovery, looser than Strict.
+                    if high_accuracy_long:
+                        l_action = "STRONG BUY"
+                    elif actionable_long:
+                        l_action = "WATCH – HIGH QUALITY"
+                    elif trap_risk and l_score >= 5 and l_prob >= 0.66 and core_long_trend:
+                        l_action = "WATCH – TRAP RISK"
+                    elif (
+                        l_score >= 5
+                        and l_prob >= 0.66
+                        and core_long_trend
+                        and (momentum_confirmed or volume_confirmed or pullback_setup or breakout_setup)
+                    ):
+                        l_action = "WATCH – DEVELOPING"
+                    else:
+                        l_action = None
 
             if l_action:
                 # ── Strategy stop: MA60 or swing low (whichever is higher = tighter) ──
@@ -700,6 +1015,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 if long_sig.get("pocket_pivot"):   l_tags.append("📌POCKET PIVOT")
                 if squeeze_flag:                   l_tags.append("⚡SQUEEZE")
                 if vr >= 2.5:                   l_tags.append("VOL SURGE")
+                if swing_mode == "HIGH VOLUME" and hv_tier: l_tags.append(f"HV-{hv_tier}:{hv_score}")
                 if is_monday:                   l_tags.append("⚠️MON")
                 if combo_bonus > 0:             l_tags.append(f"COMBO+{combo_bonus:.0%}")
                 if high_accuracy_long:          l_tags.append("🎯HIGH-ACCURACY")
@@ -741,7 +1057,17 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "Ticker":         ticker,
                     "Sector":         sector_label(ticker),
                     "Action":         l_action,
-                    "Setup Type":     setup_type_long,
+                    "Setup Type":     (
+                        support_zone if swing_mode == "SUPPORT ENTRY" else
+                        pm_zone      if swing_mode == "PREMARKET MOMENTUM" else
+                        hv_zone      if swing_mode == "HIGH VOLUME" else
+                        setup_type_long
+                    ),
+                    "PM Chg%":        f"+{pm_chg_pct:.1f}%" if pm_data_ok and pm_chg_pct > 0 else "–",
+                    "PM Price":       f"${pm_price:.2f}" if pm_data_ok and pm_price > 0 else "–",
+                    "Support Tier":   support_zone,
+                    "Supp#":          support_tier,
+                    "RSI Now":        round(rsi_now, 1),
                     "Entry Quality":  entry_quality,
                     "Rise Prob":      f"{l_prob * 100:.1f}%",
                     "Prob Tier":      prob_label(l_prob),
@@ -920,7 +1246,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "Short %":        short_str,
                     "RSI":            round(raw["rsi0"], 1),
                     "Vol Ratio":      round(vr, 2),
-                    "Signals":        " | ".join(s_tags) if s_tags else "–",
+                    "Signals":        " | ".join(l_tags) if l_tags else "–",
                     "Opt Flow":       " | ".join(opt_s_tags) if opt_s_tags else "–",
                 })
 
@@ -941,7 +1267,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         if not rows:
             return pd.DataFrame()
         df_out = pd.DataFrame(rows)
-        df_out["_s"] = df_out[prob_col].str.rstrip("%").astype(float)
+        df_out["_s"] = df_out[prob_col].astype(str).str.rstrip("%").astype(float)
         return df_out.sort_values("_s", ascending=False).drop(columns="_s")
 
     def make_op_df(rows):

@@ -49,7 +49,7 @@ def render_event_predictor(ctx: dict) -> None:
     else:
         df_event = event_df.copy()
         if ev_search:
-            df_event = df_event[df_event["Ticker"].str.contains(ev_search, case=False, na=False)]
+            df_event = df_event[df_event["Ticker"].astype(str).str.contains(ev_search, case=False, na=False)]
         if ev_verdict_filter:
             df_event = df_event[df_event["Verdict"].isin(ev_verdict_filter)]
 

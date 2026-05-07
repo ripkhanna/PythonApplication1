@@ -24,6 +24,7 @@ def render_help(ctx: dict) -> None:
   - **Strict** — A+ confirmed setups only.
   - **Balanced** — practical live swing candidates; this is the default.
   - **Discovery** — wider watchlist for quiet markets.
+  - **High Volume** — unusual volume / volume breakout / pocket pivot setups.
 - Long setup logic now recognises **Pullback**, **Breakout**, **Continuation**, **Operator Accumulation**, and **Early Trend** setups.
 - Short setup logic now recognises **Breakdown**, **Distribution**, **Rollover**, and **Early Downtrend** setups.
 - Swing Picks no longer requires news/event data to be present before a strong technical setup can rank well.
@@ -100,7 +101,7 @@ Recommended default:
 Balanced
 ```
 
-Use **Discovery** if you are seeing too few good names, but do not buy blindly. Treat it as a watchlist mode.
+Use **Discovery** if you are seeing too few good names, but do not buy blindly. Treat it as a watchlist mode. Use **High Volume** when you want stocks where activity is increasing now.
         """)
 
     with st.expander("📈 Long Setups — updated live-market criteria"):

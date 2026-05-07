@@ -321,7 +321,7 @@ _SIDEBAR_DEFAULTS = {
     "ui_top_n_sectors":       3,
     "ui_min_prob_long":       62,
     "ui_min_prob_short":      60,
-    "ui_swing_mode":          "Balanced",
+    "ui_swing_mode":          "Balanced",  # Options: Strict/Balanced/Discovery/Support Entry/Premarket Momentum/High Volume
     "ui_skip_earnings":       False,
     "ui_use_live_universe":   True,
     "ui_max_live_universe":   1000,
@@ -428,15 +428,65 @@ min_prob_short = st.sidebar.slider(
     "Min SHORT fall prob (%)", 40, 95, key="ui_min_prob_short",
 )
 swing_mode = st.sidebar.selectbox(
-    "Swing signal mode",
-    ["Strict", "Balanced", "Discovery"],
+    "📊 Swing strategy",
+    ["Strict", "Balanced", "Discovery", "Support Entry", "Premarket Momentum", "High Volume"],
     key="ui_swing_mode",
     help=(
-        "Strict = only A+ confirmed setups. Balanced = practical live swing candidates. "
-        "Discovery = wider watchlist for quiet markets; use Trade Desk filters before trading."
+        "**Strict** — A+ setups only. High probability + full confirmation.\n\n"
+        "**Balanced** — practical live candidates (default). Trend + volume + operator.\n\n"
+        "**Discovery** — wider watchlist for quiet markets. More results, use Trade Desk to filter.\n\n"
+        "**Support Entry** ⭐ — shows ONLY stocks sitting AT a known support level "
+        "(MA20/MA60/VWAP/swing low) that haven't moved much yet. Best for morning scans. "
+        "Stop is tight (just below support). Stocks already up >3% today are hidden.\n\n"
+        "**Premarket Momentum** 🚀 — shows stocks with +1%–+8% pre-market gain AND "
+        "a sound technical trend. Designed for the 15–30 min before market open. "
+        "Stocks without pre-market data or with broken technicals are filtered out.\n\n"
+        "**High Volume** 📊 — shows stocks with unusual volume / volume breakout / pocket pivot. "
+        "Best for finding stocks where activity is increasing now."
     ),
 )
 st.session_state["swing_mode"] = swing_mode
+
+# When strategy changes, do not keep showing the previous grid.
+# Force a fresh scan and show a clear message above the grid.
+_prev_mode_seen = st.session_state.get("_last_seen_swing_mode")
+if _prev_mode_seen is not None and _prev_mode_seen != swing_mode:
+    st.session_state["_strategy_changed_notice"] = (
+        f"🔄 Strategy changed from **{_prev_mode_seen}** to **{swing_mode}**. "
+        "Refreshing scan/grid for the selected strategy."
+    )
+    st.session_state["_force_strategy_rescan"] = True
+    st.session_state.pop("_loaded_csv_cache_key", None)
+    for _df_key in ("df_long", "df_short", "df_operator"):
+        st.session_state[_df_key] = pd.DataFrame()
+    try:
+        fetch_analysis.clear()
+    except Exception:
+        pass
+st.session_state["_last_seen_swing_mode"] = swing_mode
+
+# Show strategy context banner under the selectbox
+_sm_upper = swing_mode.upper()
+if _sm_upper == "SUPPORT ENTRY":
+    st.sidebar.info(
+        "📍 **Support Entry mode**\n\n"
+        "Shows only stocks AT support (MA20/MA60/VWAP/swing low). "
+        "Stocks already up >3% today are hidden. "
+        "Tier 1 = MA60 dip (strongest). Tier 4 = VWAP dip."
+    )
+elif _sm_upper == "PREMARKET MOMENTUM":
+    st.sidebar.info(
+        "🚀 **Premarket Momentum mode**\n\n"
+        "Shows stocks with +1–8% pre-market gain + technical trend intact. "
+        "Run this 15–30 min before market open for best results. "
+        "Tier A = +3–8% (high conviction). Tier B = +1–3% (needs confirmation)."
+    )
+elif _sm_upper == "HIGH VOLUME":
+    st.sidebar.info(
+        "📊 **High Volume mode**\n\n"
+        "Shows stocks with unusual volume, volume breakout, pocket pivot, or strong close on rising volume. "
+        "This is useful for finding names where activity is increasing before price fully moves."
+    )
 skip_earnings  = st.sidebar.checkbox(
     "Skip earnings within 7 days", key="ui_skip_earnings",
 )
@@ -760,48 +810,62 @@ else:
     _active_tickers = INDIA_TICKERS; _active_sectors = INDIA_SECTOR_ETFS
     _currency_sym = "₹";            _price_fmt = lambda p: f"₹{p:,.2f}"
 
-# ── Load cached CSV results immediately for the selected market ──────────────
+# ── Load cached CSV results immediately for the selected market/strategy ─────
 _cache_loaded_note = ""
 _cache_refresh_due = False
 _loaded_cache = None
-if load_csv_on_start:
+if load_csv_on_start and not st.session_state.get("_force_strategy_rescan", False):
     _loaded_cache = _load_scan_cache(market_sel)
     if _loaded_cache is not None:
         _meta = _loaded_cache.get("meta", {})
-        _cache_age = _cache_age_minutes(_meta)
-        _cache_timing = _cache_timing_info(_meta, refresh_minutes)
-        st.session_state["scan_cache_meta"] = _meta
-        st.session_state["scan_cache_timing"] = _cache_timing
-        st.session_state["scan_cache_refresh_minutes"] = refresh_minutes
-        st.session_state["scan_cache_refresh_due"] = bool(_cache_timing.get("is_due", False))
-        _cache_market_key = f"{market_sel}:{_meta.get('saved_at','')}"
-        # Only replace session data when this market/cache is new, or when the
-        # selected market differs from the data currently in session.
-        if (st.session_state.get("_loaded_csv_cache_key") != _cache_market_key
-                or st.session_state.get("last_market") != market_sel):
-            st.session_state["df_long"] = _loaded_cache.get("df_long", pd.DataFrame())
-            st.session_state["df_short"] = _loaded_cache.get("df_short", pd.DataFrame())
-            st.session_state["df_operator"] = _loaded_cache.get("df_operator", pd.DataFrame())
-            st.session_state["last_market"] = market_sel
-            st.session_state["last_universe_source"] = _meta.get("universe_source", "CSV cached scan")
-            st.session_state["last_universe_count"] = int(_meta.get("universe_count", 0) or 0)
-            st.session_state["last_live_ticker_count"] = int(_meta.get("live_ticker_count", 0) or 0)
-            st.session_state["last_existing_ticker_count"] = int(_meta.get("existing_ticker_count", len(_active_tickers)) or len(_active_tickers))
-            _tickers_csv = _meta.get("scanned_tickers_csv", "")
-            st.session_state["last_scanned_tickers_csv"] = _tickers_csv
-            st.session_state["last_scanned_tickers"] = [t.strip() for t in _tickers_csv.split(",") if t.strip()]
-            st.session_state["last_scan_opt_enabled"] = bool(_meta.get("options_enabled", False))
-            st.session_state["last_scan_opt_count"] = int(_meta.get("options_count", 0) or 0)
-            st.session_state["last_scan_market"] = market_sel
-            st.session_state["_loaded_csv_cache_key"] = _cache_market_key
-        if _cache_age is not None:
+        _cache_strategy = str(_meta.get("strategy_mode", "Balanced"))
+        if _cache_strategy != str(swing_mode):
+            _loaded_cache = None
+            st.session_state["scan_cache_meta"] = {}
+            st.session_state["scan_cache_timing"] = _cache_timing_info({}, refresh_minutes)
+            st.session_state["scan_cache_refresh_minutes"] = refresh_minutes
+            st.session_state["scan_cache_refresh_due"] = False
             _cache_loaded_note = (
-                f"📦 Loaded cached CSV scan from {_meta.get('saved_at','unknown')} "
-                f"({ _cache_age:.0f} min old) · Long {int(_meta.get('long_rows',0))} · "
-                f"Short {int(_meta.get('short_rows',0))}"
+                f"📦 Cached CSV is for **{_cache_strategy}**, current strategy is **{swing_mode}**. "
+                "Grid will refresh with the selected strategy."
             )
-            if refresh_minutes and _cache_age >= refresh_minutes:
-                _cache_refresh_due = True
+        else:
+            _cache_age = _cache_age_minutes(_meta)
+            _cache_timing = _cache_timing_info(_meta, refresh_minutes)
+            st.session_state["scan_cache_meta"] = _meta
+            st.session_state["scan_cache_timing"] = _cache_timing
+            st.session_state["scan_cache_refresh_minutes"] = refresh_minutes
+            st.session_state["scan_cache_refresh_due"] = bool(_cache_timing.get("is_due", False))
+            _cache_market_key = f"{market_sel}:{swing_mode}:{_meta.get('saved_at','')}"
+            # Only replace session data when this market/strategy/cache is new, or when the
+            # selected market differs from the data currently in session.
+            if (st.session_state.get("_loaded_csv_cache_key") != _cache_market_key
+                    or st.session_state.get("last_market") != market_sel
+                    or st.session_state.get("last_scan_strategy") != swing_mode):
+                st.session_state["df_long"] = _loaded_cache.get("df_long", pd.DataFrame())
+                st.session_state["df_short"] = _loaded_cache.get("df_short", pd.DataFrame())
+                st.session_state["df_operator"] = _loaded_cache.get("df_operator", pd.DataFrame())
+                st.session_state["last_market"] = market_sel
+                st.session_state["last_scan_strategy"] = swing_mode
+                st.session_state["last_universe_source"] = _meta.get("universe_source", "CSV cached scan")
+                st.session_state["last_universe_count"] = int(_meta.get("universe_count", 0) or 0)
+                st.session_state["last_live_ticker_count"] = int(_meta.get("live_ticker_count", 0) or 0)
+                st.session_state["last_existing_ticker_count"] = int(_meta.get("existing_ticker_count", len(_active_tickers)) or len(_active_tickers))
+                _tickers_csv = _meta.get("scanned_tickers_csv", "")
+                st.session_state["last_scanned_tickers_csv"] = _tickers_csv
+                st.session_state["last_scanned_tickers"] = [t.strip() for t in _tickers_csv.split(",") if t.strip()]
+                st.session_state["last_scan_opt_enabled"] = bool(_meta.get("options_enabled", False))
+                st.session_state["last_scan_opt_count"] = int(_meta.get("options_count", 0) or 0)
+                st.session_state["last_scan_market"] = market_sel
+                st.session_state["_loaded_csv_cache_key"] = _cache_market_key
+            if _cache_age is not None:
+                _cache_loaded_note = (
+                    f"📦 Loaded cached **{swing_mode}** CSV scan from {_meta.get('saved_at','unknown')} "
+                    f"({_cache_age:.0f} min old) · Long {int(_meta.get('long_rows',0))} · "
+                    f"Short {int(_meta.get('short_rows',0))}"
+                )
+                if refresh_minutes and _cache_age >= refresh_minutes:
+                    _cache_refresh_due = True
     else:
         st.session_state["scan_cache_meta"] = {}
         st.session_state["scan_cache_timing"] = _cache_timing_info({}, refresh_minutes)
@@ -937,8 +1001,11 @@ col_btn, col_info = st.columns([1, 3])
 
 with col_btn:
     _manual_scan = st.button(f"🚀 Scan {market_sel} Stocks", type="primary")
-run = _manual_scan or _cache_refresh_due
-if _cache_refresh_due and not _manual_scan:
+_strategy_auto_refresh = bool(st.session_state.pop("_force_strategy_rescan", False))
+run = _manual_scan or _cache_refresh_due or _strategy_auto_refresh
+if _strategy_auto_refresh:
+    _show_top_spinner(st.session_state.get("_strategy_changed_notice", "🔄 Strategy changed — refreshing scan/grid..."))
+elif _cache_refresh_due and not _manual_scan:
     _show_top_spinner(
         f"⏱️ Cached CSV is older than {refresh_minutes} min — refreshing scan and updating CSV files..."
     )
@@ -1045,7 +1112,8 @@ if run:
                 df_long, df_short, df_operator = fetch_analysis(
                     tuple(green_sectors), tuple(red_sectors),
                     regime, skip_earnings, top_n_sectors,
-                    live_sectors if live_sectors else None,
+                    strategy_mode=swing_mode,
+                    live_sectors=live_sectors if live_sectors else None,
                     market_tickers=tuple(active_tickers),
                     enable_options=enable_options,
                 )
@@ -1058,9 +1126,14 @@ if run:
             df_long, df_short, df_operator = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
         _top_scan_status.success(
-            f"✅ Scan complete for **{len(active_tickers)} {market_sel} stocks** · "
+            f"✅ **{swing_mode}** scan complete for **{len(active_tickers)} {market_sel} stocks** · "
             f"Long: **{len(df_long)}** · Short: **{len(df_short)}** · Operator: **{len(df_operator)}**"
         )
+        st.session_state["last_scan_strategy"] = swing_mode
+        if _strategy_auto_refresh:
+            st.session_state["_strategy_changed_notice"] = (
+                f"✅ Strategy changed to **{swing_mode}** — grid refreshed with new scan results."
+            )
         if df_long.empty and df_short.empty and df_operator.empty:
             try:
                 _record_app_warning(
@@ -1072,24 +1145,68 @@ if run:
                 pass
             st.warning("Scan completed but no stocks passed the current data/filters. Check 🔍 Diagnostics → App errors and Scan debug summary.")
 
-        # Apply sidebar filters
+        # Apply sidebar filters.
+        # Support Entry and Premarket Momentum already apply their own strategy
+        # gates inside fetch_analysis. Standard momentum checkboxes must not be
+        # applied to them, otherwise valid strategy rows disappear.
         if not df_long.empty:
-            df_long["_p"] = df_long["Rise Prob"].str.rstrip("%").astype(float)
-            df_long = df_long[df_long["_p"] >= min_prob_long]
-            if req_stoch: df_long = df_long[df_long["Signals"].str.contains("STOCH")]
-            if req_bb:    df_long = df_long[df_long["BB Squeeze"] == "YES"]
-            if req_accel: df_long = df_long[df_long["Signals"].str.contains("MACD ACCEL")]
-            # v12: hard options filter
-            if opt_required and enable_options and "Opt Flow" in df_long.columns:
-                df_long = df_long[df_long["Opt Flow"] != "–"]
-            df_long = df_long.drop(columns="_p")
+            _long_before_sidebar = df_long.copy()
+            _mode_now = str(st.session_state.get("ui_swing_mode", st.session_state.get("swing_mode", "Balanced"))).upper()
+            df_long["_p"] = df_long["Rise Prob"].astype(str).str.rstrip("%").astype(float)
+            if _mode_now in ("SUPPORT ENTRY", "PREMARKET MOMENTUM", "HIGH VOLUME"):
+                _floor = min(float(min_prob_long), 35.0)
+                df_long = df_long[df_long["_p"] >= _floor]
+                if opt_required and enable_options and "Opt Flow" in df_long.columns:
+                    _tmp = df_long[df_long["Opt Flow"] != "–"]
+                    if not _tmp.empty:
+                        df_long = _tmp
+                    else:
+                        st.warning("Options filter would hide all strategy results, so it was ignored for this scan.")
+                if df_long.empty and not _long_before_sidebar.empty:
+                    st.warning("Sidebar filters removed all strategy results, so showing unfiltered strategy candidates.")
+                    df_long = _long_before_sidebar.copy()
+            else:
+                # Make Strict / Balanced / Discovery materially different at display level too.
+                # This protects against broad upstream WATCH fallbacks making all modes look identical.
+                _score_series = df_long["Score"] if "Score" in df_long.columns else pd.Series(["0"] * len(df_long), index=df_long.index)
+                _action_s = df_long["Action"] if "Action" in df_long.columns else pd.Series([""] * len(df_long), index=df_long.index)
+                _score_num = pd.to_numeric(
+                    _score_series.astype(str).str.extract(r"(\d+)")[0],
+                    errors="coerce"
+                ).fillna(0)
+                _action_s = _action_s.astype(str)
+
+                if _mode_now == "STRICT":
+                    df_long = df_long[
+                        (df_long["_p"] >= max(float(min_prob_long), 78.0))
+                        & (_score_num >= 7)
+                        & (_action_s.str.contains(r"STRICT|STRONG BUY", na=False, regex=True))
+                    ]
+                elif _mode_now == "BALANCED":
+                    df_long = df_long[
+                        (df_long["_p"] >= max(float(min_prob_long), 60.0))
+                        & (_score_num >= 5)
+                        & (~_action_s.str.contains(r"DISCOVERY|EARLY", na=False, regex=True))
+                    ]
+                elif _mode_now == "DISCOVERY":
+                    df_long = df_long[df_long["_p"] >= min(float(min_prob_long), 45.0)]
+                else:
+                    df_long = df_long[df_long["_p"] >= min_prob_long]
+
+                if req_stoch: df_long = df_long[df_long["Signals"].astype(str).str.contains("STOCH", na=False)]
+                if req_bb:    df_long = df_long[df_long["BB Squeeze"] == "YES"]
+                if req_accel: df_long = df_long[df_long["Signals"].astype(str).str.contains("MACD ACCEL", na=False)]
+                # v12: hard options filter
+                if opt_required and enable_options and "Opt Flow" in df_long.columns:
+                    df_long = df_long[df_long["Opt Flow"] != "–"]
+            df_long = df_long.drop(columns="_p", errors="ignore")
 
         if not df_short.empty:
-            df_short["_p"] = df_short["Fall Prob"].str.rstrip("%").astype(float)
+            df_short["_p"] = df_short["Fall Prob"].astype(str).str.rstrip("%").astype(float)
             df_short = df_short[df_short["_p"] >= min_prob_short]
-            if req_s_stoch: df_short = df_short[df_short["Signals"].str.contains("STOCH")]
-            if req_s_bb:    df_short = df_short[df_short["Signals"].str.contains("BB BEAR")]
-            if req_s_decel: df_short = df_short[df_short["Signals"].str.contains("MACD DECEL")]
+            if req_s_stoch: df_short = df_short[df_short["Signals"].astype(str).str.contains("STOCH", na=False)]
+            if req_s_bb:    df_short = df_short[df_short["Signals"].astype(str).str.contains("BB BEAR", na=False)]
+            if req_s_decel: df_short = df_short[df_short["Signals"].astype(str).str.contains("MACD DECEL", na=False)]
             # v12: hard options filter
             if opt_required and enable_options and "Opt Flow" in df_short.columns:
                 df_short = df_short[df_short["Opt Flow"] != "–"]
@@ -1131,6 +1248,7 @@ if run:
                 "scanned_tickers_csv": ", ".join(active_tickers),
                 "options_enabled": bool(enable_options),
                 "options_count": int(_opt_count_l + _opt_count_s),
+                "strategy_mode": str(swing_mode),
                 "bucket_cap": bool(use_bucket_cap),
                 "top_n_sectors": int(top_n_sectors),
                 "min_prob_long": int(min_prob_long),

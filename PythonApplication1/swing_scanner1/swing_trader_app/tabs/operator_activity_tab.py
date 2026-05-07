@@ -84,7 +84,7 @@ def render_operator_activity(ctx: dict) -> None:
             df_view = df_view[df_view["_op_score"] >= 6]
 
         if search:
-            df_view = df_view[df_view["Ticker"].str.contains(search, na=False)]
+            df_view = df_view[df_view["Ticker"].astype(str).str.contains(search, na=False)]
 
         # ── Tier split: bullish vs bearish operator activity ─────────────────
         df_bull = df_view[df_view["_bias_score"] >  0].sort_values(

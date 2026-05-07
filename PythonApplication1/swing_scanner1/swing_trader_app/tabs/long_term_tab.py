@@ -231,9 +231,9 @@ def render_long_term(ctx: dict) -> None:
 
         if search:
             mask = (
-                df["Ticker"].str.contains(search.upper(), na=False)
-                | df["Name"].str.contains(search, case=False, na=False)
-                | df["Sector"].str.contains(search, case=False, na=False)
+                df["Ticker"].astype(str).str.contains(search.upper(), na=False)
+                | df["Name"].astype(str).str.contains(search, case=False, na=False)
+                | df["Sector"].astype(str).str.contains(search, case=False, na=False)
             )
             df = df[mask]
 
@@ -538,8 +538,6 @@ def render_long_term(ctx: dict) -> None:
 
         if st.button("🔍 Score SGX Long-Term Stocks",
                      type="primary", key="btn_lt_sg"):
-            # Clear per-ticker fetch log so this run's diagnostics are fresh
-            st.session_state.pop("lt_ticker_log", None)
             live_sg = []
             live_sg_src = "SGX/live disabled"
             if use_live_universe:
@@ -601,29 +599,11 @@ def render_long_term(ctx: dict) -> None:
             results.sort(key=lambda x: -x.get("_score", 0))
             st.session_state["lt_sg"] = results
             st.session_state["lt_sg_universe_csv"] = ", ".join(sg_scan)
-            _lt_log = st.session_state.get("lt_ticker_log", {})
-            _lt_ok   = sum(1 for d in _lt_log.values() if d.get("ok"))
-            _lt_fail = sum(1 for d in _lt_log.values() if not d.get("ok"))
-            _lt_funds = sum(1 for d in _lt_log.values() if d.get("ok") and d.get("has_fundamentals"))
             st.caption(
                 f"✅ Scanned **{len(sg_scan)}** SGX stocks · "
-                f"found **{len(results)}** passing filter · "
+                f"found **{len(results)}** passing quality filter · "
                 f"source: {live_sg_src}"
             )
-            if _lt_fail:
-                st.warning(
-                    f"⚠️ **{_lt_fail} ticker(s) returned no price** (yfinance blocked/empty on cloud). "
-                    f"**{_lt_ok}** had price · **{_lt_funds}** had full fundamentals · "
-                    f"**{_lt_ok - _lt_funds}** price-only (Yahoo omitted SGX info fields). "
-                    "Open **🔍 Diagnostics → 🌱 Long-Term scan diagnostics** "
-                    "to see exactly which step failed for each ticker."
-                )
-            elif _lt_ok and not _lt_funds:
-                st.warning(
-                    "⚠️ Prices were fetched but Yahoo returned no SGX fundamentals "
-                    "(ROE/EPS/Rec all blank). Stocks still show via SGX bonus scoring. "
-                    "See 🔍 Diagnostics for per-ticker details."
-                )
 
         # ── FILTER BAR + GRID ────────────────────────────────────────────
         raw = st.session_state.get("lt_sg", [])
