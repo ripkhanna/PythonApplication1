@@ -53,6 +53,200 @@ US_TICKERS = [
     "CCJ","UEC","PALAF","LEU","NNE","XE",
     #ETF
     "URA","NLR","URNM",
+    # AI Infrastructure / Data Centers / Power
+    "NBIS",   # Nebius — AI cloud infrastructure
+    "CORZ",   # Core Scientific — AI/HPC + crypto mining
+    "IREN",   # IREN — AI/HPC + bitcoin mining
+    "APLD",   # Applied Digital — AI data centers
+    "CRWV",   # CoreWeave — AI cloud, if available in your yfinance
+    "ETN",    # Eaton — power equipment / data center electrification
+    "PWR",    # Quanta Services — grid/data center power
+    "EME",    # EMCOR — data center construction/services
+    "FIX",    # Comfort Systems — HVAC/data center infrastructure
+    "TT",     # Trane — cooling/data center infrastructure
+    "CARR",   # Carrier — cooling/HVAC
+    "JCI",    # Johnson Controls — building/cooling systems
+
+    # Photonics / Optical / Networking
+    "LITE",   # Lumentum — photonics/optical
+    "COHR",   # Coherent — optical/lasers/AI networking
+    "CIEN",   # Ciena — optical networking
+    "FN",     # Fabrinet — optical manufacturing
+    "GLW",    # Corning — optical fiber/data center
+    "AAOI",   # Applied Optoelectronics — high-beta optical
+    "POET",   # POET Technologies — photonics, very high risk
+    "ACMR",   # ACM Research — semiconductor equipment
+
+    # More Semiconductors / AI Hardware
+    "GFS",    # GlobalFoundries
+    "MTSI",   # MACOM — RF/semis
+    "RMBS",   # Rambus — memory/interface chips
+    "AEHR",   # Aehr Test Systems — semicap/high beta
+    "FORM",   # FormFactor — semicap testing
+    "CAMT",   # Camtek — semicap inspection
+    "ACLS",   # Axcelis — ion implantation
+    "SITM",   # SiTime — timing chips
+    "POWI",   # Power Integrations
+    "SYNA",   # Synaptics
+    "CRUS",   # Cirrus Logic
+
+    # Nuclear / Uranium / Power
+    "CCJ",    # Cameco
+    "UEC",    # Uranium Energy
+    "UUUU",   # Energy Fuels
+    "DNN",    # Denison Mines
+    "URG",    # Ur-Energy
+    "LEU",    # Centrus Energy
+    "BWXT",   # BWX Technologies
+    "CEG",    # Constellation Energy
+    "VST",    # Vistra
+    "GEV",    # GE Vernova
+    "OKLO",   # Oklo — SMR/high risk
+    "SMR",    # NuScale — SMR/high risk
+    "NNE",    # Nano Nuclear — very high risk
+    "LTBR",   # Lightbridge — nuclear fuel/high risk
+
+    # Quantum Computing
+    "IONQ",   # IonQ
+    "QBTS",   # D-Wave Quantum
+    "RGTI",   # Rigetti
+    "QUBT",   # Quantum Computing Inc
+    "ARQQ",   # Arqit Quantum
+    "QMCO",   # Quantum Corp — very speculative
+    "IBM",    # IBM — safer quantum exposure
+
+    # Robotics / Automation / Drones
+    "SYM",    # Symbotic
+    "SERV",   # Serve Robotics
+    "TER",    # Teradyne — automation/robotics
+    "ROK",    # Rockwell Automation
+    "IRBT",   # iRobot — speculative
+    "ONDS",   # Ondas — drones/communications
+    "AVAV",   # AeroVironment — drones/defense
+    "KTOS",   # Kratos — defense drones
+    "ACHR",   # Archer Aviation
+    "JOBY",   # Joby Aviation
+    "EVTL",   # Vertical Aerospace
+
+    # Space / Defense / Aerospace
+    "RKLB",   # Rocket Lab
+    "ASTS",   # AST SpaceMobile
+    "LUNR",   # Intuitive Machines
+    "RDW",    # Redwire
+    "SPIR",   # Spire Global
+    "BKSY",   # BlackSky
+    "ACHR",   # eVTOL/space-adjacent momentum
+    "HWM",    # Howmet Aerospace
+    "TDG",    # TransDigm
+    "HEI",    # HEICO
+
+    # Crypto / Bitcoin / Fintech Momentum
+    "GLXY",   # Galaxy Digital
+    "BTDR",   # Bitdeer
+    "CIFR",   # Cipher Mining
+    "HIVE",   # HIVE Digital
+    "IREN",   # IREN
+    "CORZ",   # Core Scientific
+    "APLD",   # Applied Digital
+    "WULF",   # TeraWulf
+    "CLSK",   # CleanSpark
+    "MARA",   # MARA
+    "RIOT",   # Riot
+    "HUT",    # Hut 8
+    "BITF",   # Bitfarms
+    "HIMS",   # Hims — consumer/health fintech-like momentum
+    "TOST",   # Toast
+    "FOUR",   # Shift4 Payments
+    "MQ",     # Marqeta
+    "DLO",    # DLocal
+    "STNE",   # StoneCo
+    "PAGS",   # PagSeguro
+    "NU",     # Nu Holdings
+
+    # Software / Cyber / Data / AI Apps
+    "AI",     # C3.ai
+    "SOUN",   # SoundHound AI
+    "BBAI",   # BigBear.ai
+    "AIOT",   # AI/IoT, validate liquidity
+    "TEM",    # Tempus AI
+    "VERI",   # Veritone — speculative AI
+    "UPST",   # Upstart
+    "BILL",   # Bill Holdings
+    "DOCN",   # DigitalOcean
+    "IOT",    # Samsara
+    "HUBS",   # HubSpot
+    "APPF",   # AppFolio
+    "FROG",   # JFrog
+    "NCNO",   # nCino
+    "ASAN",   # Asana
+    "TWLO",   # Twilio
+    "ZI",     # ZoomInfo
+
+    # Biotech / High Beta Healthcare
+    "VKTX",   # Viking Therapeutics
+    "ALT",    # Altimmune
+    "TGTX",   # TG Therapeutics
+    "SMMT",   # Summit Therapeutics
+    "IOVA",   # Iovance
+    "ACLX",   # Arcellx
+    "VIR",    # Vir Biotechnology
+    "DNA",    # Ginkgo Bioworks
+    "SANA",   # Sana Biotechnology
+    "VERV",   # Verve Therapeutics
+    "PRME",   # Prime Medicine
+    "ARVN",   # Arvinas
+    "RXRX",   # Recursion
+    "SDGR",   # Schrödinger
+
+    # Consumer / Retail / Turnaround / High Beta
+    "CAVA",   # Cava
+    "SG",     # Sweetgreen
+    "BROS",   # Dutch Bros
+    "SHAK",   # Shake Shack
+    "WING",   # Wingstop
+    "ELF",    # e.l.f. Beauty
+    "CELH",   # Celsius
+    "ONON",   # On Holding
+    "CROX",   # Crocs
+    "CHWY",   # Chewy
+    "ETSY",   # Etsy
+    "ROKU",   # Roku
+    "PINS",   # Pinterest
+    "SNAP",   # Snap
+    "RDDT",   # Reddit
+    "DJT",    # Trump Media — very speculative
+
+    # Industrials / Materials / Cyclicals
+    "X",      # US Steel
+    "CLF",    # Cleveland-Cliffs
+    "STLD",   # Steel Dynamics
+    "SCCO",   # Southern Copper
+    "TECK",   # Teck Resources
+    "LTHM",   # Arcadium/Lithium exposure, validate ticker
+    "ALTM",   # Arcadium Lithium, validate current ticker
+    "PLL",    # Piedmont Lithium
+    "SGML",   # Sigma Lithium
+    "ALB",    # Albemarle
+    "LAC",    # Lithium Americas
+
+    # High-beta ETFs / Theme ETFs
+    "TQQQ",   # 3x Nasdaq
+    "SOXL",   # 3x Semiconductors
+    "TECL",   # 3x Technology
+    "LABU",   # 3x Biotech
+    "TNA",    # 3x Russell 2000
+    "ARKK",   # ARK Innovation
+    "ARKG",   # Genomics
+    "ARKW",   # Internet
+    "ARKQ",   # Autonomous/robotics
+    "BOTZ",   # Robotics/AI
+    "ROBO",   # Robotics
+    "AIQ",    # AI ETF
+    "QTUM",   # Quantum/next-gen computing ETF
+    "BLOK",   # Blockchain ETF
+    "BITO",   # Bitcoin futures ETF
+    "IBIT",   # Spot Bitcoin ETF
+    "FBTC",   # Spot Bitcoin ETF
 ]
 
 SG_TICKERS = [
@@ -86,6 +280,18 @@ SG_TICKERS = [
     "8AZ.SI",   # Aztech Global — volatile
     "40B.SI",   # HRnetGroup
     "1D0.SI",   # Nanofilm spin-off
+    "E28.SI",   # Frencken
+    "AWX.SI",   # AEM
+    "I07.SI",   # ISDN
+    "5EB.SI",   # Micro-Mechanics
+    "C31.SI",   # CapitaLand Investment
+    "AJBU.SI",  # Keppel DC REIT
+    "ME8U.SI",  # Mapletree Industrial Trust
+    "9CI.SI",   # CapitaLand India Trust
+    "5WH.SI",   # Rex International
+    "41B.SI",   # Dyna-Mac
+    "5LY.SI",   # Marco Polo Marine
+    "NO4.SI",   # Geo Energy
 ]
 
 INDIA_TICKERS = [
