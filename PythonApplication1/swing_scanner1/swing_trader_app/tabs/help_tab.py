@@ -1,449 +1,531 @@
-"""Help tab renderer.
-
-This file contains the normal, readable Streamlit code for the Help tab.
-It was expanded from the temporary compile/exec wrapper used during the first
-split so the tab can be maintained directly.
-"""
+"""Help tab renderer for Swing Scanner v13.53."""
 
 
 def render_help(ctx: dict) -> None:
     """Render the Help tab using objects supplied by the main runtime context."""
     st = ctx["st"]
 
-    st.markdown("## ❓ How to Use the Swing/Long Term Scanner v13.46")
+    st.markdown("## ❓ How to Use the Swing/Long Term Scanner v13.53")
     st.caption(
-        "Latest guide: fixed bucket-capped Bayesian scoring, Bayesian ensemble ranking, Trade Desk execution tools, optional Strategy Lab ML filter, "
-        "Yahoo/live + existing ticker universe, operator/smart-money activity, earnings/news "
-        "risk checks, Swing Picks, Long Term combined universe, Diagnostics scanned ticker list, "
-        "and compact searchable grids. Old simple ML and calibration tools have been removed; Strategy Lab adds optional LightGBM/sklearn quality filtering only when it beats the Bayesian baseline."
+        "Latest guide: v13.53 help refresh for the v13.52 live-market swing criteria, "
+        "v13.51 cloud diagnostics, fast earnings calendar, expanded US/SGX ticker universe, "
+        "Trade Desk execution tools, Swing Picks ranking, and readable modular tabs/core files."
     )
 
-    # ── VERSION SUMMARY ─────────────────────────────────────────────────────
-    with st.expander("🆕 What changed in the latest version", expanded=True):
+    with st.expander("🆕 What changed recently", expanded=True):
         st.markdown("""
-    ### Current engine
-    The scanner now uses a simpler and more stable ranking stack:
+### v13.53
+- Help tab updated for the latest app behavior.
+- Version labels updated to **v13.53**.
+- Guide now explains the latest Long / Short / Swing Picks / Trade Desk / Stock Analysis criteria.
 
-    ```text
-    Fixed Bayesian signal weights
-    + bucket-cap to reduce double-counting correlated signals
-    + operator / smart-money confirmation
-    + news and order/contract catalyst score
-    + sector strength
-    - earnings risk
-    - trap risk such as false breakout, gap chase, distribution
-    ```
+### v13.52 — better live-market swing criteria
+- Added **Swing signal mode** in the sidebar:
+  - **Strict** — A+ confirmed setups only.
+  - **Balanced** — practical live swing candidates; this is the default.
+  - **Discovery** — wider watchlist for quiet markets.
+- Long setup logic now recognises **Pullback**, **Breakout**, **Continuation**, **Operator Accumulation**, and **Early Trend** setups.
+- Short setup logic now recognises **Breakdown**, **Distribution**, **Rollover**, and **Early Downtrend** setups.
+- Swing Picks no longer requires news/event data to be present before a strong technical setup can rank well.
+- Stock Analysis thresholds now match the practical live-market scanner instead of being too strict.
+
+### v13.51 — Cloud diagnostics hardening
+- Scan/runtime errors are captured into Diagnostics instead of silently producing empty grids.
+- Errors are also logged to `scanner_cache/app_error_log.jsonl` where possible.
+- Diagnostics now shows scan debug summaries: tickers attempted, batch-loaded count, per-ticker errors, skipped history/liquidity/earnings, and empty-result reasons.
+
+### v13.49 / v13.50
+- Earnings Calendar became faster by avoiding full Yahoo `info` calls for every ticker.
+- SGX universe was expanded with names such as `E28.SI`.
         """)
 
-    # ── QUICK START ─────────────────────────────────────────────────────────
-    with st.expander("🚀 Quick Start — what to do first"):
+    with st.expander("🚀 Quick Start — best daily workflow"):
         st.markdown("""
-    1. Pick the market at the top: **US**, **SGX**, or **India**.
-    2. Turn on **Use live market universe** if you want Yahoo/live movers added to the existing list.
-    3. Keep **Always include tickers** for names you never want excluded, for example `UUUU, APP`.
-    4. Click **🚀 Scan**.
-    5. Start with **🎯 Swing Picks** for the final ranked shortlist.
-    6. Open **🔬 Stock Analysis** before entry to check support, resistance, stop, and chart context.
+1. Pick market: **US**, **SGX**, or **India**.
+2. Choose **Swing signal mode**:
+   - Start with **Balanced** for normal live trading.
+   - Use **Discovery** when markets are quiet and you want more watchlist ideas.
+   - Use **Strict** when you only want the strongest confirmed setups.
+3. Turn on **Use live market universe** when you want Yahoo/live movers added to existing tickers.
+4. Add must-scan names in **Always include tickers**, for example `UUUU, APP, NVDA`.
+5. Click **🚀 Scan**.
+6. Review tabs in this order:
 
-    For normal swing trading, use this flow:
+```text
+Sector Heatmap → Long Setups / Short Setups → Swing Picks → Trade Desk → Stock Analysis → Earnings / News check
+```
 
-    ```text
-    Sector Heatmap → Long Setups → Swing Picks → Stock Analysis → Earnings / News check → Entry decision
-    ```
+For actual entry, always confirm:
+
+```text
+Setup Type + VWAP + Operator Score + Trap Risk + Earnings Risk + Stop level
+```
         """)
 
-    # ── TAB GUIDE ───────────────────────────────────────────────────────────
-    with st.expander("🧭 Tab guide — latest tabs explained"):
+    with st.expander("🧭 Tab guide — what each tab is for"):
         st.markdown("""
-    | Tab | Use it for | Latest behavior |
-    |---|---|---|
-    | 🗂️ **Sector Heatmap** | Check strongest / weakest sectors first | US uses sector ETFs; SGX uses stock-group averages; India uses NSE sector indices |
-    | 📈 **Long Setups** | Bullish swing candidates | Uses fixed Bayesian bucket-capped probability + operator/VWAP/trap columns |
-    | 🎯 **Swing Picks** | Final actionable shortlist | Ranks Long Setups using Final Swing Score: Bayes + operator + news + sector - earnings/trap risk |
-    | 📉 **Short Setups** | Bearish / breakdown candidates | Best suited to US market; SGX/India shorting may be limited by broker/product access |
-    | 🪤 **Operator Activity** | Smart-money / manipulation footprint scan | Uses actual scanned universe; live mode includes Yahoo/live + existing tickers |
-    | 🔄 **Side by Side** | Compare long and short ideas | Useful for spotting conflict, sector concentration, or weak market breadth |
-    | 📊 **ETF Holdings** | Add ETF constituents to scan universe | Mainly useful for US ETFs and thematic/sector lists |
-    | 🔬 **Stock Analysis** | Deep dive for one ticker | Shows chart, indicators, support/stop/target style analysis |
-    | 📅 **Earnings** | Earnings date and earnings-risk review | Helps avoid fresh swing buys just before earnings |
-    | 📰 **Event Predictor** | News / event catalyst scan | Uses news headlines, sentiment, order/contract/catalyst keywords where available |
-    | 🌱 **Long Term** | 1–3 year stock/fund ideas | Uses existing tickers + ETF tickers + ETF holdings + Yahoo/live tickers |
-    | 🔍 **Diagnostics** | Debug and verify scan logic | Shows market, universe source, counts, comma-separated scanned ticker list, and latest UI logs |
-    | 🧪 **Accuracy Lab** | Backtest / validation notes | Quick walk-forward validation of signal behavior and swing-target logic |
-    | 📋 **Trade Desk** | Execution workflow | Buy/Sell trade plans, position sizing, breakout/pullback or breakdown quality, and market breadth risk mode |
-    | 🧠 **Strategy Lab** | Optional ML quality filter | Trains LightGBM/sklearn model on +6% before -4% target; use only if it beats baseline |
-    | ❓ **Help** | This guide | Updated for latest tabs and changes |
+| Tab | Use it for | Current behavior |
+|---|---|---|
+| 🗂️ **Sector Heatmap** | Market/sector direction first | US uses sector ETFs; SGX uses stock-group averages/fallback; India uses NSE indices |
+| 📋 **Trade Desk** | Execution planning | Buy/Sell selector, filters, trade plan, stop/target, risk sizing, setup quality, market breadth |
+| 📈 **Long Setups** | Bullish swing candidates | Practical setup detection: Pullback, Breakout, Continuation, Operator Accumulation, Early Trend |
+| 🎯 **Swing Picks** | Final actionable shortlist | Final Swing Score = Bayes + operator + setup type + sector/news - earnings/trap risk |
+| 📉 **Short Setups** | Bearish swing candidates | Breakdown, Distribution, Rollover, Early Downtrend; best suited to liquid US names |
+| 🪤 **Operator Activity** | Smart-money footprints | Uses scanned universe, not hard-coded symbols only |
+| 🔄 **Side by Side** | Compare longs vs shorts | Helps identify conflict and market breadth weakness |
+| 📊 **ETF Holdings** | Add ETF/theme constituents | Useful for US ETF/sector/thematic universe expansion |
+| 🔬 **Stock Analysis** | One-stock deep dive | Long/short scorecard, support/resistance, trend, volume, VWAP, trap risk |
+| 📅 **Earnings** | Earnings risk review | Faster scan; max-scan control; extra tickers scanned first |
+| 📰 **Event Predictor** | News/catalyst clues | Contract/order/upgrade/downgrade/legal/dilution keywords where available |
+| 🌱 **Long Term** | 1–3 year ideas | Separate long-term scoring; not a swing signal |
+| 🔍 **Diagnostics** | Debug Cloud/data issues | App errors, scan debug summary, cache status, ticker counts, scanned ticker list |
+| 🧪 **Accuracy Lab** | Signal validation | Backtest/validation notes for swing target logic |
+| 🧠 **Strategy Lab** | Optional ML research | ML is only a research/filter layer; Bayesian remains primary unless ML clearly beats it |
+| ❓ **Help** | This guide | Updated for v13.53 |
         """)
 
-    # ── UNIVERSE ────────────────────────────────────────────────────────────
-    with st.expander("🌍 Ticker universe — what gets scanned"):
+    with st.expander("🎚️ Swing signal mode — Strict vs Balanced vs Discovery"):
         st.markdown("""
-    ### Swing scan universe
-    When **Use live market universe** is OFF:
+Use this to control how many stocks appear in Long/Short/Swing Picks.
 
-    ```text
-    Existing curated tickers + extra tickers + always-include tickers
-    ```
+| Mode | Best for | Behavior |
+|---|---|---|
+| **Strict** | Strong markets or when you want fewer trades | Requires cleaner confirmation and stronger setup quality |
+| **Balanced** | Normal live swing trading | Shows practical actionable candidates without being too restrictive |
+| **Discovery** | Quiet/choppy markets | Shows more early/developing setups for watchlist building |
 
-    When **Use live market universe** is ON:
+Recommended default:
 
-    ```text
-    Yahoo/live tickers + current/index/live sources + existing curated tickers + extra tickers + always-include tickers
-    ```
+```text
+Balanced
+```
 
-    This means tickers already in your existing lists, such as **UUUU** and **APP**, should remain included even if Yahoo movers do not return them that day.
-
-    ### Max live stocks to scan
-    This is a **cap**, not a guaranteed number. If Yahoo/live sources return only 274 unique names, and existing list overlap reduces duplicates, the final count may be below 1000.
-
-    ### Long Term universe
-    The **🌱 Long Term** tab has its own combined universe:
-
-    ```text
-    Existing tickers + ETF tickers + ETF holdings + Yahoo/live tickers
-    ```
-
-    ### Diagnostics check
-    Use **🔍 Diagnostics** after a scan to confirm:
-    - total scanned count
-    - live ticker count
-    - existing ticker count
-    - universe source
-    - exact comma-separated ticker list
+Use **Discovery** if you are seeing too few good names, but do not buy blindly. Treat it as a watchlist mode.
         """)
 
-    # ── BAYESIAN ENGINE ─────────────────────────────────────────────────────
-    with st.expander("🧠 Scoring engine — Bayesian bucket-cap + ensemble ranking"):
+    with st.expander("📈 Long Setups — updated live-market criteria"):
         st.markdown("""
-    ### 1. Bayesian probability
-    The scanner uses fixed signal weights from the code. Examples:
-    - volume breakout
-    - volume surge up
-    - pocket pivot
-    - trend daily
-    - weekly trend
-    - OBV rising
-    - strong close
-    - VWAP support
-    - relative strength
-    - options signals where available
+Long Setups now tries to identify real swing patterns instead of only perfect textbook setups.
 
-    ### 2. Bucket-cap
-    Many signals overlap. For example:
+### Setup types
+| Setup Type | What it means |
+|---|---|
+| **Breakout** | Price breaking above recent range/high with volume confirmation |
+| **Pullback** | Uptrend stock pulling back near MA20/EMA21/VWAP support |
+| **Continuation** | Trend already strong and momentum continues without excessive trap risk |
+| **Operator Accumulation** | Smart-money style volume/close/VWAP/OBV accumulation footprint |
+| **Early Trend** | Recovering or newly improving trend before all classic signals align |
 
-    ```text
-    trend_daily + weekly_trend + full_ma_stack + near_52w_high
-    ```
+### Important bullish confirmations
+- Price above EMA8/EMA21 or reclaiming key moving averages.
+- Volume breakout, volume surge, or pocket pivot.
+- VWAP support.
+- OBV rising or strong close.
+- Relative strength vs SPY/sector.
+- No serious **FALSE BO**, **GAP CHASE**, or **DISTRIB** trap label.
 
-    All of these partly measure trend. Bucket-cap reduces double-counting by allowing the strongest signal in a bucket to count most, and later signals in the same bucket count less.
+### Best BUY candidates
+Prefer rows where:
 
-    ### 3. Final Swing Score
-    The **🎯 Swing Picks** tab does not rely only on Rise Prob. It ranks using:
-
-    ```text
-    Bayes Score
-    + Operator Score
-    + News Score
-    + Sector Score
-    - Earnings Risk
-    - Trap Risk Score
-    = Final Swing Score
-    ```
-
-    This is better for practical swing trading because a high-probability technical setup can still be bad if earnings are tomorrow, news is negative, or the move is a gap-chase trap.
+```text
+Entry Quality = ✅ BUY or 👀 WATCH
+Setup Type is clear
+Rise Prob is strong
+Operator Score is positive
+Trap Risk is blank/low
+Earnings are not very close
+```
         """)
 
-    # ── SWING PICKS ─────────────────────────────────────────────────────────
-    with st.expander("🎯 Swing Picks tab — how to read it"):
+    with st.expander("📉 Short Setups — updated live-market criteria"):
         st.markdown("""
-    The **Swing Picks** tab is the main shortlist tab.
+Short setups are best for liquid US names. For SGX/India, check whether your broker/product supports shorting.
 
-    It starts from the latest **Long Setups** scan and enriches each ticker with:
-    - **Bayes Score** — technical probability score
-    - **Operator Score** — smart-money / accumulation footprint
-    - **News Score** — recent catalyst/headline strength
-    - **Sector Score** — sector tailwind
-    - **Earnings Risk** — penalty for nearby earnings or event risk
-    - **Trap Risk Score** — penalty for false breakout, gap chase, or distribution risk
-    - **Final Swing Score** — final ranking score
+### Setup types
+| Setup Type | What it means |
+|---|---|
+| **Breakdown** | Price breaks support/recent low with volume |
+| **Distribution** | High volume but weak close / failed breakout / seller control |
+| **Rollover** | Uptrend losing momentum and rolling below short averages/VWAP |
+| **Early Downtrend** | Trend structure turning bearish before full confirmation |
 
-    ### Verdicts
-    | Verdict | Meaning |
-    |---|---|
-    | ✅ **BUY / WATCH ENTRY** | Strong setup, but still wait for good entry and risk/reward |
-    | 👀 **WATCH** | Good candidate but needs confirmation or pullback |
-    | ⏳ **WAIT** | Mixed setup, earnings risk, or not enough confirmation |
-    | 🚫 **AVOID** | Weak setup, trap risk, or event risk too high |
+### Important bearish confirmations
+- Price below EMA8/EMA21 or below VWAP.
+- High-volume down day.
+- MACD deceleration or bearish cross.
+- Lower highs or 10-day breakdown.
+- Operator distribution.
 
-    ### Best use
-    Do not blindly buy the top row. Prefer:
+### Best SELL/SHORT candidates
+Prefer rows where:
 
-    ```text
-    High Final Swing Score
-    + operator accumulation
-    + no false breakout / gap chase
-    + earnings not too close
-    + clear stop below support
-    ```
+```text
+Entry Quality = ✅ SELL / SHORT or 👀 WATCH
+Fall Prob is strong
+Price below VWAP
+Distribution or Breakdown setup type
+Cover stop is clear
+```
         """)
 
-    # ── OPERATOR ────────────────────────────────────────────────────────────
+    with st.expander("🎯 Swing Picks — how final ranking works"):
+        st.markdown("""
+Swing Picks is the main shortlist for bullish swing trades.
+
+Final ranking uses:
+
+```text
+Bayesian technical score
++ Operator / smart-money score
++ Setup Type bonus
++ Sector strength
++ News/catalyst score when available
+- Earnings risk
+- Trap risk
+= Final Swing Score
+```
+
+### Important v13.52 change
+News/event data is now **optional**, not mandatory. A stock with strong technicals, operator confirmation, and no trap risk can still rank well even when news data is missing.
+
+### How to use Swing Picks
+Use Swing Picks to decide **what deserves further review**, then use Stock Analysis and Trade Desk to decide **how to trade it**.
+
+Best rows usually have:
+
+```text
+Final Swing Score high
++ BUY/WATCH verdict
++ clear Setup Type
++ operator accumulation
++ no nearby earnings
++ no trap risk
+```
+        """)
+
+    with st.expander("📋 Trade Desk — execution layer"):
+        st.markdown("""
+Trade Desk is for execution, not discovery.
+
+### BUY mode
+Uses Long/Swing data and sorts the best BUY/WATCH plans to the top.
+
+### SELL mode
+Uses Short Setups and sorts best SELL/SHORT plans to the top.
+
+### Filters at top
+- Buy/Sell side.
+- Minimum probability.
+- Entry filter.
+- Trap filter.
+- Ticker search.
+
+### Trade plan columns
+- Entry zone.
+- Stop.
+- Target / cover target.
+- Reward:risk.
+- Suggested quantity.
+- Max loss.
+- Invalidation reason.
+
+Use Trade Desk to answer:
+
+```text
+Where do I enter?
+Where is the stop?
+What is the target?
+How much should I buy/sell?
+When is the setup invalid?
+```
+        """)
+
+    with st.expander("🔬 Stock Analysis — final check before entry"):
+        st.markdown("""
+Stock Analysis is the final single-ticker review.
+
+Use it for:
+- Long/short scorecard.
+- Support/resistance.
+- VWAP/trend confirmation.
+- Volume breakout or pocket pivot.
+- Trap risk review.
+- Earnings/news risk check.
+
+The Stock Analysis scorecard now aligns with the practical v13.52 live-market criteria. It should not be much stricter than the Long/Short tabs.
+
+Before taking a trade, check:
+
+```text
+Does the setup type match the chart?
+Is the stop logical?
+Is reward:risk at least acceptable?
+Is earnings risk manageable?
+Is the market/sector supporting the trade?
+```
+        """)
+
     with st.expander("🪤 Operator / smart-money activity"):
         st.markdown("""
-    Operator activity is a confirmation layer, not a standalone buy signal.
+Operator activity is a confirmation layer, not a standalone buy signal.
 
-    The scanner looks for footprints such as:
-    - high volume with green candle
-    - strong close near day high
-    - OBV rising
-    - price holding above VWAP
-    - breakout with volume
-    - absorption: red/high-volume day but price closes off lows
+The scanner looks for:
+- high volume with green candle
+- strong close near day high
+- OBV rising
+- price holding above VWAP
+- breakout with volume
+- absorption / accumulation footprints
+- high-volume weak close or failed breakout for distribution
 
-    ### Operator labels
-    | Label | Meaning |
-    |---|---|
-    | 🔥 **STRONG OPERATOR** | Strong accumulation footprint |
-    | 🟢 **ACCUMULATION** | Good smart-money signs |
-    | 🟡 **WEAK SIGNS** | Some signs but not enough |
-    | ⚪ **NONE** | No clear operator activity |
+### Labels
+| Label | Meaning |
+|---|---|
+| 🔥 **STRONG OPERATOR** | Strong accumulation footprint |
+| 🟢 **ACCUMULATION** | Good smart-money signs |
+| 🟡 **WEAK SIGNS** | Some signs but not enough |
+| ⚪ **NONE** | No clear operator activity |
+| 🔴 **DISTRIBUTION** | Seller/operator distribution warning |
 
-    ### Trap labels
-    | Trap | Meaning |
-    |---|---|
-    | **FALSE BO** | Breakout attempt with weak close |
-    | **GAP CHASE** | Big move with high volume; avoid chasing |
-    | **DISTRIB** | High volume but poor price progress / weak close |
+Do not buy only because of operator score. Combine it with trend, entry quality, VWAP, and trap risk.
         """)
 
-    # ── EARNINGS / NEWS ─────────────────────────────────────────────────────
+    with st.expander("🌍 Universe and tickers"):
+        st.markdown("""
+### Existing + live universe
+When live universe is ON, the app combines:
+
+```text
+Yahoo/live movers + index/current sources + existing curated tickers + extra tickers + always-include tickers
+```
+
+When live universe is OFF:
+
+```text
+Existing curated tickers + extra tickers + always-include tickers
+```
+
+### Expanded ticker universe
+Recent builds added more high-beta / swing-friendly names, including:
+- SGX additions such as `E28.SI`.
+- More US AI, semis, nuclear/uranium, quantum, crypto, photonics, biotech, and high-beta ETFs when added to config.
+
+### Max live stocks
+This is a cap, not a guaranteed count. If Yahoo only returns fewer unique names, the final count may be below your selected max.
+
+### Diagnostics check
+After scan, open Diagnostics to verify:
+- total scanned count
+- live/existing ticker count
+- exact scanned ticker list
+- ticker errors
+- skipped history/liquidity counts
+        """)
+
     with st.expander("📅 Earnings and 📰 News / Event filters"):
         st.markdown("""
-    ### Earnings guard
-    The scanner avoids treating a stock as a normal swing buy when earnings are very close. Earnings can create overnight gaps that ignore technical stops.
+### Earnings guard
+Earnings can gap through stops. Treat nearby earnings as event risk.
 
-    General rule:
+General rule:
 
-    ```text
-    If earnings are within the next 7 days → reduce size, wait, or treat as event trade only
-    ```
+```text
+Earnings within 7 days → reduce size, wait, or treat only as event trade
+```
 
-    ### News / event scoring
-    News and event features look for positive or negative catalyst clues such as:
-    - earnings beat / guidance raise
-    - contracts / orders / partnerships
-    - analyst upgrades / downgrades
-    - regulatory or legal risks
-    - offering / dilution / investigation headlines
+### Faster earnings calendar
+The Earnings tab now avoids heavy full-market Yahoo `info` calls. It checks earnings dates first, loads heavier details only when needed, and lets you control max scan count.
 
-    News score improves ranking only when it supports the technical setup. Negative or risky news should reduce confidence.
+### News/event scoring
+News/event score looks for clues such as:
+- earnings beat / guidance raise
+- contracts / orders / partnerships
+- analyst upgrades / downgrades
+- legal/regulatory risk
+- offering/dilution/investigation headlines
+
+News helps ranking only when it supports the technical setup. Missing news should not automatically kill a strong technical setup.
         """)
 
-    # ── LONG / SHORT LOGIC ──────────────────────────────────────────────────
-    with st.expander("📈 Long Setups and 📉 Short Setups — signal logic"):
+    with st.expander("🔍 Diagnostics — when Cloud shows no stocks"):
         st.markdown("""
-    ### Long Setups
-    Important long signals include:
-    - price > EMA8 > EMA21
-    - weekly trend confirmation
-    - volume breakout near 10-day high
-    - pocket pivot / volume surge up
-    - MACD acceleration
-    - Stoch RSI confirmation
-    - OBV rising
-    - strong close
-    - VWAP support
-    - VCP tightness
-    - relative strength vs SPY / sector
+If deployed Cloud app shows no stocks, open:
 
-    ### Short Setups
-    Important short signals include:
-    - price < EMA8 < EMA21
-    - high-volume down candle
-    - 10-day breakdown
-    - lower highs
-    - MACD deceleration / bearish cross
-    - below VWAP
-    - operator distribution
-    - MA60 stop break
+```text
+🔍 Diagnostics → App errors / Cloud diagnostics
+```
 
-    ### Entry quality
-    Use **BUY / WATCH / WAIT / AVOID** as a filter, not a command. Always confirm support, resistance, market regime, and stop level.
+Diagnostics should show:
+- app/runtime errors
+- scan errors
+- Yahoo download failures
+- ticker error samples
+- tickers attempted
+- batch loaded count
+- skipped history/liquidity/earnings
+- long/short/operator rows produced
+- empty-result reason
+- cache folder and last cache time
+
+Errors are also written to:
+
+```text
+scanner_cache/app_error_log.jsonl
+```
+
+Use this instead of guessing why grids are empty.
         """)
 
-    # ── LONG TERM ───────────────────────────────────────────────────────────
-    with st.expander("🌱 Long Term tab — latest behavior"):
+    with st.expander("🧠 Scoring engine — Bayesian bucket-cap"):
         st.markdown("""
-    The Long Term tab is separate from swing trading. It is designed for 1–3 year ideas and portfolio building.
+The core technical score is still Bayesian with fixed weights.
 
-    ### Current Long Term universe
-    ```text
-    Existing tickers + ETF tickers + ETF holdings + Yahoo/live tickers
-    ```
+It uses signals such as:
+- volume breakout
+- volume surge
+- pocket pivot
+- trend daily
+- weekly trend
+- OBV rising
+- strong close
+- VWAP support
+- relative strength
+- options signals where available
 
-    ### Sub-tabs
-    | Sub-tab | Use it for |
-    |---|---|
-    | 🇺🇸 **US Stocks** | Long-term US stock candidates from combined universe |
-    | 🇸🇬 **SG Stocks** | Singapore long-term stock candidates |
-    | 🇸🇬 **SG Funds & ETFs** | Singapore-friendly fund / ETF options |
-    | 🇺🇸 **US Funds & ETFs** | US-listed ETFs/funds with tax-risk warning |
+### Bucket-cap
+Overlapping signals are grouped so they do not double-count too much.
 
-    ### Long-term score considers
-    - revenue growth
-    - EPS growth
-    - ROE / margins
-    - debt level
-    - dividend yield
-    - MA200 trend
-    - analyst target upside
-    - analyst recommendation
+Example overlapping trend signals:
 
-    The **Exp 1Y Return** is an estimate, not a guarantee. Dividend values are normalised/capped to avoid unrealistic yfinance dividend anomalies.
+```text
+trend_daily + weekly_trend + full_ma_stack + near_52w_high
+```
+
+Bucket-cap lets the strongest signal in a bucket count most, and later signals in the same bucket count less.
         """)
 
-    # ── ACCURACY LAB ────────────────────────────────────────────────────────
-    with st.expander("🧪 Accuracy Lab — current role"):
+    with st.expander("🧪 Accuracy Lab and 🧠 Strategy Lab"):
         st.markdown("""
-    The old ML and signal calibration controls have been removed.
+### Accuracy Lab
+Preferred swing target:
 
-    The preferred validation idea is now the practical swing target:
+```text
+Winner = price hits +6% before -4% stop within 10 trading days
+Loser  = -4% stop hits first, or +6% is never reached
+```
 
-    ```text
-    Winner = price hits +6% before hitting -4% stop within 10 trading days
-    Loser  = -4% stop hits first, or +6% is never reached
-    ```
+### Strategy Lab
+ML is optional and should not replace the Bayesian ensemble unless it clearly beats it.
 
-    This is more useful than simply asking whether the close is higher after N days.
+Use ML only if:
 
-    For daily use, rely on:
+```text
+AUC Edge >= +0.02
+and Top 10% ML win rate > Top 10% Bayesian win rate
+```
 
-    ```text
-    Fixed Bayesian weights + bucket-cap + Final Swing Score
-    ```
+If ML does not clearly beat Bayesian, keep Bayesian primary.
         """)
 
-    # ── COLUMNS ─────────────────────────────────────────────────────────────
     with st.expander("🔎 Important columns explained"):
         st.markdown("""
-    | Column | Meaning |
-    |---|---|
-    | **Rise Prob / Fall Prob** | Bucket-capped Bayesian probability from active signals |
-    | **Score** | Count of active long/short signals |
-    | **Bayes Score** | Probability converted into ranking contribution |
-    | **Final Swing Score** | Ensemble score used in Swing Picks ranking |
-    | **Operator** | Operator/smart-money label |
-    | **Op Score / Operator Score** | Numeric smart-money accumulation score |
-    | **VWAP** | Whether price is above/below VWAP confirmation |
-    | **Trap Risk** | FALSE BO, GAP CHASE, DISTRIB, or none |
-    | **Trap Risk Score** | Penalty used in Final Swing Score |
-    | **News Score** | Catalyst/news contribution |
-    | **Sector Score** | Sector tailwind contribution |
-    | **Earnings Risk** | Penalty for upcoming earnings/event risk |
-    | **MA60 Stop** | Trend stop area around 60-day moving average |
-    | **TP1 / TP2 / TP3** | Example upside targets; not guaranteed |
-    | **Sources** | Long Term source: Existing, ETF, ETF holding, Yahoo/live, etc. |
+| Column | Meaning |
+|---|---|
+| **Setup Type** | Breakout, Pullback, Continuation, Operator Accumulation, Early Trend, Breakdown, Distribution, etc. |
+| **Rise Prob / Fall Prob** | Bucket-capped Bayesian probability |
+| **Entry Quality** | BUY / WATCH / WAIT / AVOID or SELL/SHORT equivalents |
+| **Score** | Count/strength of active setup signals |
+| **Final Swing Score** | Main Swing Picks ranking score |
+| **Operator / Op Score** | Smart-money/accumulation or distribution footprint |
+| **VWAP** | Buyer/seller control confirmation |
+| **Trap Risk** | FALSE BO, GAP CHASE, DISTRIB, or none |
+| **News Score** | Catalyst/news contribution when available |
+| **Sector Score** | Sector tailwind contribution |
+| **Earnings Risk** | Penalty for nearby earnings/event risk |
+| **MA60 Stop / Cover Stop** | Suggested invalidation/stop area |
+| **TP1 / TP2 / TP3** | Example targets; not guaranteed |
         """)
 
-    # ── PRACTICAL RULES ─────────────────────────────────────────────────────
     with st.expander("✅ Practical trading rules"):
         st.markdown("""
-    For cleaner swing trades, prefer:
+Prefer long trades with:
 
-    ```text
-    Final Swing Score high
-    + Rise Prob high
-    + Operator Score >= 4
-    + price above VWAP
-    + no Trap Risk
-    + earnings not within 7 days
-    + strong sector
-    ```
+```text
+Clear Setup Type
++ BUY/WATCH Entry Quality
++ strong Rise Prob
++ operator accumulation or VWAP support
++ no major Trap Risk
++ earnings not too close
++ acceptable reward:risk
+```
 
-    Avoid or reduce size when:
+Prefer short trades with:
 
-    ```text
-    Gap chase
-    False breakout
-    Distribution label
-    Earnings very close
-    Very wide spread / low liquidity
-    Market regime is BEAR or VIX is high
-    ```
+```text
+Breakdown/Distribution/Rollover setup
++ strong Fall Prob
++ below VWAP
++ clear cover stop
++ weak sector/market breadth
+```
 
-    Suggested risk framework:
-    - Risk small per trade.
-    - Put stop below support or MA60 stop area.
-    - Do not average down blindly.
-    - Take partial profit near TP1 if move is fast.
-    - For SGX names, use limit orders due to wider spreads.
+Avoid or reduce size when:
+
+```text
+Gap chase
+False breakout
+Distribution warning on a long
+Earnings very close
+Very wide spread / low liquidity
+Market regime is BEAR or VIX is high
+```
+
+Risk framework:
+- Risk small per trade.
+- Place stops where the setup is invalidated, not randomly.
+- Do not average down blindly.
+- Take partial profit if move is fast into TP1.
+- For SGX names, prefer limit orders because spreads can be wide.
         """)
 
-    # ── INSTALL ─────────────────────────────────────────────────────────────
     with st.expander("🔧 Install & run"):
         st.markdown("""
-    ```bash
-    pip install streamlit yfinance pandas numpy ta financedatabase plotly nsepython requests
-    python -m streamlit run swing_trader_sector_wise_yfin_simple.py
-    ```
+```bash
+pip install -r requirements.txt
+streamlit run main.py
+```
 
-    If data fetch fails:
+If data fetch fails:
 
-    ```bash
-    pip install --upgrade yfinance nsepython requests
-    streamlit cache clear
-    ```
+```bash
+pip install --upgrade yfinance nsepython requests streamlit-autorefresh
+streamlit cache clear
+```
 
-    Main packages:
-    - `streamlit` — app UI
-    - `yfinance` — prices, fundamentals, earnings, options where available
-    - `pandas`, `numpy` — data processing
-    - `ta` — technical indicators
-    - `financedatabase` — optional ETF/sector data
-    - `nsepython` — optional India F&O option chains
-    - `requests` — Yahoo/live universe and web data helpers
-    - `plotly` — charts where used
+Main packages:
+- `streamlit`
+- `yfinance`
+- `pandas`, `numpy`
+- `ta`
+- `financedatabase`
+- `nsepython`
+- `requests`
+- `plotly` where used
+- `streamlit-autorefresh` for non-destructive refresh
         """)
 
-    # ── GLOSSARY ────────────────────────────────────────────────────────────
-    with st.expander("📖 Glossary"):
-        st.markdown("""
-    | Term | Meaning |
-    |---|---|
-    | **EMA8 / EMA21** | Short-term exponential moving averages |
-    | **MA50 / MA200** | Medium/long-term moving averages |
-    | **Golden Cross** | EMA50 crossing above EMA200 |
-    | **RSI** | Momentum oscillator; >70 overbought, <30 oversold |
-    | **Stoch RSI** | Faster RSI-based momentum signal |
-    | **MACD** | Momentum/trend indicator; histogram shows acceleration/deceleration |
-    | **Bollinger Squeeze** | Volatility compression before possible expansion |
-    | **ATR** | Average True Range; used for volatility and stops |
-    | **OBV** | On-Balance Volume; accumulation/distribution clue |
-    | **VWAP** | Volume-weighted average price; intraday/institutional control clue |
-    | **VCP** | Volatility contraction pattern |
-    | **RS>SPY** | Stock outperforming SPY over recent days |
-    | **Bucket-cap** | Reduces double-counting of overlapping signals |
-    | **Operator Score** | Smart-money/accumulation footprint score |
-    | **Trap Risk** | Warning for false breakout, gap chase, or distribution |
-    | **Final Swing Score** | Ensemble ranking score in Swing Picks |
-    | **MA60 Stop** | Trend stop around the 60-day moving average |
-    | **Exp 1Y Return** | Estimated price return plus estimated dividend return |
-        """)
-
-    # ── RISK WARNINGS ───────────────────────────────────────────────────────
-    with st.expander("⚠️ Risk warnings — read before trading"):
+    with st.expander("⚠️ Risk warnings"):
         st.warning("""
-    This tool does not provide financial advice. All outputs are estimates and signals only.
+This tool does not provide financial advice. All outputs are estimates and signals only.
 
-    1. Probability is not certainty. A 75% probability can still fail.
-    2. Earnings risk is high. Stocks can gap sharply overnight.
-    3. News can change quickly. Always check latest headlines before entry.
-    4. SGX liquidity is lower. Use limit orders; spreads can be wide.
-    5. Short selling risk is high. Losses can exceed initial capital if unmanaged.
-    6. Sector concentration matters. Many picks from one sector can fail together.
-    7. Currency risk matters for USD, SGD, INR, JPY, GBP, and EUR assets.
-    8. Model assumptions can be wrong. Always check support/resistance and risk tolerance.
+1. Probability is not certainty.
+2. Earnings and news can create overnight gaps.
+3. SGX liquidity is lower; use limit orders.
+4. Short selling risk can exceed initial capital if unmanaged.
+5. Sector concentration can make many trades fail together.
+6. Model assumptions can be wrong; always check chart, stop, and position size.
         """)
 
     st.markdown("---")
-    st.caption("Swing/Long Term Scanner v13.12 · Fixed Bayesian bucket-cap + ensemble ranking · US + SGX + India · Not financial advice · Created by Ripin")
+    st.caption("Swing/Long Term Scanner v13.53 · Practical live-market swing criteria · Cloud diagnostics · US + SGX + India · Not financial advice · Created by Ripin")

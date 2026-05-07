@@ -1,17 +1,27 @@
-# Swing Scanner exact split v13.46
+# Swing Scanner v13.53
 
-This build keeps the original working behavior but moves each Streamlit tab body into `swing_trader_app/tabs/*.py`.
+Modular Streamlit build for the Swing/Long Term Scanner.
 
-Run:
+## Latest changes in v13.53
+
+- Updated Help tab to match the latest live-market swing trading behavior.
+- Documents the new **Swing signal mode**: Strict / Balanced / Discovery.
+- Documents improved Long, Short, Swing Picks, Trade Desk, and Stock Analysis criteria.
+- Documents Cloud diagnostics and scan debug logging.
+- Keeps the v13.52 practical swing criteria and v13.51 diagnostics hardening.
+
+## Run
 
 ```bash
 pip install -r requirements.txt
-streamlit run swing_trader_sector_wise_yfin_simple.py
+streamlit run main.py
 ```
 
-The small launcher uses `runpy.run_path()` so Streamlit reruns execute like the original single-file app.
+The small launcher uses `runpy.run_path()` so Streamlit reruns execute close to the original single-file app.
 
+## Structure
 
-## v13.48 core split
-
-Large helper/function blocks have been moved from `app_runtime.py` into `swing_trader_app/core_runtime/` and are loaded by `app_runtime.py` at startup. Tab files remain under `swing_trader_app/tabs/`.
+- `main.py` — small Streamlit launcher
+- `swing_trader_app/app_runtime.py` — UI orchestration and sidebar
+- `swing_trader_app/tabs/` — readable tab renderers
+- `swing_trader_app/core_runtime/` — scanner, signal, cache, market-data, strategy, and trade-desk helpers
