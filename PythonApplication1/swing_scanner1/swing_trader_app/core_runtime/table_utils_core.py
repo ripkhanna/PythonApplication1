@@ -145,7 +145,7 @@ def show_table(df, label, prob_col="Rise Prob"):
     # ── Column selection ──────────────────────────────────────────────────────
     if prob_col == "Rise Prob":
         display_cols = [c for c in [
-            "Ticker", "Entry Quality", "Today %", "Rise Prob", 
+            "Ticker", "Entry Quality", "Setup Type", "Today %", "Rise Prob", 
             "Operator", "VWAP", "Trap Risk",
             "Price", "MA60 Stop", "TP1 +10%", "TP2 +15%", "TP3 +20%",
             "Sector", "Action",
@@ -153,7 +153,7 @@ def show_table(df, label, prob_col="Rise Prob"):
         ] if c in df.columns]
     else:
         display_cols = [c for c in [
-            "Ticker", "Entry Quality", "Today %", "Fall Prob", 
+            "Ticker", "Entry Quality", "Setup Type", "Today %", "Fall Prob", 
             "Operator", "VWAP", "Trap Risk",
             "Price", "Cover Stop", "Target 1:1", "Target 1:2",
             "Sector", "Action",
@@ -166,6 +166,7 @@ def show_table(df, label, prob_col="Rise Prob"):
     col_cfg = {
         "Ticker":        st.column_config.TextColumn("Ticker",        width=60),
         "Entry Quality": st.column_config.TextColumn("Entry",         width=70),
+        "Setup Type":    st.column_config.TextColumn("Setup",         width=90),
         "Today %":       st.column_config.TextColumn("Today%",        width=58),
         "Rise Prob":     st.column_config.TextColumn("Rise%",         width=55),
         "Fall Prob":     st.column_config.TextColumn("Fall%",         width=55),

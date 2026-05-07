@@ -29,27 +29,30 @@ def render_long(ctx: dict) -> None:
     if df_long.empty:
         st.info("Run the scan to see long setups.")
     else:
-        strong_l  = df_long[df_long["Action"] == "STRONG BUY"]
-        watch_hql = df_long[df_long["Action"] == "WATCH – HIGH QUALITY"]
+        entry_s = df_long.get("Entry Quality", pd.Series([""] * len(df_long))).astype(str)
+        action_s = df_long.get("Action", pd.Series([""] * len(df_long))).astype(str)
+        actionable_l = df_long[(entry_s.str.contains("✅", na=False)) | (action_s == "STRONG BUY")]
+        watch_hql = df_long[(action_s == "WATCH – HIGH QUALITY") & (~df_long.index.isin(actionable_l.index))]
         watch_dvl = df_long[df_long["Action"] == "WATCH – DEVELOPING"]
+        watch_early = df_long[df_long["Action"] == "WATCH – EARLY"]
 
         st.caption(
-            f"🔥 **{len(strong_l)}** Strong Buy · "
+            f"✅ **{len(actionable_l)}** Actionable Buy · "
             f"👀 **{len(watch_hql)}** High Quality · "
             f"📋 **{len(watch_dvl)}** Developing · "
+            f"🌱 **{len(watch_early)}** Early · "
             f"🗂️ **{df_long['Sector'].nunique()}** Sectors · "
             f"Top: **{df_long['Rise Prob'].iloc[0]}**"
         )
 
-        # sec_cnt = df_long.groupby("Sector").size().reset_index(name="Setups")
-        # st.dataframe(sec_cnt, width="stretch", hide_index=True)
-
-        st.caption("🔥 Strong Buy")
-        show_table(strong_l, "strong buy", "Rise Prob")
-        st.caption("👀 High Quality")
+        st.caption("✅ Actionable Buy / Best Setups")
+        show_table(actionable_l, "actionable buy", "Rise Prob")
+        st.caption("👀 High Quality Watch")
         show_table(watch_hql, "high quality", "Rise Prob")
         st.caption("📋 Developing")
         show_table(watch_dvl, "developing", "Rise Prob")
+        with st.expander(f"🌱 Early watchlist ({len(watch_early)})", expanded=False):
+            show_table(watch_early, "early long", "Rise Prob")
 
 def render_short(ctx: dict) -> None:
     _bind_runtime(ctx)
@@ -72,27 +75,30 @@ def render_short(ctx: dict) -> None:
     if df_short.empty:
         st.info("Run the scan to see short setups.")
     else:
-        strong_s  = df_short[df_short["Action"] == "STRONG SHORT"]
-        watch_hqs = df_short[df_short["Action"] == "WATCH SHORT – HIGH QUALITY"]
+        entry_s = df_short.get("Entry Quality", pd.Series([""] * len(df_short))).astype(str)
+        action_s = df_short.get("Action", pd.Series([""] * len(df_short))).astype(str)
+        actionable_s = df_short[(entry_s.str.contains("✅", na=False)) | (action_s == "STRONG SHORT")]
+        watch_hqs = df_short[(action_s == "WATCH SHORT – HIGH QUALITY") & (~df_short.index.isin(actionable_s.index))]
         watch_dvs = df_short[df_short["Action"] == "WATCH SHORT – DEVELOPING"]
+        watch_early = df_short[df_short["Action"] == "WATCH SHORT – EARLY"]
 
         st.caption(
-            f"🔥 **{len(strong_s)}** Strong Short · "
+            f"✅ **{len(actionable_s)}** Actionable Sell · "
             f"👀 **{len(watch_hqs)}** High Quality · "
             f"📋 **{len(watch_dvs)}** Developing · "
+            f"🌱 **{len(watch_early)}** Early · "
             f"🗂️ **{df_short['Sector'].nunique()}** Sectors · "
             f"Top: **{df_short['Fall Prob'].iloc[0]}**"
         )
 
-        # sec_cnt = df_short.groupby("Sector").size().reset_index(name="Setups")
-        # st.dataframe(sec_cnt, width="stretch", hide_index=True)
-
-        st.caption("🔥 Strong Short")
-        show_table(strong_s, "strong short", "Fall Prob")
-        st.caption("👀 High Quality")
+        st.caption("✅ Actionable Sell / Best Shorts")
+        show_table(actionable_s, "actionable short", "Fall Prob")
+        st.caption("👀 High Quality Watch")
         show_table(watch_hqs, "hq short", "Fall Prob")
         st.caption("📋 Developing")
         show_table(watch_dvs, "developing short", "Fall Prob")
+        with st.expander(f"🌱 Early short watchlist ({len(watch_early)})", expanded=False):
+            show_table(watch_early, "early short", "Fall Prob")
 
         with st.expander("📖 How to read the short table"):
             st.markdown("""
@@ -117,14 +123,16 @@ def render_both(ctx: dict) -> None:
         col_l, col_r = st.columns(2)
         with col_l:
             st.caption("📈 Top Longs")
-            top_l = df_long[df_long["Action"] == "STRONG BUY"][
-                ["Ticker","Sector","Entry Quality","Rise Prob","Score","Price","MA60 Stop","TP1 +10%","TP3 +20%"]
+            _entry_l = df_long.get("Entry Quality", pd.Series([""] * len(df_long))).astype(str) if not df_long.empty else pd.Series(dtype=str)
+            top_l = df_long[((df_long["Action"] == "STRONG BUY") | _entry_l.str.contains("✅", na=False))][
+                [c for c in ["Ticker","Sector","Setup Type","Entry Quality","Rise Prob","Score","Price","MA60 Stop","TP1 +10%","TP3 +20%"] if c in df_long.columns]
             ] if not df_long.empty else pd.DataFrame()
             show_table(top_l, "long", "Rise Prob")
         with col_r:
             st.caption("📉 Top Shorts")
-            top_s = df_short[df_short["Action"] == "STRONG SHORT"][
-                ["Ticker","Sector","Fall Prob","Score","Price","Cover Stop","Target 1:2"]
+            _entry_s = df_short.get("Entry Quality", pd.Series([""] * len(df_short))).astype(str) if not df_short.empty else pd.Series(dtype=str)
+            top_s = df_short[((df_short["Action"] == "STRONG SHORT") | _entry_s.str.contains("✅", na=False))][
+                [c for c in ["Ticker","Sector","Setup Type","Entry Quality","Fall Prob","Score","Price","Cover Stop","Target 1:2"] if c in df_short.columns]
             ] if not df_short.empty else pd.DataFrame()
             show_table(top_s, "short", "Fall Prob")
 

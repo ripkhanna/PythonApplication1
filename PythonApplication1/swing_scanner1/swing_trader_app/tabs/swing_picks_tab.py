@@ -61,7 +61,7 @@ def render_swing_picks(ctx: dict) -> None:
             display_cols = [c for c in [
                 "Ticker", "Swing Verdict",
                 "Final Swing Score", "Bayes Score", "Operator Score", "News Score", "Sector Score", "Earnings Risk",
-                "Trap Risk Score", "Entry Quality", "Rise Prob", "Action",
+                "Trap Risk Score", "Setup Type", "Entry Quality", "Rise Prob", "Action",
                 "Operator", "Op Score", "VWAP", "Trap Risk", "Today %", "Price",
                 "Sector", "Earnings", "Days Out", "EPS Trend", "News", "Orders",
                 "Event Score", "Event Verdict", "Why", "Top News",

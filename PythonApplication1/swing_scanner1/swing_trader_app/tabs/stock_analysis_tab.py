@@ -142,10 +142,12 @@ def render_stock_analysis(ctx: dict) -> None:
 
                         # Long action — base tier
                         l_bonus_sa = (0.06 if rv_sa["bb_very_tight"] else 0) + (0.05 if rv_sa["vr"] >= 2.5 else 0)
-                        l_top3_sa  = long_sig_sa["stoch_confirmed"] or long_sig_sa["bb_bull_squeeze"] or long_sig_sa["macd_accel"]
+                        l_top3_sa  = (long_sig_sa["stoch_confirmed"] or long_sig_sa["bb_bull_squeeze"] or
+                                      long_sig_sa["macd_accel"] or long_sig_sa.get("vol_breakout", False) or
+                                      long_sig_sa.get("pocket_pivot", False))
                         regime_cur = get_market_regime()["regime"]
-                        min_score_l = 6 if regime_cur == "BULL" else 7
-                        min_prob_l  = 0.72 if regime_cur == "BULL" else 0.78
+                        min_score_l = 5 if regime_cur == "BULL" else 6
+                        min_prob_l  = 0.68 if regime_cur == "BULL" else 0.72
                         if l_score_sa >= min_score_l and l_prob_sa >= min_prob_l and l_top3_sa:
                             l_rec_base = "🔥 STRONG BUY"
                             l_col_base = "success"
@@ -204,8 +206,8 @@ def render_stock_analysis(ctx: dict) -> None:
                             icon = "✅" if sig_val else "❌"
                             st.markdown(f"{icon} {sig_name}")
 
-                        min_score_s = 5 if regime_cur in ("BEAR","CAUTION") else 6
-                        min_prob_s  = 0.68 if regime_cur in ("BEAR","CAUTION") else 0.72
+                        min_score_s = 4 if regime_cur in ("BEAR","CAUTION") else 5
+                        min_prob_s  = 0.64 if regime_cur in ("BEAR","CAUTION") else 0.68
                         s_top3_sa   = short_sig_sa["stoch_overbought"] or short_sig_sa["bb_bear_squeeze"] or short_sig_sa["macd_decel"]
                         if s_score_sa >= min_score_s and s_prob_sa >= min_prob_s and s_top3_sa:
                             s_rec_base = "🔥 STRONG SHORT"

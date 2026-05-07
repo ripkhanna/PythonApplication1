@@ -321,6 +321,7 @@ _SIDEBAR_DEFAULTS = {
     "ui_top_n_sectors":       3,
     "ui_min_prob_long":       62,
     "ui_min_prob_short":      60,
+    "ui_swing_mode":          "Balanced",
     "ui_skip_earnings":       False,
     "ui_use_live_universe":   True,
     "ui_max_live_universe":   1000,
@@ -426,6 +427,16 @@ min_prob_long  = st.sidebar.slider(
 min_prob_short = st.sidebar.slider(
     "Min SHORT fall prob (%)", 40, 95, key="ui_min_prob_short",
 )
+swing_mode = st.sidebar.selectbox(
+    "Swing signal mode",
+    ["Strict", "Balanced", "Discovery"],
+    key="ui_swing_mode",
+    help=(
+        "Strict = only A+ confirmed setups. Balanced = practical live swing candidates. "
+        "Discovery = wider watchlist for quiet markets; use Trade Desk filters before trading."
+    ),
+)
+st.session_state["swing_mode"] = swing_mode
 skip_earnings  = st.sidebar.checkbox(
     "Skip earnings within 7 days", key="ui_skip_earnings",
 )

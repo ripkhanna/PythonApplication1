@@ -321,11 +321,29 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             pass
         status_text.text(f"Batch failed ({e}), fetching individually...")
 
-    # ── Regime thresholds — lowered to catch more real swing candidates ──────
-    min_score_strong_long  = 5 if regime == "BULL"               else 6
-    min_prob_strong_long   = 0.68 if regime == "BULL"            else 0.74
-    min_score_strong_short = 4 if regime in ("BEAR", "CAUTION")  else 5
-    min_prob_strong_short  = 0.65 if regime in ("BEAR", "CAUTION") else 0.68
+    # ── Regime + mode thresholds ─────────────────────────────────────────────
+    # v13.52: The old scanner was too strict for live markets: a stock needed
+    # near-perfect Bayesian probability + operator score + rel strength before
+    # it became actionable. That caused many good swing setups to appear only
+    # as WATCH or not at all. Keep Strict mode available, but default Balanced
+    # is designed for real trading workflow: BUY = actionable setup with trend,
+    # volume/operator support, above MA60, and no major trap; WATCH = forming.
+    swing_mode = str(st.session_state.get("ui_swing_mode", st.session_state.get("swing_mode", "Balanced"))).upper()
+    if swing_mode == "STRICT":
+        min_score_strong_long  = 7 if regime == "BULL" else 8
+        min_prob_strong_long   = 0.80 if regime == "BULL" else 0.84
+        min_score_strong_short = 6 if regime in ("BEAR", "CAUTION") else 7
+        min_prob_strong_short  = 0.76 if regime in ("BEAR", "CAUTION") else 0.80
+    elif swing_mode == "DISCOVERY":
+        min_score_strong_long  = 4 if regime == "BULL" else 5
+        min_prob_strong_long   = 0.62 if regime == "BULL" else 0.68
+        min_score_strong_short = 4 if regime in ("BEAR", "CAUTION") else 5
+        min_prob_strong_short  = 0.60 if regime in ("BEAR", "CAUTION") else 0.64
+    else:  # Balanced
+        min_score_strong_long  = 5 if regime == "BULL" else 6
+        min_prob_strong_long   = 0.68 if regime == "BULL" else 0.72
+        min_score_strong_short = 4 if regime in ("BEAR", "CAUTION") else 5
+        min_prob_strong_short  = 0.64 if regime in ("BEAR", "CAUTION") else 0.68
 
     for i, ticker in enumerate(all_tickers):
         try:
@@ -532,31 +550,75 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 long_sig.get("pocket_pivot", False) or
                 long_sig.get("vol_surge_up", False)
             )
+            # Practical live-market setup types. These make the screener useful
+            # even when a stock has no news catalyst or only moderate operator score.
+            major_trap_risk = false_breakout or distribution_risk or (gap_chase_risk and raw.get("today_chg_pct", 0) > 10)
+            core_long_trend = (
+                long_sig.get("trend_daily", False) or
+                long_sig.get("full_ma_stack", False) or
+                (raw.get("above_ma60", False) and raw.get("p", 0) > raw.get("ma20", 0))
+            )
+            momentum_confirmed = (
+                long_sig.get("macd_accel", False) or
+                long_sig.get("stoch_confirmed", False) or
+                long_sig.get("momentum_3d", False) or
+                long_sig.get("vol_breakout", False)
+            )
+            operator_or_vwap = operator_score >= 3 or raw.get("vwap_support", False) or long_sig.get("strong_close", False)
+            pullback_setup = (
+                (raw.get("dip_to_ma20", False) or raw.get("dip_to_ma60", False)) and
+                raw.get("vol_declining", False) and raw.get("above_ma60", False) and
+                core_long_trend
+            )
+            breakout_setup = (
+                (long_sig.get("vol_breakout", False) or long_sig.get("pocket_pivot", False) or long_sig.get("vol_surge_up", False)) and
+                core_long_trend and raw.get("above_ma60", False)
+            )
+            continuation_setup = (
+                core_long_trend and long_sig.get("weekly_trend", False) and
+                (long_sig.get("macd_accel", False) or long_sig.get("momentum_3d", False) or long_sig.get("rs_momentum", False))
+            )
+
+            setup_type_long = (
+                "Pullback" if pullback_setup else
+                "Breakout" if breakout_setup else
+                "Continuation" if continuation_setup else
+                "Operator Accumulation" if operator_score >= 4 else
+                "Early Trend" if core_long_trend else
+                "Mixed"
+            )
+
             high_accuracy_long = (
-                l_prob >= 0.82 and
-                l_score >= 8 and
+                l_prob >= min_prob_strong_long and
+                l_score >= min_score_strong_long and
                 raw.get("above_ma60", False) and
-                raw.get("not_chasing", False) and
                 raw.get("not_limit_up", False) and
-                raw.get("today_chg_pct", 99) < 6 and
-                operator_confirmed and
-                raw.get("vwap_support", False) and
-                not trap_risk and
-                long_sig.get("trend_daily", False) and
-                long_sig.get("weekly_trend", False) and
-                long_sig.get("rel_strength", False) and
-                volume_confirmed
+                raw.get("today_chg_pct", 99) < (8 if swing_mode != "DISCOVERY" else 10) and
+                not major_trap_risk and
+                core_long_trend and
+                momentum_confirmed and
+                (volume_confirmed or operator_or_vwap or pullback_setup)
+            )
+            actionable_long = (
+                l_prob >= (0.66 if swing_mode == "DISCOVERY" else 0.70) and
+                l_score >= (4 if swing_mode == "DISCOVERY" else 5) and
+                raw.get("above_ma60", False) and
+                not major_trap_risk and
+                core_long_trend and
+                (pullback_setup or breakout_setup or continuation_setup or operator_or_vwap)
             )
 
             if high_accuracy_long:
                 l_action = "STRONG BUY"
+            elif actionable_long:
+                l_action = "WATCH – HIGH QUALITY"
             elif trap_risk:
                 l_action = "WATCH – TRAP RISK"
             elif l_score >= min_score_strong_long and l_prob >= min_prob_strong_long and l_top3:
                 l_action = "WATCH – HIGH QUALITY"
-            elif l_score >= 4 and l_prob >= 0.62 and long_sig["trend_daily"]:
+            elif l_score >= 4 and l_prob >= 0.60 and core_long_trend:
                 l_action = "WATCH – DEVELOPING"
-            elif l_score >= 3 and long_sig["trend_daily"]:
+            elif l_score >= 3 and core_long_trend:
                 l_action = "WATCH – EARLY"
             else:
                 l_action = None
@@ -595,7 +657,11 @@ def fetch_analysis(green_sectors, red_sectors, regime,
 
                 if is_stopped:
                     entry_quality = "🚫 AVOID"
-                elif high_accuracy_long and (is_ideal_dip or is_vol_surge or long_sig.get("pocket_pivot", False) or long_sig.get("vol_breakout", False)):
+                elif major_trap_risk:
+                    entry_quality = "⏳ WAIT"
+                elif high_accuracy_long and (is_ideal_dip or is_vol_surge or long_sig.get("pocket_pivot", False) or long_sig.get("vol_breakout", False) or continuation_setup):
+                    entry_quality = "✅ BUY"
+                elif actionable_long and not is_chasing:
                     entry_quality = "✅ BUY"
                 elif is_chasing:
                     entry_quality = "⏳ WAIT"
@@ -661,6 +727,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "Ticker":         ticker,
                     "Sector":         sector_label(ticker),
                     "Action":         l_action,
+                    "Setup Type":     setup_type_long,
                     "Entry Quality":  entry_quality,
                     "Rise Prob":      f"{l_prob * 100:.1f}%",
                     "Prob Tier":      prob_label(l_prob),
@@ -715,24 +782,43 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 short_sig.get("stoch_overbought", False) or
                 short_sig.get("rsi_cross_bear", False)
             )
+            short_below_structure = short_sig.get("trend_bearish", False) or raw.get("below_vwap", False)
+            short_distribution = short_sig.get("operator_distribution", False) or short_sig.get("high_volume_down", False)
+            breakdown_setup = short_sig.get("vol_breakdown", False) and short_below_structure
+            rollover_setup = short_sig.get("macd_decel", False) and (short_sig.get("lower_highs", False) or raw.get("below_vwap", False))
+            setup_type_short = (
+                "Breakdown" if breakdown_setup else
+                "Distribution" if short_distribution else
+                "Rollover" if rollover_setup else
+                "Early Downtrend" if short_below_structure else
+                "Mixed"
+            )
             high_accuracy_short = (
-                s_prob >= 0.82 and
-                s_score >= 5 and
-                short_sig.get("trend_bearish", False) and
-                short_momentum_confirmed and
-                short_volume_confirmed and
-                raw.get("today_chg_pct", 0) > -6.0 and   # avoid chasing big gap-downs
-                raw.get("today_chg_pct", 0) < 2.0 and    # avoid shorting strong green days
-                not squeeze_flag                         # avoid crowded squeeze risk
+                s_prob >= min_prob_strong_short and
+                s_score >= min_score_strong_short and
+                short_below_structure and
+                (short_momentum_confirmed or short_volume_confirmed or short_distribution) and
+                raw.get("today_chg_pct", 0) > (-8.0 if swing_mode != "STRICT" else -6.0) and
+                raw.get("today_chg_pct", 0) < 3.0 and
+                not squeeze_flag
+            )
+            actionable_short = (
+                s_prob >= (0.62 if swing_mode == "DISCOVERY" else 0.66) and
+                s_score >= 4 and short_below_structure and
+                (breakdown_setup or rollover_setup or short_distribution or short_momentum_confirmed) and
+                raw.get("today_chg_pct", 0) > -10.0 and
+                not squeeze_flag
             )
 
             if high_accuracy_short:
                 s_action = "STRONG SHORT"
+            elif actionable_short:
+                s_action = "WATCH SHORT – HIGH QUALITY"
             elif s_score >= min_score_strong_short and s_prob >= min_prob_strong_short and s_top3:
                 s_action = "WATCH SHORT – HIGH QUALITY"
-            elif s_score >= 4 and s_prob >= 0.60 and short_sig["trend_bearish"]:
+            elif s_score >= 4 and s_prob >= 0.58 and short_below_structure:
                 s_action = "WATCH SHORT – DEVELOPING"
-            elif s_score >= 3 and short_sig["trend_bearish"]:
+            elif s_score >= 3 and short_below_structure:
                 s_action = "WATCH SHORT – EARLY"
             else:
                 s_action = None
@@ -785,7 +871,9 @@ def fetch_analysis(green_sectors, red_sectors, regime,
 
                 if s_is_stopped or squeeze_flag:
                     s_entry_quality = "🚫 AVOID"
-                elif high_accuracy_short and (s_is_ideal or short_sig.get("operator_distribution", False)):
+                elif high_accuracy_short and (s_is_ideal or short_sig.get("operator_distribution", False) or breakdown_setup or rollover_setup):
+                    s_entry_quality = "✅ SELL"
+                elif actionable_short and not s_is_chasing:
                     s_entry_quality = "✅ SELL"
                 elif s_is_chasing:
                     s_entry_quality = "⏳ WAIT"
@@ -796,6 +884,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "Ticker":         ticker,
                     "Sector":         sector_label(ticker),
                     "Action":         s_action,
+                    "Setup Type":     setup_type_short,
                     "Entry Quality":  s_entry_quality,
                     "Fall Prob":      f"{s_prob * 100:.1f}%",
                     "Prob Tier":      prob_label(s_prob),

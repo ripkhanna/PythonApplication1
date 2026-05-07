@@ -103,13 +103,22 @@ def _calc_final_swing_score(row):
     earnings_pen = _earnings_risk_penalty(row.get("Days Out", None), row.get("Earnings", ""))
     trap_pen = _trap_risk_penalty(row.get("Trap Risk", "–"))
 
-    # Main rank formula. Keep Bayesian dominant but not absolute.
+    # Main rank formula. Keep Bayesian dominant but add practical swing factors.
+    # v13.52: news/event is optional; do not punish a technically strong setup
+    # just because Yahoo news/earnings was unavailable.
+    setup_txt = str(row.get("Setup Type", "")).upper()
+    setup_bonus = 0.0
+    if any(k in setup_txt for k in ["PULLBACK", "BREAKOUT", "CONTINUATION"]):
+        setup_bonus += 4.0
+    if "OPERATOR" in setup_txt:
+        setup_bonus += 2.0
     final = (
-        bayes_score * 0.55
-        + op_score * 4.0
-        + news_score * 5.0
-        + event_score * 0.8
+        bayes_score * 0.50
+        + op_score * 4.5
+        + news_score * 3.0
+        + event_score * 0.5
         + sector_score * 3.0
+        + setup_bonus
         - earnings_pen
         - trap_pen
     )
@@ -165,7 +174,7 @@ def _make_swing_picks_from_scan(df_long_in: pd.DataFrame, max_candidates: int = 
     if event_df.empty:
         # Still return technical shortlist when Yahoo earnings/news fetch fails.
         out = tech_pref[[c for c in [
-            "Ticker", "Entry Quality", "Rise Prob", "Score", "Operator", "Op Score",
+            "Ticker", "Setup Type", "Entry Quality", "Rise Prob", "Score", "Operator", "Op Score",
             "VWAP", "Trap Risk", "Today %", "Price", "Sector", "Action",
             "MA60 Stop", "TP1 +10%", "TP2 +15%", "TP3 +20%"
         ] if c in tech_pref.columns]].copy()
@@ -179,8 +188,20 @@ def _make_swing_picks_from_scan(df_long_in: pd.DataFrame, max_candidates: int = 
             rank_rows.append(_calc_final_swing_score(rr))
         if rank_rows:
             out = pd.concat([out.reset_index(drop=True), pd.DataFrame(rank_rows)], axis=1)
-        out["Swing Verdict"] = "👀 WATCH — tech only"
-        out["Why"] = "Event/news fetch unavailable; ranking uses technical + operator factors only."
+        def _tech_only_verdict(rr):
+            rise = _prob_to_float(rr.get("Rise Prob", "0%"))
+            entry_s = str(rr.get("Entry Quality", "")).upper()
+            trap_s = str(rr.get("Trap Risk", "–")).upper()
+            final_s = _parse_score_num(rr.get("Final Swing Score", 0), 0)
+            if trap_s in ("FALSE BO", "GAP CHASE", "DISTRIB"):
+                return f"⏳ WAIT — {trap_s} risk"
+            if "BUY" in entry_s and rise >= 66 and final_s >= 48:
+                return "✅ BUY / WATCH ENTRY"
+            if rise >= 62 and final_s >= 42:
+                return "👀 WATCH"
+            return "⏳ WAIT"
+        out["Swing Verdict"] = out.apply(_tech_only_verdict, axis=1)
+        out["Why"] = "Event/news unavailable; ranked by technical setup, operator activity, sector and risk."
         return out.sort_values("Final Swing Score", ascending=False) if "Final Swing Score" in out.columns else out
 
     event_cols = [c for c in [
@@ -217,15 +238,26 @@ def _make_swing_picks_from_scan(df_long_in: pd.DataFrame, max_candidates: int = 
         rank_bits = _calc_final_swing_score(r)
         final_score = rank_bits["Final Swing Score"]
 
+        event_missing = event_v in ("", "–", "nan", "None") or pd.isna(r.get("Verdict", np.nan))
+        strong_technical = (
+            ("BUY" in entry_s or rise >= 72) and
+            final_score >= 50 and
+            op_score >= 2 and
+            str(r.get("VWAP", "")).upper() != "BELOW"
+        )
+        good_watch = watch_ok and final_score >= 42
+
         if near_earn:
             swing_verdict = "🚫 AVOID — earnings ≤7d"
         elif trap_risk in ("FALSE BO", "GAP CHASE", "DISTRIB"):
             swing_verdict = f"⏳ WAIT — {trap_risk} risk"
-        elif tech_ok and event_rank >= 2 and op_score >= 4 and final_score >= 55:
+        elif strong_technical and (event_rank >= 1 or event_missing):
             swing_verdict = "✅ BUY / WATCH ENTRY"
-        elif watch_ok and final_score >= 48:
+        elif tech_ok and event_rank >= 2 and final_score >= 48:
+            swing_verdict = "✅ BUY / WATCH ENTRY"
+        elif good_watch:
             swing_verdict = "👀 WATCH"
-        elif watch_ok and final_score >= 40:
+        elif watch_ok and final_score >= 36:
             swing_verdict = "⏳ WAIT"
         else:
             swing_verdict = "🚫 AVOID"
