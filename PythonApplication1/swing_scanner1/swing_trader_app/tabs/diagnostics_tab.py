@@ -224,6 +224,101 @@ def render_diagnostics(ctx: dict) -> None:
     else:
         st.info("No scan debug summary yet. Run 🚀 Scan to populate it.")
 
+
+    # ─────────────────────────────────────────────────────────────────────
+    # 🌱 LONG-TERM SCAN DIAGNOSTICS (Cloud / SGX debug)
+    # Shows per-ticker fetch result log from the last LT scan.
+    # Explains exactly why each ticker succeeded, returned partial data,
+    # or returned {} — the most common cause of "Scanned 26, found 0".
+    # ─────────────────────────────────────────────────────────────────────
+    st.markdown("**🌱 Long-Term scan diagnostics (cloud / SGX debug)**")
+    st.caption(
+        "After running a Long-Term scan, this section shows the step-by-step "
+        "fetch log for every ticker scored. Rows marked FAIL indicate the exact "
+        "step that failed on cloud (e.g. info empty, history blocked, price=0). "
+        "Filtered = the ticker was scored but removed by the quality/support filter."
+    )
+
+    _lt_log = st.session_state.get("lt_ticker_log", {})
+    if not _lt_log:
+        st.info("Run a Long-Term scan (🌱 Long Term tab → 🔍 Score SGX / Find US stocks) "
+                "to populate this section.")
+    else:
+        # Summary counts
+        ok_rows  = [t for t, d in _lt_log.items() if d.get("ok")]
+        fail_rows = [t for t, d in _lt_log.items() if not d.get("ok")]
+        has_fund = [t for t, d in _lt_log.items() if d.get("ok") and d.get("has_fundamentals")]
+        price_only = [t for t, d in _lt_log.items() if d.get("ok") and not d.get("has_fundamentals")]
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Tickers attempted",  len(_lt_log))
+        m2.metric("✅ Price obtained",   len(ok_rows))
+        m3.metric("❌ No price (→ {})",  len(fail_rows), delta=f"-{len(fail_rows)}" if fail_rows else None, delta_color="inverse")
+        m4.metric("⚠️ Price only (no fundamentals)", len(price_only))
+
+        if fail_rows:
+            st.error(
+                f"**{len(fail_rows)} ticker(s) returned no price and were dropped:** "
+                + ", ".join(fail_rows[:30])
+                + (f" … +{len(fail_rows)-30} more" if len(fail_rows) > 30 else "")
+                + "\n\nExpand the per-ticker log below to see exactly which step failed."
+            )
+        if price_only:
+            st.warning(
+                f"**{len(price_only)} ticker(s) have price but no fundamentals** "
+                "(Yahoo returned empty info on cloud). They still appear in the grid "
+                "with '–' in ROE/EPS/Margin columns and rely on SGX bonus scoring."
+                + " Tickers: " + ", ".join(price_only[:20])
+            )
+
+        # Full per-ticker table
+        _lt_rows = []
+        for ticker, d in sorted(_lt_log.items()):
+            _lt_rows.append({
+                "Ticker":  ticker,
+                "OK":      "✅" if d.get("ok") else "❌",
+                "Price":   f"{d.get('price', 0):.3f}" if d.get("price") else "–",
+                "Score":   str(d.get("score", "–")),
+                "Supp":    str(d.get("supp", "–")),
+                "Funds":   "✅" if d.get("has_fundamentals") else "⚠️",
+                "Error":   d.get("error", ""),
+                "Steps":   " → ".join(d.get("steps", []))[:300],
+            })
+        st.dataframe(
+            pd.DataFrame(_lt_rows),
+            hide_index=True, width="stretch",
+            column_config={
+                "Ticker": st.column_config.TextColumn("Ticker", width=70),
+                "OK":     st.column_config.TextColumn("OK",     width=36),
+                "Price":  st.column_config.TextColumn("Price",  width=62),
+                "Score":  st.column_config.TextColumn("Score",  width=50),
+                "Supp":   st.column_config.TextColumn("Supp",   width=44),
+                "Funds":  st.column_config.TextColumn("Funds",  width=44),
+                "Error":  st.column_config.TextColumn("Error",  width=200),
+                "Steps":  st.column_config.TextColumn("Steps",  width=400),
+            },
+            height=min(40 + len(_lt_rows) * 35, 420),
+        )
+        with st.expander("🔬 Full step-by-step log per ticker", expanded=False):
+            for ticker, d in sorted(_lt_log.items()):
+                status = "✅" if d.get("ok") else "❌"
+                st.markdown(
+                    f"**{status} {ticker}** — "
+                    f"price={d.get('price',0):.3f}  "
+                    f"score={d.get('score','–')}  "
+                    f"supp={d.get('supp','–')}  "
+                    f"funds={'yes' if d.get('has_fundamentals') else 'no'}"
+                )
+                for step in d.get("steps", []):
+                    colour = "🔴" if step.startswith("FAIL") else "🟢" if step.startswith("OK") else "⚪"
+                    st.caption(f"{colour} {step}")
+                if d.get("error"):
+                    st.error(d["error"])
+                st.divider()
+        if st.button("🗑️ Clear LT ticker log", key="diag_clear_lt_log"):
+            st.session_state.pop("lt_ticker_log", None)
+            st.rerun()
+
+
     st.markdown("**Stocks scanned in last scan**")
     if last_scanned_tickers:
         st.caption(
