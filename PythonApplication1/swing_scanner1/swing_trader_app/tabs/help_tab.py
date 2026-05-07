@@ -10,7 +10,7 @@ def render_help(ctx: dict) -> None:
     """Render the Help tab using objects supplied by the main runtime context."""
     st = ctx["st"]
 
-    st.markdown("## ❓ How to Use the Swing/Long Term Scanner v13.45")
+    st.markdown("## ❓ How to Use the Swing/Long Term Scanner v13.46")
     st.caption(
         "Latest guide: fixed bucket-capped Bayesian scoring, Bayesian ensemble ranking, Trade Desk execution tools, optional Strategy Lab ML filter, "
         "Yahoo/live + existing ticker universe, operator/smart-money activity, earnings/news "

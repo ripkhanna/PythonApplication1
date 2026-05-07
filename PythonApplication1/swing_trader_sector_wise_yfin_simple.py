@@ -7917,7 +7917,7 @@ with tab_diag:
         diag_logs.append(f"Auto refresh interval: {_lt.get('refresh_interval', 'Off')}")
         diag_logs.append(f"Next refresh/check: {_lt.get('next_refresh_in', 'Auto refresh off')} at {_lt.get('next_refresh_at', 'Auto refresh off')}")
         diag_logs.append(f"Bucket-cap Bayesian: {'ON' if st.session_state.get('use_bucket_cap', True) else 'OFF'}")
-        diag_logs.append("Trade Journal: removed from Trade Desk in v13.45")
+        diag_logs.append("Trade Journal: removed from Trade Desk in v13.46")
     except Exception as e:
         diag_logs.append(f"Diagnostics log build error: {e}")
     st.text_area(
@@ -8130,7 +8130,7 @@ This is more realistic than the old binary label: `price is higher after N days`
 # TAB 8 — HELP
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_help:
-    st.markdown("## ❓ How to Use the Swing/Long Term Scanner v13.45")
+    st.markdown("## ❓ How to Use the Swing/Long Term Scanner v13.46")
     st.caption(
         "Latest guide: fixed bucket-capped Bayesian scoring, Bayesian ensemble ranking, Trade Desk execution tools, optional Strategy Lab ML filter, "
         "Yahoo/live + existing ticker universe, operator/smart-money activity, earnings/news "
