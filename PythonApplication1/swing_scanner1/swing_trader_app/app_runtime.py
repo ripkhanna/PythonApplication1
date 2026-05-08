@@ -340,7 +340,6 @@ _SIDEBAR_DEFAULTS = {
     "ui_req_s_bb":            False,
     "ui_req_s_decel":         False,
     # Misc
-    "ui_extra_input":         "",
     "ui_load_csv_on_start":   True,
     "ui_refresh_choice":      "15 min",
 }
@@ -515,8 +514,9 @@ always_include_text = st.sidebar.text_area(
     "Always include tickers",
     key="ui_always_include",
     height=68,
-    help="Comma- or line-separated tickers that are always scanned, even when "
-         "Use live market universe is ON. Example: UUUU, APP, NVDA, D05.SI",
+    help="Comma- or line-separated tickers always scanned in every scan. "
+         "Replaces the old 'Add tickers' field — same effect, one place. "
+         "Example: UUUU, APP, NVDA, D05.SI, HIMS, NVTS",
 )
 always_include_tickers = [
     t.strip().upper()
@@ -613,13 +613,7 @@ req_s_stoch = st.sidebar.checkbox("Must have Stoch rollover",    key="ui_req_s_s
 req_s_bb    = st.sidebar.checkbox("Must have BB bear squeeze",   key="ui_req_s_bb")
 req_s_decel = st.sidebar.checkbox("Must have MACD deceleration", key="ui_req_s_decel")
 
-st.sidebar.markdown("---")
-st.sidebar.header("Custom tickers")
-extra_input = st.sidebar.text_input(
-    "Add tickers (comma-separated)",
-    key="ui_extra_input",
-    placeholder="HIMS, NVTS",
-)
+extra_input = ""  # merged into Always include tickers above
 
 st.sidebar.markdown("---")
 st.sidebar.header("CSV result cache")
