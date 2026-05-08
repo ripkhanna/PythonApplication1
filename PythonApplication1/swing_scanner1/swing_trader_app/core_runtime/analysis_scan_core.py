@@ -203,7 +203,7 @@ def summarize_traps(traps):
 @st.cache_data(ttl=3600)
 def fetch_analysis(green_sectors, red_sectors, regime,
                    skip_earnings, top_n_sectors, strategy_mode="Balanced", live_sectors=None,
-                   market_tickers=None, enable_options=True):
+                   market_tickers=None, enable_options=True, data_freshness_bucket=None):
     sectors_data = live_sectors or {}
     sector_membership = {}
     for sec_name, sec_data in sectors_data.items():
@@ -231,6 +231,10 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         "ticker_errors": 0,
         "ticker_error_samples": [],
         "batch_error": "",
+        "intraday_loaded": 0,
+        "intraday_error": "",
+        "latest_intraday_bar": "",
+        "data_freshness_bucket": str(data_freshness_bucket or ""),
         "empty_reason": "",
     }
     if total == 0:
@@ -287,6 +291,99 @@ def fetch_analysis(green_sectors, red_sectors, regime,
     except Exception:
         pass
 
+    # ── Intraday overlay pre-fetch ────────────────────────────────────────────
+    # The 6-month daily Yahoo bars can remain on yesterday's candle for a while
+    # after SGX/NSE/US open.  Pull a lightweight 5-minute intraday snapshot and
+    # overlay the latest day into the daily dataframe before signals are built.
+    intraday_cache = {}
+
+    def _extract_from_yf_batch(raw_obj, tkr, ticker_count):
+        try:
+            if raw_obj is None or getattr(raw_obj, "empty", True):
+                return pd.DataFrame()
+            if isinstance(raw_obj.columns, pd.MultiIndex):
+                lvl0 = raw_obj.columns.get_level_values(0)
+                lvl1 = raw_obj.columns.get_level_values(1)
+                if tkr in lvl1:
+                    return raw_obj.xs(tkr, axis=1, level=1).copy()
+                if tkr in lvl0:
+                    return raw_obj[tkr].copy()
+                return pd.DataFrame()
+            if ticker_count == 1:
+                return raw_obj.copy()
+        except Exception:
+            return pd.DataFrame()
+        return pd.DataFrame()
+
+    def _overlay_intraday_daily(daily_df, intra_df):
+        try:
+            if daily_df is None or daily_df.empty or intra_df is None or intra_df.empty:
+                return daily_df
+            intra_df = _clean_scan_ohlcv(intra_df).dropna(how="all")
+            if intra_df.empty or "Close" not in intra_df.columns:
+                return daily_df
+            intra_df = intra_df[intra_df["Close"].notna()]
+            if intra_df.empty:
+                return daily_df
+            last_ts = pd.Timestamp(intra_df.index[-1])
+            # Use the exchange-local date embedded in Yahoo's timestamp.
+            last_date = last_ts.date()
+            day_rows = intra_df[[pd.Timestamp(x).date() == last_date for x in intra_df.index]]
+            if day_rows.empty:
+                day_rows = intra_df.tail(1)
+            row = {
+                "Open": float(day_rows["Open"].dropna().iloc[0]) if "Open" in day_rows and not day_rows["Open"].dropna().empty else float(day_rows["Close"].iloc[0]),
+                "High": float(day_rows["High"].max()) if "High" in day_rows else float(day_rows["Close"].max()),
+                "Low": float(day_rows["Low"].min()) if "Low" in day_rows else float(day_rows["Close"].min()),
+                "Close": float(day_rows["Close"].dropna().iloc[-1]),
+                "Volume": float(day_rows["Volume"].fillna(0).sum()) if "Volume" in day_rows else 0.0,
+            }
+            out = daily_df.copy()
+            out.index = pd.to_datetime(out.index)
+            last_day_idx = None
+            if len(out.index):
+                matches = [idx for idx in out.index if pd.Timestamp(idx).date() == last_date]
+                if matches:
+                    last_day_idx = matches[-1]
+            if last_day_idx is not None:
+                for c, v in row.items():
+                    out.loc[last_day_idx, c] = v
+                out.loc[last_day_idx, "Last Bar"] = str(last_ts)
+            else:
+                new_idx = pd.Timestamp(last_date)
+                out.loc[new_idx, ["Open", "High", "Low", "Close", "Volume"]] = [row["Open"], row["High"], row["Low"], row["Close"], row["Volume"]]
+                out.loc[new_idx, "Last Bar"] = str(last_ts)
+                out = out.sort_index()
+            return out
+        except Exception:
+            return daily_df
+
+    status_text.text(f"📥 Fetching latest 5-minute bars for {total} stocks...")
+    try:
+        raw_intraday = yf.download(
+            all_tickers, period="1d", interval="5m",
+            progress=False, group_by="ticker", threads=True, auto_adjust=True,
+            prepost=True,
+        )
+        latest_bars = []
+        for tkr in all_tickers:
+            try:
+                idf = _extract_from_yf_batch(raw_intraday, tkr, len(all_tickers))
+                idf = _clean_scan_ohlcv(idf).dropna(how="all") if not idf.empty else pd.DataFrame()
+                if len(idf) >= 1 and "Close" in idf.columns and idf["Close"].notna().any():
+                    intraday_cache[tkr] = idf
+                    latest_bars.append(str(pd.Timestamp(idf.index[-1])))
+            except Exception:
+                continue
+        scan_debug["intraday_loaded"] = int(len(intraday_cache))
+        scan_debug["latest_intraday_bar"] = max(latest_bars) if latest_bars else ""
+    except Exception as e:
+        scan_debug["intraday_error"] = f"{type(e).__name__}: {e}"
+        try:
+            _record_app_warning("intraday_yfinance_download", scan_debug["intraday_error"], extra={"total_tickers": total})
+        except Exception:
+            pass
+
     # ── Batch OHLCV pre-fetch ─────────────────────────────────────────────────
     status_text.text(f"📥 Batch downloading {total} stocks...")
     batch_cache = {}
@@ -308,6 +405,8 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 else:
                     continue
                 df_t = _clean_scan_ohlcv(df_t)
+                if tkr in intraday_cache:
+                    df_t = _overlay_intraday_daily(df_t, intraday_cache[tkr])
                 if len(df_t) >= 60:
                     batch_cache[tkr] = df_t
             except Exception:
@@ -390,6 +489,8 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 if isinstance(raw_ind.columns, pd.MultiIndex):
                     raw_ind.columns = raw_ind.columns.get_level_values(0)
                 df = _clean_scan_ohlcv(raw_ind)
+                if ticker in intraday_cache:
+                    df = _overlay_intraday_daily(df, intraday_cache[ticker])
                 if len(df) >= 60:
                     scan_debug["individual_loaded"] += 1
 
@@ -402,6 +503,10 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             high  = df["High"].squeeze().ffill()
             low   = df["Low"].squeeze().ffill()
             vol   = df["Volume"].squeeze().ffill()
+            try:
+                last_bar_ts = str(df["Last Bar"].dropna().iloc[-1]) if "Last Bar" in df.columns and not df["Last Bar"].dropna().empty else str(pd.Timestamp(df.index[-1]))
+            except Exception:
+                last_bar_ts = "–"
 
             # ── Pre-filter: liquidity only ────────────────────────────────────
             _vol_avg_s = float(vol.rolling(20).mean().iloc[-1])
@@ -492,6 +597,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                         "Detected":     _tsum["patterns"],
                         "Trap Risk":    raw.get("trap_risk_label", "–"),
                         "Vol Ratio":    round(vr, 2),
+                        "Last Bar":     last_bar_ts,
                         "VWAP":         "ABOVE" if raw.get("above_vwap") else "BELOW",
                         "RSI":          round(raw["rsi0"], 1),
                         "_bias_score":  _tsum["bias_score"],
@@ -1096,6 +1202,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "Opt Flow":       " | ".join(opt_tags) if opt_tags else "–",
                     "RSI":            round(raw["rsi0"], 1),
                     "Vol Ratio":      round(vr, 2),
+                    "Last Bar":       last_bar_ts,
                     "BB Squeeze":     "YES" if long_sig["bb_bull_squeeze"] else "–",
                 })
 
@@ -1246,6 +1353,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "Short %":        short_str,
                     "RSI":            round(raw["rsi0"], 1),
                     "Vol Ratio":      round(vr, 2),
+                    "Last Bar":       last_bar_ts,
                     "Signals":        " | ".join(l_tags) if l_tags else "–",
                     "Opt Flow":       " | ".join(opt_s_tags) if opt_s_tags else "–",
                 })

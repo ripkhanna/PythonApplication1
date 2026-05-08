@@ -210,6 +210,98 @@ def _load_scan_cache(market: str):
         return None
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# MARKET-AWARE LIVE CACHE TTL / FRESHNESS HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+def _market_now(market: str):
+    """Return timezone-aware now for the selected market."""
+    try:
+        from zoneinfo import ZoneInfo
+        m = str(market or "")
+        if "SGX" in m:
+            return datetime.now(ZoneInfo("Asia/Singapore"))
+        if "India" in m:
+            return datetime.now(ZoneInfo("Asia/Kolkata"))
+        if "US" in m:
+            return datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        pass
+    return datetime.now()
+
+
+def _is_market_live_now(market: str, now=None) -> bool:
+    """Best-effort market-hours check including US pre/post market.
+
+    This is intentionally simple and does not try to model public holidays; the
+    goal is to keep scanner cache fresh on normal trading days.
+    """
+    try:
+        now = now or _market_now(market)
+        if now.weekday() >= 5:
+            return False
+        mins = now.hour * 60 + now.minute
+        m = str(market or "")
+        if "SGX" in m:
+            return (9 * 60) <= mins <= (17 * 60 + 20)
+        if "India" in m:
+            return (9 * 60 + 15) <= mins <= (15 * 60 + 45)
+        if "US" in m:
+            # Include premarket + regular + after-hours so PM momentum stays fresh.
+            return (4 * 60) <= mins <= (20 * 60)
+    except Exception:
+        return False
+    return False
+
+
+def _market_live_cache_minutes(market: str) -> int:
+    """Recommended scanner-cache TTL in minutes for the selected market."""
+    if _is_market_live_now(market):
+        if "US" in str(market or ""):
+            return 2
+        return 3  # SGX/India Yahoo is often delayed, but refresh app cache quickly.
+    return 30
+
+
+def _effective_scan_refresh_minutes(market: str, user_refresh_minutes: int = 0) -> int:
+    """Use the shorter of the user's refresh and the live-market freshness TTL.
+
+    If the user leaves Auto refresh Off, still treat an old CSV cache as stale
+    on the next Streamlit rerun during market hours, so the grid does not keep
+    showing pre-open data.
+    """
+    live_ttl = int(_market_live_cache_minutes(market))
+    try:
+        user_refresh_minutes = int(user_refresh_minutes or 0)
+    except Exception:
+        user_refresh_minutes = 0
+    if user_refresh_minutes > 0:
+        return max(1, min(user_refresh_minutes, live_ttl))
+    return live_ttl
+
+
+def _freshness_cache_bucket(market: str, refresh_minutes: int = 0) -> str:
+    """A salt for st.cache_data so Yahoo fetch cache expires by market TTL."""
+    try:
+        mins = int(_effective_scan_refresh_minutes(market, refresh_minutes))
+        now = _market_now(market)
+        epoch = int(now.timestamp())
+        bucket = epoch // max(60, mins * 60)
+        return f"{_market_cache_key(market)}:{mins}m:{bucket}"
+    except Exception:
+        return f"{_market_cache_key(market)}:fallback"
+
+
+def _latest_bar_time_from_df(df: pd.DataFrame):
+    """Return latest Last Bar value from a cached dataframe, if present."""
+    try:
+        if df is None or df.empty or "Last Bar" not in df.columns:
+            return ""
+        vals = [str(x) for x in df["Last Bar"].dropna().tolist() if str(x).strip() and str(x).strip() != "–"]
+        return max(vals) if vals else ""
+    except Exception:
+        return ""
+
+
 def _cache_age_minutes(meta: dict):
     try:
         saved = datetime.fromisoformat(str(meta.get("saved_at", "")))

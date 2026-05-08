@@ -1,5 +1,5 @@
 """
-Swing Scanner v13.60 — Bayesian Ensemble
+Swing Scanner v13.61 — Bayesian Ensemble
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -16,7 +16,7 @@ v12 add-ons  : options-derived signals — call/put unusual flow, IV term
 Install:
   pip install financedatabase ta streamlit yfinance pandas numpy nsepython requests streamlit-autorefresh
 """
-# v13.60: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
+# v13.61: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
 # NotImplementedError from __annotate__ when @st.cache_data wraps functions
 # with bare unsubscripted generics like `-> tuple`. This `from __future__`
 # downgrades all annotations in this module to strings at parse time,
@@ -42,7 +42,7 @@ import streamlit as st
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v13.60",
+    page_title="Swing Scanner v13.61",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -224,9 +224,9 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v13.60")
+st.title("📈 Swing/Long Term Scanner v13.61")
 
-# v13.60: COMPACT SELF-STAMP
+# v13.61: COMPACT SELF-STAMP
 # The build identity (path, mtime, hash, size) is still computed so it can
 # self-prove the running file, but only the short hash and mtime are visible
 # in the caption. The full path and size are tucked into the tooltip — hover
@@ -617,6 +617,21 @@ refresh_choice = st.sidebar.radio(
          "manual 'Rerun now' button is shown instead.",
 )
 refresh_minutes = 0 if refresh_choice == "Off" else int(refresh_choice.split()[0])
+# Market-aware effective refresh: this sidebar section renders before the
+# market radio widget below, so do NOT read local variable `market_sel` here.
+# Use Streamlit session state instead; the widget value is already present on
+# reruns and has a safe default on first startup.
+_refresh_market_sel = st.session_state.get("market_selector", "🇺🇸 US")
+effective_refresh_minutes = _effective_scan_refresh_minutes(_refresh_market_sel, refresh_minutes)
+freshness_cache_bucket = _freshness_cache_bucket(_refresh_market_sel, refresh_minutes)
+try:
+    _live_state = "LIVE" if _is_market_live_now(_refresh_market_sel) else "closed/off-hours"
+    st.sidebar.caption(
+        f"Data freshness: **{effective_refresh_minutes} min** cache while {_refresh_market_sel} is {_live_state}. "
+        "Strategy changes reuse cache; Scan/expired cache refreshes Yahoo."
+    )
+except Exception:
+    pass
 # v13.31: Non-destructive auto-refresh
 # OLD: <script>setTimeout(window.parent.location.reload, ...)</script>
 #      ^ This destroyed the entire Streamlit session — every widget reset to
@@ -960,10 +975,10 @@ if load_csv_on_start:
         _meta = _loaded_cache.get("meta", {})
         _is_master_cache = str(_meta.get("cache_type", "")).lower() == "master_scan_v1"
         _cache_age = _cache_age_minutes(_meta)
-        _cache_timing = _cache_timing_info(_meta, refresh_minutes)
+        _cache_timing = _cache_timing_info(_meta, effective_refresh_minutes)
         st.session_state["scan_cache_meta"] = _meta
         st.session_state["scan_cache_timing"] = _cache_timing
-        st.session_state["scan_cache_refresh_minutes"] = refresh_minutes
+        st.session_state["scan_cache_refresh_minutes"] = effective_refresh_minutes
         st.session_state["scan_cache_refresh_due"] = bool(_cache_timing.get("is_due", False))
 
         if not _is_master_cache:
@@ -1022,17 +1037,18 @@ if load_csv_on_start:
                 _cache_loaded_note = (
                     f"📦 Loaded cached Yahoo master scan from {_meta.get('saved_at','unknown')} "
                     f"({_cache_age:.0f} min old). Displaying **{swing_mode}** from cache · "
+                    f"Latest bar: **{_meta.get('latest_bar_time', 'unknown')}** · "
                     f"Long {len(st.session_state.get('df_long', pd.DataFrame()))} · "
                     f"Short {len(st.session_state.get('df_short', pd.DataFrame()))}"
                 )
-            if refresh_minutes and _cache_age is not None and _cache_age >= refresh_minutes:
+            if effective_refresh_minutes and _cache_age is not None and _cache_age >= effective_refresh_minutes:
                 _cache_refresh_due = True
     else:
         st.session_state["scan_cache_meta"] = {}
-        st.session_state["scan_cache_timing"] = _cache_timing_info({}, refresh_minutes)
-        st.session_state["scan_cache_refresh_minutes"] = refresh_minutes
+        st.session_state["scan_cache_timing"] = _cache_timing_info({}, effective_refresh_minutes)
+        st.session_state["scan_cache_refresh_minutes"] = effective_refresh_minutes
         st.session_state["scan_cache_refresh_due"] = False
-        if refresh_minutes:
+        if effective_refresh_minutes:
             _cache_loaded_note = "📦 No master Yahoo cache found yet. Click Scan once to create it."
 
 if st.session_state.get("scan_cache_warning"):
@@ -1168,7 +1184,7 @@ if _strategy_auto_refresh:
     _show_top_spinner(st.session_state.get("_strategy_changed_notice", "🔄 Strategy changed — refreshing scan/grid..."))
 elif _cache_refresh_due and not _manual_scan:
     _show_top_spinner(
-        f"⏱️ Cached CSV is older than {refresh_minutes} min — refreshing scan and updating CSV files..."
+        f"⏱️ Cached CSV is older than {effective_refresh_minutes} min — refreshing scan and updating CSV files..."
     )
 with col_info:
     # Show sector preview for the active market; never let Cloud/yfinance errors blank the UI
@@ -1277,6 +1293,7 @@ if run:
                     live_sectors=live_sectors if live_sectors else None,
                     market_tickers=tuple(active_tickers),
                     enable_options=enable_options,
+                    data_freshness_bucket=freshness_cache_bucket,
                 )
         except Exception as _scan_e:
             try:
@@ -1300,8 +1317,10 @@ if run:
             opt_required=opt_required, enable_options=enable_options,
         )
 
+        _latest_bar_for_status = _latest_bar_time_from_df(df_long_master) or _latest_bar_time_from_df(df_short_master) or "unknown"
         _top_scan_status.success(
             f"✅ Yahoo master scan refreshed for **{len(active_tickers)} {market_sel} stocks** · "
+            f"Latest bar: **{_latest_bar_for_status}** · "
             f"Displaying **{swing_mode}** from cache · "
             f"Long: **{len(df_long)}** / master {len(df_long_master)} · "
             f"Short: **{len(df_short)}** / master {len(df_short_master)} · Operator: **{len(df_operator)}**"
@@ -1371,12 +1390,18 @@ if run:
                 "min_prob_long": int(min_prob_long),
                 "min_prob_short": int(min_prob_short),
                 "skip_earnings": bool(skip_earnings),
+                "effective_refresh_minutes": int(effective_refresh_minutes),
+                "market_live_now": bool(_is_market_live_now(market_sel)),
+                "freshness_cache_bucket": str(freshness_cache_bucket),
+                "latest_bar_time": _latest_bar_time_from_df(df_long_master) or _latest_bar_time_from_df(df_short_master),
+                "data_source": "yahoo_daily_6mo_plus_intraday_5m_overlay",
+                "yahoo_delay_note": "Yahoo quotes may still be exchange-delayed; app cache TTL is shortened during market hours.",
             },
         )
         if _saved_cache_meta:
             st.session_state["scan_cache_meta"] = _saved_cache_meta
-            st.session_state["scan_cache_timing"] = _cache_timing_info(_saved_cache_meta, refresh_minutes)
-            st.session_state["scan_cache_refresh_minutes"] = refresh_minutes
+            st.session_state["scan_cache_timing"] = _cache_timing_info(_saved_cache_meta, effective_refresh_minutes)
+            st.session_state["scan_cache_refresh_minutes"] = effective_refresh_minutes
             st.session_state["scan_cache_refresh_due"] = False
 
 df_long  = st.session_state.get("df_long",  pd.DataFrame())
