@@ -1,5 +1,5 @@
 """
-Swing Scanner v13.65 — Bayesian Ensemble
+Swing Scanner v13.66 — Bayesian Ensemble
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -16,7 +16,7 @@ v12 add-ons  : options-derived signals — call/put unusual flow, IV term
 Install:
   pip install financedatabase ta streamlit yfinance pandas numpy nsepython requests streamlit-autorefresh
 """
-# v13.65: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
+# v13.66: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
 # NotImplementedError from __annotate__ when @st.cache_data wraps functions
 # with bare unsubscripted generics like `-> tuple`. This `from __future__`
 # downgrades all annotations in this module to strings at parse time,
@@ -42,7 +42,7 @@ import streamlit as st
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v13.65",
+    page_title="Swing Scanner v13.66",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -224,9 +224,9 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v13.65")
+st.title("📈 Swing/Long Term Scanner v13.66")
 
-# v13.65: COMPACT SELF-STAMP
+# v13.66: COMPACT SELF-STAMP
 # The build identity (path, mtime, hash, size) is still computed so it can
 # self-prove the running file, but only the short hash and mtime are visible
 # in the caption. The full path and size are tucked into the tooltip — hover
@@ -836,6 +836,22 @@ elif market_sel == "🇸🇬 SGX":
 else:
     _active_tickers = INDIA_TICKERS; _active_sectors = INDIA_SECTOR_ETFS
     _currency_sym = "₹";            _price_fmt = lambda p: f"₹{p:,.2f}"
+
+# When the user switches market, clear stale ticker-list session keys so
+# Diagnostics immediately shows the correct market instead of the old one.
+_last_diag_market = st.session_state.get("_diag_market", market_sel)
+if _last_diag_market != market_sel:
+    # Clear only the display-state keys — not the dataframes (those are
+    # cleared naturally by the cache-key mismatch in the block below).
+    for _k in ("last_scanned_tickers", "last_scanned_tickers_csv",
+               "last_universe_source", "last_universe_count",
+               "last_live_ticker_count", "last_existing_ticker_count",
+               "last_always_include_csv", "last_always_include_list",
+               "last_scan_debug", "_loaded_csv_cache_key"):
+        st.session_state.pop(_k, None)
+    st.session_state["_diag_market"] = market_sel
+else:
+    st.session_state.setdefault("_diag_market", market_sel)
 
 def _pct_to_num(series, default=0.0):
     """Convert '72.3%' / numeric columns to float safely."""

@@ -256,6 +256,14 @@ def render_diagnostics(ctx: dict) -> None:
     # ── Scanned ticker list ───────────────────────────────────────────────────
     if last_scanned_tickers:
         _ai_count = len(_always_scanned)
+        _diag_sel_now = st.session_state.get("market_selector", last_market)
+        _mkt_match = (last_market == _diag_sel_now)
+        if not _mkt_match:
+            st.warning(
+                f"⚠️ This ticker list is from the **{last_market}** scan — "
+                f"you have now switched to **{_diag_sel_now}**.  \n"
+                f"Click **🚀 Scan {_diag_sel_now} Stocks** to see {_diag_sel_now} tickers."
+            )
         st.caption(
             f"Market: **{last_market}** · Universe: **{last_universe_source}** · "
             f"Total: **{len(last_scanned_tickers)}** · "
@@ -304,12 +312,20 @@ def render_diagnostics(ctx: dict) -> None:
                     "and click **🚀 Scan** to include it."
                 )
     else:
-        st.info(
-            "Run **🚀 Scan** first to show the exact list of scanned tickers.  \n"
-            "After scanning, this section shows every ticker attempted, "
-            "which always-include tickers were present, and lets you "
-            "search for any specific ticker."
-        )
+        _diag_market_now = st.session_state.get("market_selector", "🇺🇸 US")
+        _diag_last_market = st.session_state.get("_diag_market", _diag_market_now)
+        if _diag_market_now != _diag_last_market:
+            st.info(
+                f"Market switched to **{_diag_market_now}** — no scan has been run "
+                f"for this market yet this session.  \n"
+                f"Click **🚀 Scan {_diag_market_now} Stocks** to populate this section."
+            )
+        else:
+            st.info(
+                f"No **{_diag_market_now}** scan yet this session.  \n"
+                "Run **🚀 Scan** to populate this section — it will show every "
+                "ticker attempted, always-include status, and a search box."
+            )
 
     st.markdown("**Logs / scan notes**")
     st.caption("These are UI-level diagnostics from the latest scan/session. They are not a separate file log.")
@@ -330,7 +346,7 @@ def render_diagnostics(ctx: dict) -> None:
         diag_logs.append(f"Auto refresh interval: {_lt.get('refresh_interval', 'Off')}")
         diag_logs.append(f"Next refresh/check: {_lt.get('next_refresh_in', 'Auto refresh off')} at {_lt.get('next_refresh_at', 'Auto refresh off')}")
         diag_logs.append(f"Bucket-cap Bayesian: {'ON' if st.session_state.get('use_bucket_cap', True) else 'OFF'}")
-        diag_logs.append("Trade Journal: removed from Trade Desk in v13.46; current build v13.65")
+        diag_logs.append("Trade Journal: removed from Trade Desk in v13.46; current build v13.66")
     except Exception as e:
         diag_logs.append(f"Diagnostics log build error: {e}")
     st.text_area(
