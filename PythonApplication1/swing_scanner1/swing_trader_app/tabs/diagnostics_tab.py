@@ -225,26 +225,91 @@ def render_diagnostics(ctx: dict) -> None:
         st.info("No scan debug summary yet. Run 🚀 Scan to populate it.")
 
     st.markdown("**Stocks scanned in last scan**")
+
+    # ── Always-include status ─────────────────────────────────────────────────
+    _always_now     = [t.strip().upper() for t in
+                       st.session_state.get("ui_always_include","").replace("\n",",").split(",")
+                       if t.strip()]
+    _always_scanned = st.session_state.get("last_always_include_list", [])
+
+    if _always_now:
+        _missing = [t for t in _always_now if last_scanned_tickers and t not in last_scanned_tickers]
+        if _missing:
+            st.warning(
+                f"⚠️ **Always-include tickers NOT in last scan:** "
+                f"**{', '.join(_missing)}**  \n"
+                "These were added after the last scan. "
+                "Click **🚀 Scan** to include them."
+            )
+        else:
+            included_str = ", ".join(_always_now)
+            st.success(
+                f"✅ **Always-include tickers present in last scan:** {included_str}"
+            )
+    elif _always_scanned:
+        st.info(
+            f"📌 Last scan included always-include tickers: "
+            f"**{', '.join(_always_scanned)}** "
+            "(removed from sidebar since then)."
+        )
+
+    # ── Scanned ticker list ───────────────────────────────────────────────────
     if last_scanned_tickers:
+        _ai_count = len(_always_scanned)
         st.caption(
             f"Market: **{last_market}** · Universe: **{last_universe_source}** · "
-            f"Count: **{len(last_scanned_tickers)}** · "
-            f"Live: **{last_live_ticker_count}** · Existing: **{last_existing_ticker_count}**"
+            f"Total: **{len(last_scanned_tickers)}** · "
+            f"Live: **{last_live_ticker_count}** · "
+            f"Existing: **{last_existing_ticker_count}** · "
+            f"Always-include: **{_ai_count}**"
         )
         if last_market == "🇺🇸 US":
             st.caption(
-                f"UUUU included: **{'YES' if 'UUUU' in last_scanned_tickers else 'NO'}** · "
-                f"APP included: **{'YES' if 'APP' in last_scanned_tickers else 'NO'}**"
+                f"UUUU: **{'✅' if 'UUUU' in last_scanned_tickers else '❌'}** · "
+                f"APP:  **{'✅' if 'APP'  in last_scanned_tickers else '❌'}**"
+                + (f" · Always-include in list: "
+                   + " ".join(
+                       f"**{t} {'✅' if t in last_scanned_tickers else '❌'}**"
+                       for t in _always_now[:8]
+                   ) if _always_now else "")
             )
+
+        # Show always-include separately so it's easy to spot
+        if _always_scanned:
+            st.markdown("**📌 Always-include tickers (from last scan):**")
+            st.code(", ".join(_always_scanned))
+
         st.text_area(
-            "Comma-separated scanned tickers",
+            "All scanned tickers (comma-separated)",
             value=last_scanned_tickers_csv,
             height=120,
             key="diag_scanned_tickers_csv",
             disabled=True,
         )
+
+        # Quick search box so user can verify any specific ticker
+        _search_t = st.text_input(
+            "🔍 Check if a ticker was scanned",
+            placeholder="e.g. TSLA, D05.SI, RELIANCE.NS",
+            key="diag_ticker_search",
+        ).strip().upper()
+        if _search_t:
+            _found = _search_t in [t.upper() for t in last_scanned_tickers]
+            if _found:
+                st.success(f"✅ **{_search_t}** was included in the last scan.")
+            else:
+                st.error(
+                    f"❌ **{_search_t}** was NOT in the last scan.  \n"
+                    "Add it to **Always include tickers** in the sidebar "
+                    "and click **🚀 Scan** to include it."
+                )
     else:
-        st.info("Run 🚀 Scan first to show the exact comma-separated list of stocks scanned.")
+        st.info(
+            "Run **🚀 Scan** first to show the exact list of scanned tickers.  \n"
+            "After scanning, this section shows every ticker attempted, "
+            "which always-include tickers were present, and lets you "
+            "search for any specific ticker."
+        )
 
     st.markdown("**Logs / scan notes**")
     st.caption("These are UI-level diagnostics from the latest scan/session. They are not a separate file log.")
@@ -265,7 +330,7 @@ def render_diagnostics(ctx: dict) -> None:
         diag_logs.append(f"Auto refresh interval: {_lt.get('refresh_interval', 'Off')}")
         diag_logs.append(f"Next refresh/check: {_lt.get('next_refresh_in', 'Auto refresh off')} at {_lt.get('next_refresh_at', 'Auto refresh off')}")
         diag_logs.append(f"Bucket-cap Bayesian: {'ON' if st.session_state.get('use_bucket_cap', True) else 'OFF'}")
-        diag_logs.append("Trade Journal: removed from Trade Desk in v13.46; current build v13.62")
+        diag_logs.append("Trade Journal: removed from Trade Desk in v13.46; current build v13.64")
     except Exception as e:
         diag_logs.append(f"Diagnostics log build error: {e}")
     st.text_area(

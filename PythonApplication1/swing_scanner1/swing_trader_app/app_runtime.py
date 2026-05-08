@@ -1,5 +1,5 @@
 """
-Swing Scanner v13.62 — Bayesian Ensemble
+Swing Scanner v13.64 — Bayesian Ensemble
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -16,7 +16,7 @@ v12 add-ons  : options-derived signals — call/put unusual flow, IV term
 Install:
   pip install financedatabase ta streamlit yfinance pandas numpy nsepython requests streamlit-autorefresh
 """
-# v13.62: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
+# v13.64: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
 # NotImplementedError from __annotate__ when @st.cache_data wraps functions
 # with bare unsubscripted generics like `-> tuple`. This `from __future__`
 # downgrades all annotations in this module to strings at parse time,
@@ -42,7 +42,7 @@ import streamlit as st
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v13.62",
+    page_title="Swing Scanner v13.64",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -224,9 +224,9 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v13.62")
+st.title("📈 Swing/Long Term Scanner v13.64")
 
-# v13.62: COMPACT SELF-STAMP
+# v13.64: COMPACT SELF-STAMP
 # The build identity (path, mtime, hash, size) is still computed so it can
 # self-prove the running file, but only the short hash and mtime are visible
 # in the caption. The full path and size are tucked into the tooltip — hover
@@ -523,6 +523,18 @@ always_include_tickers = [
     for t in always_include_text.replace("\n", ",").split(",")
     if t.strip()
 ]
+# If the always-include list changed since the last scan, clear the CSV cache
+# key so the next rerun (or Scan click) triggers a fresh scan with the new tickers.
+_prev_always = st.session_state.get("_last_always_include", [])
+if sorted(always_include_tickers) != sorted(_prev_always):
+    st.session_state["_last_always_include"] = list(always_include_tickers)
+    if always_include_tickers or _prev_always:   # only invalidate if something actually changed
+        st.session_state.pop("_loaded_csv_cache_key", None)
+        if always_include_tickers:
+            st.sidebar.info(
+                f"📌 Always-include changed — "
+                f"**{', '.join(always_include_tickers)}** will be added on next **🚀 Scan**."
+            )
 enable_options = st.sidebar.checkbox(
     "Use options data (US + India F&O, +30–60s)",
     key="ui_enable_options",
@@ -1110,6 +1122,10 @@ if load_csv_on_start:
                 _tickers_csv = _meta.get("scanned_tickers_csv", "")
                 st.session_state["last_scanned_tickers_csv"] = _tickers_csv
                 st.session_state["last_scanned_tickers"]     = [t.strip() for t in _tickers_csv.split(",") if t.strip()]
+                # Restore always-include info from meta so diagnostics is accurate
+                _cached_always = _meta.get("always_include_tickers", "")
+                st.session_state["last_always_include_csv"]  = _cached_always
+                st.session_state["last_always_include_list"] = [t.strip() for t in _cached_always.split(",") if t.strip()]
                 st.session_state["last_scan_opt_enabled"]    = bool(_meta.get("options_enabled", False))
                 st.session_state["last_scan_opt_count"]      = int(_meta.get("options_count", 0) or 0)
                 st.session_state["last_scan_market"]         = market_sel
@@ -1435,8 +1451,10 @@ if run:
         st.session_state["last_universe_count"]  = len(active_tickers)
         st.session_state["last_live_ticker_count"] = len(live_tickers)
         st.session_state["last_existing_ticker_count"] = len(_active_tickers)
-        st.session_state["last_scanned_tickers"] = list(active_tickers)
-        st.session_state["last_scanned_tickers_csv"] = ", ".join(active_tickers)
+        st.session_state["last_scanned_tickers"]     = list(active_tickers)
+        st.session_state["last_scanned_tickers_csv"]  = ", ".join(active_tickers)
+        st.session_state["last_always_include_csv"]   = ", ".join(always_include_tickers)
+        st.session_state["last_always_include_list"]  = list(always_include_tickers)
         # v12: record the options state at scan time + how many candidates
         # actually received option-chain data. Used by the banner below to
         # tell the user when their toggle differs from the displayed scan.
@@ -1476,6 +1494,8 @@ if run:
                 "latest_bar_time": _latest_bar_time_from_df(df_long_master) or _latest_bar_time_from_df(df_short_master),
                 "data_source": "yahoo_daily_6mo_plus_intraday_5m_overlay",
                 "yahoo_delay_note": "Yahoo quotes may still be exchange-delayed; app cache TTL is shortened during market hours.",
+                "always_include_tickers": ", ".join(always_include_tickers),
+                "always_include_count": len(always_include_tickers),
             },
         )
         if _saved_cache_meta:
