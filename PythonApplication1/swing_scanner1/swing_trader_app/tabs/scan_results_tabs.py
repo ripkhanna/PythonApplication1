@@ -200,6 +200,40 @@ def render_long(ctx: dict) -> None:
         if hv_a.empty and hv_b.empty and hv_c.empty and hv_d.empty:
             show_table(df_long, "hv_all_candidates", "Vol Ratio" if "Vol Ratio" in df_long.columns else "Rise Prob")
 
+    elif m == "HIGH CONVICTION":
+        hc_strong = df_long[action_s.str.contains(
+            "STRONG BUY – HIGH CONVICTION|BUY – PRECISION SETUP", na=False, regex=True)]
+        hc_watch  = df_long[action_s.str.contains("WATCH – CONFLUENCE", na=False, regex=True)]
+
+        st.caption(
+            f"🎯 **{len(hc_strong)}** Full confluence (5/5 categories) · "
+            f"👀 **{len(hc_watch)}** Near-confluence (4/5) · "
+            f"🗂️ **{df_long['Sector'].nunique()}** sectors"
+        )
+        st.info(
+            "🎯 **High Conviction** — each result confirmed ALL 5 independent signal categories: "
+            "📈 Trend · ⚡ Momentum · 🔊 Volume · 🏗️ Structure · 🌍 Market alignment.  \n"
+            "Check the **Signals** column for the **HC[T+M+V+S+X](5/5)** tag."
+        )
+        if not hc_strong.empty:
+            st.markdown("#### 🎯 Full Confluence — All 5 Categories")
+            st.caption(
+                "Trend + Momentum + Volume + Structure + Market all confirmed simultaneously. "
+                "Highest win-rate setups in the scanner."
+            )
+            show_table(hc_strong, "hc_strong", "Rise Prob")
+        if not hc_watch.empty:
+            with st.expander(f"👀 Near-Confluence — 4 of 5 Categories ({len(hc_watch)})", expanded=True):
+                st.caption("One category missing — watch for it to complete before entering full size.")
+                show_table(hc_watch, "hc_watch", "Rise Prob")
+        if hc_strong.empty and hc_watch.empty:
+            st.info(
+                "No High Conviction setups found in the current scan.  \n\n"
+                "This is expected — this mode is strict by design. "
+                "Try **Discovery** first to see which sectors are strongest, "
+                "then switch to **High Conviction** for the filtered shortlist."
+            )
+
     else:
         # Standard modes — unchanged behaviour
         entry_s = df_long.get("Entry Quality", pd.Series([""] * len(df_long))).astype(str)

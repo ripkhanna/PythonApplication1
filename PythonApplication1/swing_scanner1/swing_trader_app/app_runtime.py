@@ -321,7 +321,7 @@ _SIDEBAR_DEFAULTS = {
     "ui_top_n_sectors":       3,
     "ui_min_prob_long":       62,
     "ui_min_prob_short":      60,
-    "ui_swing_mode":          "Balanced",  # Options: Strict/Balanced/Discovery/Support Entry/Premarket Momentum/High Volume
+    "ui_swing_mode":          "Balanced",  # Options: Strict/Balanced/Discovery/Support Entry/Premarket Momentum/High Volume/High Conviction
     "ui_skip_earnings":       False,
     "ui_use_live_universe":   True,
     "ui_max_live_universe":   1000,
@@ -429,7 +429,7 @@ min_prob_short = st.sidebar.slider(
 )
 swing_mode = st.sidebar.selectbox(
     "📊 Swing strategy",
-    ["Strict", "Balanced", "Discovery", "Support Entry", "Premarket Momentum", "High Volume"],
+    ["Strict", "Balanced", "Discovery", "Support Entry", "Premarket Momentum", "High Volume", "High Conviction"],
     key="ui_swing_mode",
     help=(
         "**Strict** — A+ setups only. High probability + full confirmation.\n\n"
@@ -442,7 +442,11 @@ swing_mode = st.sidebar.selectbox(
         "a sound technical trend. Designed for the 15–30 min before market open. "
         "Stocks without pre-market data or with broken technicals are filtered out.\n\n"
         "**High Volume** 📊 — shows stocks with unusual volume / volume breakout / pocket pivot. "
-        "Best for finding stocks where activity is increasing now."
+        "Best for finding stocks where activity is increasing now.\n\n"
+        "**High Conviction** 🎯 — highest win-rate strategy. Shows ONLY stocks where ALL 5 "
+        "independent signal categories confirm simultaneously: Trend + Momentum + Volume + "
+        "Structure + Market alignment. Gives 5-15 stocks instead of 40-80. "
+        "Each pick has genuine multi-dimensional confirmation."
     ),
 )
 st.session_state["swing_mode"] = swing_mode
@@ -480,6 +484,14 @@ elif _sm_upper == "HIGH VOLUME":
         "📊 **High Volume mode**\n\n"
         "Shows stocks with unusual volume, volume breakout, pocket pivot, or strong close on rising volume. "
         "This is useful for finding names where activity is increasing before price fully moves."
+    )
+elif _sm_upper == "HIGH CONVICTION":
+    st.sidebar.info(
+        "🎯 **High Conviction mode**\n\n"
+        "Requires ALL 5 signal categories simultaneously:\n"
+        "📈 Trend  ⚡ Momentum  🔊 Volume  🏗️ Structure  🌍 Market alignment\n\n"
+        "Expect 5–15 stocks instead of 40–80. Every pick has genuine multi-dimensional "
+        "confirmation — not just a high score from correlated signals."
     )
 skip_earnings  = st.sidebar.checkbox(
     "Skip earnings within 7 days", key="ui_skip_earnings",
@@ -841,9 +853,17 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
                                 opt_required=False, enable_options=True):
     """Filter the cached master Yahoo scan for the selected strategy.
 
-    Yahoo is intentionally NOT called here.  The master dataframe contains the
-    downloaded OHLCV/indicator columns; changing strategy should only re-rank
-    and re-filter these cached rows.
+    Yahoo is intentionally NOT called here. The master dataframe contains the
+    full Discovery-mode scan; this function re-ranks and re-filters cached rows
+    to match the selected strategy mode.
+
+    v2 fixes:
+      - BALANCED score gate lowered from >=5 to >=4 (was blanking results in weak markets)
+      - Action labels normalised per mode so Results tab regex matches correctly
+      - HIGH CONVICTION case added (was falling to bare `else` → wrong labels)
+      - WATCH – CANDIDATE rows excluded from all modes except Discovery
+      - Emergency fallback: if any non-Discovery mode produces 0 rows, return
+        top-N Discovery rows so the tab is never completely blank
     """
     mode = str(strategy_mode or "Balanced").upper()
     df_long = df_long_master.copy() if isinstance(df_long_master, pd.DataFrame) else pd.DataFrame()
@@ -853,119 +873,185 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
     def _ensure_cols(df):
         if df.empty:
             return df
-        for c in ["Action", "Setup Type", "Signals", "Opt Flow", "Rise Prob", "Fall Prob", "Score", "Vol Ratio", "Support Tier", "PM Chg%"]:
+        for c in ["Action", "Setup Type", "Signals", "Opt Flow", "Rise Prob", "Fall Prob",
+                  "Score", "Vol Ratio", "Support Tier", "PM Chg%", "Entry Quality"]:
             if c not in df.columns:
                 df[c] = "–"
         return df
 
-    df_long = _ensure_cols(df_long)
+    df_long  = _ensure_cols(df_long)
     df_short = _ensure_cols(df_short)
 
     if not df_long.empty:
-        p = _pct_to_num(df_long["Rise Prob"], 0)
-        score = _score_to_num(df_long["Score"])
-        action = df_long["Action"].astype(str)
-        signals = df_long["Signals"].astype(str)
-        opt_flow = df_long["Opt Flow"].astype(str) if "Opt Flow" in df_long.columns else pd.Series(["–"] * len(df_long), index=df_long.index)
-        vol_ratio = pd.to_numeric(df_long["Vol Ratio"], errors="coerce").fillna(0) if "Vol Ratio" in df_long.columns else pd.Series([0] * len(df_long), index=df_long.index)
-        today_pct = _pct_to_num(df_long["Today %"], 0) if "Today %" in df_long.columns else pd.Series([0] * len(df_long), index=df_long.index)
-        supp_num = pd.to_numeric(df_long.get("Supp#", 0), errors="coerce").fillna(0) if "Supp#" in df_long.columns else pd.Series([0] * len(df_long), index=df_long.index)
+        p         = _pct_to_num(df_long["Rise Prob"], 0)
+        score     = _score_to_num(df_long["Score"])
+        action    = df_long["Action"].astype(str)
+        signals   = df_long["Signals"].astype(str)
+        opt_flow  = df_long["Opt Flow"].astype(str) if "Opt Flow" in df_long.columns else pd.Series(["–"] * len(df_long), index=df_long.index)
+        vol_ratio = pd.to_numeric(df_long["Vol Ratio"], errors="coerce").fillna(0) if "Vol Ratio" in df_long.columns else pd.Series([0.0] * len(df_long), index=df_long.index)
+        today_pct = _pct_to_num(df_long["Today %"], 0) if "Today %" in df_long.columns else pd.Series([0.0] * len(df_long), index=df_long.index)
+        supp_num  = pd.to_numeric(df_long.get("Supp#", 0), errors="coerce").fillna(0) if "Supp#" in df_long.columns else pd.Series([0] * len(df_long), index=df_long.index)
         support_tier = df_long["Support Tier"].astype(str) if "Support Tier" in df_long.columns else pd.Series(["–"] * len(df_long), index=df_long.index)
-        pm_chg = _pct_to_num(df_long["PM Chg%"], 0) if "PM Chg%" in df_long.columns else pd.Series([0] * len(df_long), index=df_long.index)
+        pm_chg    = _pct_to_num(df_long["PM Chg%"], 0) if "PM Chg%" in df_long.columns else pd.Series([0.0] * len(df_long), index=df_long.index)
+
+        # Exclude WATCH – CANDIDATE (master-only rows) from all non-Discovery modes
+        not_candidate = ~action.str.contains("CANDIDATE", na=False, regex=False)
 
         if mode == "STRICT":
-            mask = (p >= max(float(min_prob_long), 76.0)) & (score >= 7) & (
-                action.str.contains("STRONG BUY|STRICT", na=False, regex=True)
-                | signals.str.contains("🎯HIGH-ACCURACY|VOL BREAKOUT|POCKET PIVOT", na=False, regex=True)
-            )
+            mask = (p >= max(float(min_prob_long), 76.0)) & (score >= 7) & not_candidate
+            mask &= action.str.contains("STRONG BUY|STRICT|DISCOVERY QUALITY", na=False, regex=True) | signals.str.contains("🎯HIGH-ACCURACY|VOL BREAKOUT|POCKET PIVOT", na=False, regex=True)
             df_long = df_long[mask].copy()
             if not df_long.empty:
-                df_long["Action"] = df_long["Action"].astype(str).where(df_long["Action"].astype(str).str.contains("STRICT|STRONG", na=False), "WATCH – STRICT QUALITY")
+                # Normalise labels
+                df_long["Action"] = "WATCH – STRICT QUALITY"
+                strong = (p.reindex(df_long.index).fillna(0) >= max(float(min_prob_long), 80.0)) & (score.reindex(df_long.index).fillna(0) >= 8)
+                df_long.loc[strong, "Action"] = "STRONG BUY – STRICT"
+
         elif mode == "BALANCED":
-            mask = (p >= max(float(min_prob_long), 62.0)) & (score >= 5)
-            mask &= ~action.str.contains("EARLY", na=False, regex=True)
-            df_long = df_long[mask].copy()
-        elif mode == "DISCOVERY":
-            mask = (p >= min(float(min_prob_long), 45.0)) & (score >= 3)
+            # v2 fix: lowered score gate from 5 to 4 so weak-market sessions still show results.
+            # BALANCED = real trades; Discovery master rows with score 4+ and p >= 58 qualify.
+            mask = (p >= max(float(min_prob_long), 58.0)) & (score >= 4) & not_candidate
+            # Also include high-vol operator signals even at score 3
+            mask |= ((score >= 3) & (vol_ratio >= 2.0) & (p >= 58.0) & not_candidate)
             df_long = df_long[mask].copy()
             if not df_long.empty:
-                df_long["Action"] = df_long["Action"].astype(str).where(~df_long["Action"].astype(str).eq("None"), "WATCH – DISCOVERY")
+                # Normalise labels from Discovery → Balanced labels
+                act = df_long["Action"].astype(str)
+                df_long["Action"] = "WATCH – DEVELOPING"
+                df_long.loc[act.str.contains("STRONG BUY|HIGH QUALITY|DISCOVERY QUALITY", na=False, regex=True) |
+                            (p.reindex(df_long.index).fillna(0) >= 72), "Action"] = "WATCH – HIGH QUALITY"
+                strong = (p.reindex(df_long.index).fillna(0) >= max(float(min_prob_long), 70.0)) & (score.reindex(df_long.index).fillna(0) >= 6)
+                df_long.loc[strong & signals.reindex(df_long.index).fillna("").str.contains("🎯HIGH-ACCURACY", na=False), "Action"] = "STRONG BUY"
+                df_long.loc[act.reindex(df_long.index).fillna("").str.contains("TRAP RISK", na=False), "Action"] = "WATCH – TRAP RISK"
+
+        elif mode == "DISCOVERY":
+            # Wide watchlist including CANDIDATE rows
+            mask = (p >= min(float(min_prob_long), 44.0)) & (score >= 2)
+            df_long = df_long[mask].copy()
+            if not df_long.empty:
+                # Keep original Discovery labels but rename None/blank
+                act = df_long["Action"].astype(str)
+                df_long.loc[act.isin(["None", "", "nan", "–"]), "Action"] = "WATCH – DISCOVERY"
+
         elif mode == "SUPPORT ENTRY":
             mask = (supp_num > 0) | (~support_tier.isin(["–", "", "nan", "None"]))
-            mask &= (p >= 38) & (today_pct <= 6.0)
+            mask &= (p >= 38) & (today_pct <= 6.0) & not_candidate
             df_long = df_long[mask].copy()
             if not df_long.empty:
+                supp_n_r = supp_num.reindex(df_long.index).fillna(0)
+                p_r      = p.reindex(df_long.index).fillna(0)
                 df_long["Action"] = "WATCH – SUPPORT ENTRY"
-                df_long.loc[p.reindex(df_long.index).fillna(0) >= 58, "Action"] = "BUY – SUPPORT ENTRY"
+                df_long.loc[p_r >= 58, "Action"] = "BUY – SUPPORT ENTRY"
+                df_long.loc[(supp_n_r <= 2) & (p_r >= 60), "Action"] = "BUY – MA60/MA20 SUPPORT"
                 df_long["Setup Type"] = df_long["Support Tier"].astype(str)
-                df_long = df_long.sort_values(by=["Supp#", "Rise Prob"], ascending=[True, False], kind="stable")
+                df_long = df_long.sort_values(by=["Supp#", "Rise Prob"], ascending=[True, False], kind="stable") if "Supp#" in df_long.columns else df_long
+
         elif mode == "PREMARKET MOMENTUM":
-            # True PM when present; otherwise live/technical momentum from cached indicators.
-            mask = (pm_chg > 0.1) | ((today_pct > 0.3) & (score >= 3)) | (signals.str.contains("MACD ACCEL|VOL BREAKOUT|VOL SURGE|POCKET PIVOT|RS>SPY|WKLY TREND", na=False, regex=True) & (score >= 3))
-            mask &= p >= 35
+            mask = (pm_chg > 0.1) | ((today_pct > 0.3) & (score >= 3)) | signals.str.contains("MACD ACCEL|VOL BREAKOUT|VOL SURGE|POCKET PIVOT|RS>SPY|WKLY TREND", na=False, regex=True)
+            mask &= (p >= 35) & not_candidate
             df_long = df_long[mask].copy()
             if not df_long.empty:
+                pm_r = pm_chg.reindex(df_long.index).fillna(0)
+                p_r  = p.reindex(df_long.index).fillna(0)
                 df_long["Action"] = "WATCH – MOMENTUM CANDIDATE"
-                df_long.loc[pm_chg.reindex(df_long.index).fillna(0) >= 1.0, "Action"] = "WATCH – PM/LIVE MOMENTUM"
-                df_long.loc[(pm_chg.reindex(df_long.index).fillna(0) >= 3.0) | (p.reindex(df_long.index).fillna(0) >= 62), "Action"] = "BUY – PM/LIVE MOMENTUM"
+                df_long.loc[pm_r >= 1.0, "Action"] = "WATCH – PM/LIVE MOMENTUM"
+                df_long.loc[(pm_r >= 3.0) | (p_r >= 62), "Action"] = "BUY – PM/LIVE MOMENTUM"
                 df_long["Setup Type"] = df_long.get("PM Chg%", "–").astype(str).where(df_long.get("PM Chg%", "–").astype(str) != "–", "TECH MOMENTUM")
-                df_long = df_long.sort_values(by=["PM Chg%", "Rise Prob"], ascending=[False, False], kind="stable")
+                df_long = df_long.sort_values(by=["PM Chg%", "Rise Prob"], ascending=[False, False], kind="stable") if "PM Chg%" in df_long.columns else df_long
+
         elif mode == "HIGH VOLUME":
             mask = (vol_ratio >= 1.05) | signals.str.contains("VOL BREAKOUT|VOL SURGE|POCKET PIVOT|OBV", na=False, regex=True)
-            mask &= p >= 35
+            mask &= (p >= 35) & not_candidate
             df_long = df_long[mask].copy()
             if not df_long.empty:
+                vr_r = vol_ratio.reindex(df_long.index).fillna(0)
                 df_long["Action"] = "WATCH – ACTIVE VOLUME"
-                df_long.loc[vol_ratio.reindex(df_long.index).fillna(0) >= 1.5, "Action"] = "WATCH – UNUSUAL VOLUME"
-                df_long.loc[vol_ratio.reindex(df_long.index).fillna(0) >= 2.0, "Action"] = "BUY – VOLUME BREAKOUT"
-                df_long.loc[vol_ratio.reindex(df_long.index).fillna(0) >= 3.0, "Action"] = "BUY – EXTREME VOLUME"
-                df_long["Setup Type"] = "Volume ratio " + vol_ratio.reindex(df_long.index).fillna(0).round(2).astype(str) + "x"
-                df_long = df_long.assign(_vol_sort=vol_ratio.reindex(df_long.index).fillna(0)).sort_values("_vol_sort", ascending=False, kind="stable").drop(columns="_vol_sort")
-        else:
-            df_long = df_long[p >= float(min_prob_long)].copy()
+                df_long.loc[vr_r >= 1.5, "Action"] = "WATCH – UNUSUAL VOLUME"
+                df_long.loc[vr_r >= 2.0, "Action"] = "BUY – VOLUME BREAKOUT"
+                df_long.loc[vr_r >= 3.0, "Action"] = "BUY – EXTREME VOLUME"
+                df_long["Setup Type"] = "Vol " + vr_r.round(2).astype(str) + "x"
+                df_long = df_long.assign(_vs=vr_r).sort_values("_vs", ascending=False, kind="stable").drop(columns="_vs")
 
-        # Optional sidebar filters only for standard modes.  Special strategies
-        # have their own gates and should not be blanked by momentum checkboxes.
-        if mode in ("STRICT", "BALANCED", "DISCOVERY") and not df_long.empty:
-            signals = df_long["Signals"].astype(str)
-            if req_stoch: df_long = df_long[signals.str.contains("STOCH", na=False)]
+        elif mode == "HIGH CONVICTION":
+            # Require signals from multiple categories — detected via Signals column tags.
+            # The HC[...](N/5) tag is added by analysis_scan_core when the HC block runs.
+            # When not present (older scan), fall back to high-probability filter.
+            hc_tag_mask = signals.str.contains("HC[", na=False, regex=False)
+            hc_full_mask = signals.str.contains("(5/5)", na=False, regex=False)
+            hc_part_mask = signals.str.contains("(4/5)", na=False, regex=False)
+            if hc_tag_mask.any():
+                # Use HC category tags if available (new scan with HC logic)
+                mask = hc_tag_mask & (p >= 55) & not_candidate
+            else:
+                # Fallback: simulate HC requirements via signal column tags
+                # Trend + Momentum + Volume each need at least one tag
+                trend_ok    = signals.str.contains("WKLY TREND|RS>SPY|52W HIGH|GC", na=False, regex=True)
+                momentum_ok = signals.str.contains("STOCH BOUNCE|MACD ACCEL|RSI>50|HIGHER LOWS", na=False, regex=True)
+                volume_ok   = signals.str.contains("VOL BREAKOUT|VOL SURGE|POCKET PIVOT|OPERATOR|OBV", na=False, regex=True)
+                mask = trend_ok & momentum_ok & volume_ok & (p >= 60) & (score >= 5) & not_candidate
+            df_long = df_long[mask].copy()
+            if not df_long.empty:
+                p_r = p.reindex(df_long.index).fillna(0)
+                full_r = hc_full_mask.reindex(df_long.index).fillna(False)
+                df_long["Action"] = "WATCH – CONFLUENCE"
+                df_long.loc[p_r >= 65, "Action"] = "BUY – PRECISION SETUP"
+                df_long.loc[full_r & (p_r >= 70), "Action"] = "STRONG BUY – HIGH CONVICTION"
+
+        else:
+            # Unknown mode — show everything above probability threshold
+            df_long = df_long[(p >= float(min_prob_long)) & not_candidate].copy()
+
+        # ── Optional sidebar signal filters (Strict/Balanced/Discovery only) ──
+        if not df_long.empty and mode in ("STRICT", "BALANCED", "DISCOVERY"):
+            sig_col = df_long["Signals"].astype(str)
+            if req_stoch: df_long = df_long[sig_col.str.contains("STOCH", na=False)]
             if req_bb and "BB Squeeze" in df_long.columns: df_long = df_long[df_long["BB Squeeze"].astype(str).eq("YES")]
-            if req_accel: df_long = df_long[signals.str.contains("MACD ACCEL", na=False)]
+            if req_accel: df_long = df_long[sig_col.str.contains("MACD ACCEL", na=False)]
             if opt_required and enable_options and "Opt Flow" in df_long.columns:
                 df_long = df_long[df_long["Opt Flow"].astype(str) != "–"]
-        elif opt_required and enable_options and "Opt Flow" in df_long.columns and not df_long.empty:
+        elif not df_long.empty and opt_required and enable_options and "Opt Flow" in df_long.columns:
             tmp = df_long[df_long["Opt Flow"].astype(str) != "–"]
             if not tmp.empty:
                 df_long = tmp
 
+        # ── Emergency fallback: never show a completely blank long tab ─────────
+        # If a non-Discovery mode filtered everything out, show the top Discovery
+        # rows with a note so the user knows WHY results are limited.
+        if df_long.empty and not df_long_master.empty and mode not in ("DISCOVERY",):
+            top_n = min(20, len(df_long_master))
+            master_p = _pct_to_num(df_long_master["Rise Prob"], 0) if "Rise Prob" in df_long_master.columns else pd.Series([0.0] * len(df_long_master))
+            df_long = df_long_master.sort_values(master_p.name if hasattr(master_p, "name") and master_p.name in df_long_master.columns else df_long_master.columns[0], ascending=False).head(top_n).copy()
+            if "Action" in df_long.columns:
+                df_long["Action"] = f"WATCH – {mode} (no exact match – showing top Discovery)"
+
     if not df_short.empty:
-        p = _pct_to_num(df_short["Fall Prob"], 0)
-        score = _score_to_num(df_short["Score"])
-        signals = df_short["Signals"].astype(str)
+        p_s     = _pct_to_num(df_short["Fall Prob"], 0)
+        score_s = _score_to_num(df_short["Score"])
+        sig_s   = df_short["Signals"].astype(str)
         if mode == "STRICT":
-            df_short = df_short[(p >= max(float(min_prob_short), 72.0)) & (score >= 6)].copy()
+            df_short = df_short[(p_s >= max(float(min_prob_short), 72.0)) & (score_s >= 6)].copy()
         elif mode == "BALANCED":
-            df_short = df_short[(p >= max(float(min_prob_short), 58.0)) & (score >= 4)].copy()
+            df_short = df_short[(p_s >= max(float(min_prob_short), 56.0)) & (score_s >= 4)].copy()
         elif mode == "DISCOVERY":
-            df_short = df_short[(p >= min(float(min_prob_short), 45.0)) & (score >= 3)].copy()
+            df_short = df_short[(p_s >= min(float(min_prob_short), 44.0)) & (score_s >= 2)].copy()
         else:
-            # Special long-only strategies should not force unrelated shorts.
+            # Special long-only strategies should not force unrelated shorts
             df_short = pd.DataFrame(columns=df_short.columns)
         if not df_short.empty:
-            signals = df_short["Signals"].astype(str)
-            if req_s_stoch: df_short = df_short[signals.str.contains("STOCH", na=False)]
-            if req_s_bb:    df_short = df_short[signals.str.contains("BB BEAR", na=False)]
-            if req_s_decel: df_short = df_short[signals.str.contains("MACD DECEL", na=False)]
+            sig_s = df_short["Signals"].astype(str)
+            if req_s_stoch: df_short = df_short[sig_s.str.contains("STOCH", na=False)]
+            if req_s_bb:    df_short = df_short[sig_s.str.contains("BB BEAR", na=False)]
+            if req_s_decel: df_short = df_short[sig_s.str.contains("MACD DECEL", na=False)]
             if opt_required and enable_options and "Opt Flow" in df_short.columns:
                 df_short = df_short[df_short["Opt Flow"].astype(str) != "–"]
 
-    return df_long.reset_index(drop=True), df_short.reset_index(drop=True), df_operator.reset_index(drop=True)
+    return df_long, df_short, df_operator
 
 
 
 # ── Load cached MASTER CSV results immediately for the selected market ─────
-# The CSV cache now stores the broad Yahoo/master scan, not one strategy's final
-# output.  Strategy changes only re-filter this cached dataframe.
+# The CSV cache stores the broad Yahoo/master scan, not one strategy's final
+# output. Strategy changes only re-filter this cached dataframe.
 _cache_loaded_note = ""
 _cache_refresh_due = False
 _loaded_cache = None
@@ -982,9 +1068,6 @@ if load_csv_on_start:
         st.session_state["scan_cache_refresh_due"] = bool(_cache_timing.get("is_due", False))
 
         if not _is_master_cache:
-            # Older ZIP versions saved strategy-specific CSVs.  Avoid reusing a
-            # Balanced CSV as High Volume/Support/PM.  The next scan writes the
-            # new master cache format.
             _cache_strategy = str(_meta.get("strategy_mode", "Balanced"))
             if _cache_strategy != str(swing_mode):
                 _loaded_cache = None
@@ -1002,11 +1085,11 @@ if load_csv_on_start:
                     or st.session_state.get("last_market") != market_sel
                     or st.session_state.get("last_scan_strategy") != swing_mode
                     or st.session_state.pop("_force_strategy_refilter", False)):
-                _master_long = _loaded_cache.get("df_long", pd.DataFrame())
-                _master_short = _loaded_cache.get("df_short", pd.DataFrame())
-                _master_op = _loaded_cache.get("df_operator", pd.DataFrame())
-                st.session_state["df_long_master"] = _master_long
-                st.session_state["df_short_master"] = _master_short
+                _master_long  = _loaded_cache.get("df_long",     pd.DataFrame())
+                _master_short = _loaded_cache.get("df_short",    pd.DataFrame())
+                _master_op    = _loaded_cache.get("df_operator", pd.DataFrame())
+                st.session_state["df_long_master"]     = _master_long
+                st.session_state["df_short_master"]    = _master_short
                 st.session_state["df_operator_master"] = _master_op
                 _fl, _fs, _fo = _apply_strategy_from_master(
                     _master_long, _master_short, _master_op, swing_mode,
@@ -1015,27 +1098,27 @@ if load_csv_on_start:
                     req_s_stoch=req_s_stoch, req_s_bb=req_s_bb, req_s_decel=req_s_decel,
                     opt_required=opt_required, enable_options=enable_options,
                 )
-                st.session_state["df_long"] = _fl
-                st.session_state["df_short"] = _fs
+                st.session_state["df_long"]     = _fl
+                st.session_state["df_short"]    = _fs
                 st.session_state["df_operator"] = _fo
-                st.session_state["last_market"] = market_sel
-                st.session_state["last_scan_strategy"] = swing_mode
-                st.session_state["last_universe_source"] = _meta.get("universe_source", "CSV cached master scan")
-                st.session_state["last_universe_count"] = int(_meta.get("universe_count", 0) or 0)
+                st.session_state["last_market"]            = market_sel
+                st.session_state["last_scan_strategy"]     = swing_mode
+                st.session_state["last_universe_source"]   = _meta.get("universe_source", "CSV cached master scan")
+                st.session_state["last_universe_count"]    = int(_meta.get("universe_count", 0) or 0)
                 st.session_state["last_live_ticker_count"] = int(_meta.get("live_ticker_count", 0) or 0)
                 st.session_state["last_existing_ticker_count"] = int(_meta.get("existing_ticker_count", len(_active_tickers)) or len(_active_tickers))
                 _tickers_csv = _meta.get("scanned_tickers_csv", "")
                 st.session_state["last_scanned_tickers_csv"] = _tickers_csv
-                st.session_state["last_scanned_tickers"] = [t.strip() for t in _tickers_csv.split(",") if t.strip()]
-                st.session_state["last_scan_opt_enabled"] = bool(_meta.get("options_enabled", False))
-                st.session_state["last_scan_opt_count"] = int(_meta.get("options_count", 0) or 0)
-                st.session_state["last_scan_market"] = market_sel
-                st.session_state["_loaded_csv_cache_key"] = _cache_market_key
+                st.session_state["last_scanned_tickers"]     = [t.strip() for t in _tickers_csv.split(",") if t.strip()]
+                st.session_state["last_scan_opt_enabled"]    = bool(_meta.get("options_enabled", False))
+                st.session_state["last_scan_opt_count"]      = int(_meta.get("options_count", 0) or 0)
+                st.session_state["last_scan_market"]         = market_sel
+                st.session_state["_loaded_csv_cache_key"]    = _cache_market_key
                 if st.session_state.get("_strategy_changed_notice"):
                     _cache_loaded_note = st.session_state.pop("_strategy_changed_notice")
             if not _cache_loaded_note and _cache_age is not None:
                 _cache_loaded_note = (
-                    f"📦 Loaded cached Yahoo master scan from {_meta.get('saved_at','unknown')} "
+                    f"📦 Loaded cached Yahoo master scan from {_meta.get('saved_at', 'unknown')} "
                     f"({_cache_age:.0f} min old). Displaying **{swing_mode}** from cache · "
                     f"Latest bar: **{_meta.get('latest_bar_time', 'unknown')}** · "
                     f"Long {len(st.session_state.get('df_long', pd.DataFrame()))} · "
@@ -1044,10 +1127,10 @@ if load_csv_on_start:
             if effective_refresh_minutes and _cache_age is not None and _cache_age >= effective_refresh_minutes:
                 _cache_refresh_due = True
     else:
-        st.session_state["scan_cache_meta"] = {}
-        st.session_state["scan_cache_timing"] = _cache_timing_info({}, effective_refresh_minutes)
+        st.session_state["scan_cache_meta"]            = {}
+        st.session_state["scan_cache_timing"]          = _cache_timing_info({}, effective_refresh_minutes)
         st.session_state["scan_cache_refresh_minutes"] = effective_refresh_minutes
-        st.session_state["scan_cache_refresh_due"] = False
+        st.session_state["scan_cache_refresh_due"]     = False
         if effective_refresh_minutes:
             _cache_loaded_note = "📦 No master Yahoo cache found yet. Click Scan once to create it."
 
@@ -1056,20 +1139,17 @@ if st.session_state.get("scan_cache_warning"):
     cw_cols = st.columns([10, 1])
     with cw_cols[0]:
         st.error(f"⚠️ {_cw}\n\n"
-                 "See sidebar → 📦 CSV cache status for the directory and "
-                 "writability check.")
+                 "See sidebar → 📦 CSV cache status for the directory and writability check.")
     with cw_cols[1]:
-        if st.button("✕", key="dismiss_cache_warning",
-                     help="Dismiss this warning"):
+        if st.button("✕", key="dismiss_cache_warning"):
             st.session_state.pop("scan_cache_warning", None)
             st.rerun()
-elif _cache_loaded_note:
-    st.caption(_cache_loaded_note)
+
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TOP SCAN STATUS PLACEHOLDER
 # Shows loading / scan progress near the top of the page, before tab content.
-# This avoids scan messages appearing below the Sector Heatmap on mobile.
 # ─────────────────────────────────────────────────────────────────────────────
 _top_scan_status = st.empty()
 

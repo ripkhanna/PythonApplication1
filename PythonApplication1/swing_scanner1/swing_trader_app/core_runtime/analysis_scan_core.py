@@ -444,12 +444,16 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         min_score_strong_short = 4 if regime in ("BEAR", "CAUTION") else 5
         min_prob_strong_short  = 0.60 if regime in ("BEAR", "CAUTION") else 0.64
     elif swing_mode in ("SUPPORT ENTRY", "PREMARKET MOMENTUM", "HIGH VOLUME"):
-        # Both new strategies use the same probability thresholds as Balanced
-        # but add their own structural gates (support proximity / pre-market %).
         min_score_strong_long  = 5 if regime == "BULL" else 6
         min_prob_strong_long   = 0.65 if regime == "BULL" else 0.70
         min_score_strong_short = 4 if regime in ("BEAR", "CAUTION") else 5
         min_prob_strong_short  = 0.62 if regime in ("BEAR", "CAUTION") else 0.66
+    elif swing_mode == "HIGH CONVICTION":
+        # Category gates do the filtering — lower probability bar than Balanced.
+        min_score_strong_long  = 4 if regime == "BULL" else 5
+        min_prob_strong_long   = 0.62 if regime == "BULL" else 0.66
+        min_score_strong_short = 4 if regime in ("BEAR", "CAUTION") else 5
+        min_prob_strong_short  = 0.60 if regime in ("BEAR", "CAUTION") else 0.64
     else:  # Balanced
         min_score_strong_long  = 5 if regime == "BULL" else 6
         min_prob_strong_long   = 0.68 if regime == "BULL" else 0.72
@@ -740,6 +744,60 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 "Mixed"
             )
 
+            # Pre-extract the two scalars the HC block needs.
+            # (The full support/PM variable block runs after HC, so we read
+            # directly from raw{} here rather than waiting for that block.)
+            rsi_now = float(raw.get("rsi0", 50) or 50)
+            p_raw   = float(raw.get("p", 0) or p)
+
+            # ── HIGH CONVICTION: category-based confluence (5 independent groups) ──
+            # Requiring 1+ signal from each of 5 unrelated categories is much
+            # stronger than requiring N signals from one correlated pool.
+            # A stock confirming in all 5 has genuine multi-dimensional strength.
+            _hc_trend = any([
+                long_sig.get("trend_daily", False),
+                long_sig.get("weekly_trend", False),
+                long_sig.get("golden_cross", False),
+                long_sig.get("full_ma_stack", False),
+            ])
+            _hc_momentum = any([
+                long_sig.get("macd_accel", False),
+                long_sig.get("stoch_confirmed", False),
+                long_sig.get("rsi_confirmed", False),
+                long_sig.get("momentum_3d", False),
+            ])
+            _hc_volume = any([
+                long_sig.get("vol_breakout", False),
+                long_sig.get("vol_surge_up", False),
+                long_sig.get("pocket_pivot", False),
+                long_sig.get("operator_accumulation", False),
+            ])
+            _hc_structure = any([
+                long_sig.get("higher_lows", False),
+                long_sig.get("vcp_tightness", False),
+                long_sig.get("strong_close", False),
+                long_sig.get("bull_candle", False),
+            ])
+            _hc_market = any([
+                long_sig.get("rel_strength", False),
+                long_sig.get("rs_momentum", False),
+                long_sig.get("sector_leader", False),
+                long_sig.get("near_52w_high", False),
+            ])
+            _hc_cats_hit = sum([_hc_trend, _hc_momentum, _hc_volume, _hc_structure, _hc_market])
+            _hc_rsi_ok   = 32 <= rsi_now <= 76
+            _hc_no_trap  = not major_trap_risk and raw.get("above_ma60", False)
+            _hc_full     = (_hc_cats_hit == 5 and _hc_rsi_ok and _hc_no_trap)
+            _hc_partial  = (_hc_cats_hit == 4 and _hc_rsi_ok and _hc_no_trap)
+            # Build a readable tag for the Signals column
+            _hc_parts = []
+            if _hc_trend:     _hc_parts.append("T")
+            if _hc_momentum:  _hc_parts.append("M")
+            if _hc_volume:    _hc_parts.append("V")
+            if _hc_structure: _hc_parts.append("S")
+            if _hc_market:    _hc_parts.append("X")
+            _hc_tag = f"HC[{'+'.join(_hc_parts)}]({_hc_cats_hit}/5)" if _hc_parts else ""
+
             # ═══════════════════════════════════════════════════════════════════
             # STRATEGY HELPERS: SUPPORT ENTRY / PREMARKET MOMENTUM
             #
@@ -1002,6 +1060,18 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 else:
                     l_action = "WATCH – VOLUME CANDIDATE" if hv_tier else None
 
+            elif swing_mode == "HIGH CONVICTION":
+                if _hc_full and _hc_volume and high_accuracy_long:
+                    l_action = "STRONG BUY – HIGH CONVICTION"
+                elif _hc_full and l_prob >= min_prob_strong_long:
+                    l_action = "BUY – PRECISION SETUP"
+                elif _hc_full and l_prob >= 0.57:
+                    l_action = "BUY – PRECISION SETUP"
+                elif _hc_partial and l_prob >= 0.60 and core_long_trend:
+                    l_action = "WATCH – CONFLUENCE"
+                else:
+                    l_action = None
+
             else:
                 # Standard strategy modes must be meaningfully different.
                 # Previous fallback rules were too broad, so Strict/Balanced/Discovery
@@ -1027,16 +1097,27 @@ def fetch_analysis(green_sectors, red_sectors, regime,
 
                 elif swing_mode == "DISCOVERY":
                     # Wide watchlist: allow earlier trend + probability combinations.
+                    # IMPORTANT: Discovery is used as the MASTER SCAN that feeds
+                    # all other strategies via _apply_strategy_from_master(). It must
+                    # catch every stock with any meaningful signal — even in bearish
+                    # sessions where trend_daily=False and above_ma60=False.
+                    # Do NOT gate WATCH-EARLY on core_long_trend: that causes empty
+                    # master → all strategies show zero results in down markets.
                     if high_accuracy_long:
                         l_action = "STRONG BUY – DISCOVERY"
                     elif actionable_long:
                         l_action = "WATCH – DISCOVERY QUALITY"
-                    elif trap_risk and l_score >= 4 and l_prob >= 0.58 and core_long_trend:
+                    elif trap_risk and l_score >= 4 and l_prob >= 0.58:
                         l_action = "WATCH – TRAP RISK"
-                    elif l_score >= 4 and l_prob >= 0.58 and core_long_trend:
+                    elif l_score >= 4 and l_prob >= 0.55:
                         l_action = "WATCH – DEVELOPING"
-                    elif l_score >= 3 and l_prob >= 0.52 and (core_long_trend or raw.get("above_ma60", False)):
+                    elif l_score >= 3 and l_prob >= 0.48:
                         l_action = "WATCH – EARLY"
+                    elif l_score >= 2 and l_prob >= 0.44:
+                        # Minimum threshold: ensures the master always has content
+                        # even in choppy/bearish sessions. Filtered out by every mode
+                        # except Discovery itself, but keeps the master non-empty.
+                        l_action = "WATCH – CANDIDATE"
                     else:
                         l_action = None
 
@@ -1122,6 +1203,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 if squeeze_flag:                   l_tags.append("⚡SQUEEZE")
                 if vr >= 2.5:                   l_tags.append("VOL SURGE")
                 if swing_mode == "HIGH VOLUME" and hv_tier: l_tags.append(f"HV-{hv_tier}:{hv_score}")
+                if swing_mode == "HIGH CONVICTION" and _hc_tag: l_tags.append(_hc_tag)
                 if is_monday:                   l_tags.append("⚠️MON")
                 if combo_bonus > 0:             l_tags.append(f"COMBO+{combo_bonus:.0%}")
                 if high_accuracy_long:          l_tags.append("🎯HIGH-ACCURACY")
