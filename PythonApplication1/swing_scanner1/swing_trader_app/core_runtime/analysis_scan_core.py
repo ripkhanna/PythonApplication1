@@ -358,38 +358,50 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         except Exception:
             return daily_df
 
-    status_text.text(f"📥 Fetching latest 5-minute bars for {total} stocks...")
+    # Skip intraday fetch outside market hours — saves ~30s when market is closed
+    _market_is_open = False
     try:
-        raw_intraday = yf.download(
-            all_tickers, period="1d", interval="5m",
-            progress=False, group_by="ticker", threads=True, auto_adjust=True,
-            prepost=True,
-        )
-        latest_bars = []
-        for tkr in all_tickers:
-            try:
-                idf = _extract_from_yf_batch(raw_intraday, tkr, len(all_tickers))
-                idf = _clean_scan_ohlcv(idf).dropna(how="all") if not idf.empty else pd.DataFrame()
-                if len(idf) >= 1 and "Close" in idf.columns and idf["Close"].notna().any():
-                    intraday_cache[tkr] = idf
-                    latest_bars.append(str(pd.Timestamp(idf.index[-1])))
-            except Exception:
-                continue
-        scan_debug["intraday_loaded"] = int(len(intraday_cache))
-        scan_debug["latest_intraday_bar"] = max(latest_bars) if latest_bars else ""
-    except Exception as e:
-        scan_debug["intraday_error"] = f"{type(e).__name__}: {e}"
+        _market_is_open = _is_market_live_now(
+            st.session_state.get("market_selector", "🇺🇸 US"))
+    except Exception:
+        pass
+
+    if _market_is_open:
+        status_text.text(f"📥 Fetching latest 5-minute bars for {total} stocks...")
         try:
-            _record_app_warning("intraday_yfinance_download", scan_debug["intraday_error"], extra={"total_tickers": total})
-        except Exception:
-            pass
+            raw_intraday = yf.download(
+                all_tickers, period="1d", interval="5m",
+                progress=False, group_by="ticker", threads=True, auto_adjust=True,
+                prepost=True,
+            )
+            latest_bars = []
+            for tkr in all_tickers:
+                try:
+                    idf = _extract_from_yf_batch(raw_intraday, tkr, len(all_tickers))
+                    idf = _clean_scan_ohlcv(idf).dropna(how="all") if not idf.empty else pd.DataFrame()
+                    if len(idf) >= 1 and "Close" in idf.columns and idf["Close"].notna().any():
+                        intraday_cache[tkr] = idf
+                        latest_bars.append(str(pd.Timestamp(idf.index[-1])))
+                except Exception:
+                    continue
+            scan_debug["intraday_loaded"] = int(len(intraday_cache))
+            scan_debug["latest_intraday_bar"] = max(latest_bars) if latest_bars else ""
+        except Exception as e:
+            scan_debug["intraday_error"] = f"{type(e).__name__}: {e}"
+            try:
+                _record_app_warning("intraday_yfinance_download",
+                                    scan_debug["intraday_error"],
+                                    extra={"total_tickers": total})
+            except Exception:
+                pass
+
 
     # ── Batch OHLCV pre-fetch ─────────────────────────────────────────────────
     status_text.text(f"📥 Batch downloading {total} stocks...")
     batch_cache = {}
     try:
         raw_batch = yf.download(
-            all_tickers, period="6mo", interval="1d",
+            all_tickers, period="3mo", interval="1d",  # 3mo is enough for 60d MA + all signals
             progress=False, group_by="ticker", threads=True, auto_adjust=True
         )
         for tkr in all_tickers:
@@ -460,25 +472,141 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         min_score_strong_short = 4 if regime in ("BEAR", "CAUTION") else 5
         min_prob_strong_short  = 0.64 if regime in ("BEAR", "CAUTION") else 0.68
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # SPEED FIX: parallel pre-fetch of .calendar / .info / .fast_info
+    #
+    # Uses a SHARED requests.Session so every worker thread uses the same
+    # Yahoo crumb cookie. Without a shared session, parallel Ticker() calls
+    # each try to refresh the crumb simultaneously → HTTP 401 "Invalid Crumb".
+    #
+    # Worker count is kept at 5 (not 25+) for the same reason: too many
+    # simultaneous Yahoo connections trigger rate-limiting and crumb errors.
+    # 5 workers still cuts 15 min of serial fetches down to ~2-3 min.
+    # ─────────────────────────────────────────────────────────────────────────
+    from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
+    import threading as _threading
+    import time as _time
+    try:
+        import requests as _requests_mod
+        _shared_session = _requests_mod.Session()
+        _shared_session.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+        })
+    except Exception:
+        _shared_session = None
+
+    _meta_cache = {}          # ticker → {cal_days, float_shares, short_pct, pe, pm_chg, ...}
+    _meta_lock  = _threading.Lock()
+    _in_batch   = set(batch_cache.keys())   # only fetch meta for tickers with OHLCV
+    _WORKERS    = 5           # keep low — Yahoo crumb invalidates under heavy parallelism
+
+    def _fetch_one_meta(t):
+        result = {
+            "cal_days": None, "float_shares": None,
+            "short_pct": None, "pe": None,
+            "pm_chg": 0.0, "pm_price": 0.0, "pm_ok": False,
+        }
+        for _attempt in range(2):   # retry once on 401
+            try:
+                tkr_obj = (yf.Ticker(t, session=_shared_session)
+                           if _shared_session else yf.Ticker(t))
+
+                # ── calendar ────────────────────────────────────────────
+                try:
+                    _cal = tkr_obj.calendar
+                    if _cal is not None and not (hasattr(_cal, "empty") and _cal.empty):
+                        _ed = (_cal.loc["Earnings Date"].iloc[0]
+                               if "Earnings Date" in _cal.index else _cal.iloc[0, 0])
+                        if not pd.isnull(_ed):
+                            result["cal_days"] = (
+                                pd.Timestamp(_ed).date() - datetime.today().date()
+                            ).days
+                except Exception:
+                    pass
+
+                # ── info + fast_info (only if OHLCV loaded) ─────────────
+                if t in _in_batch:
+                    try:
+                        _inf = tkr_obj.info or {}
+                        result["float_shares"] = _inf.get("floatShares")
+                        result["short_pct"]    = _inf.get("shortPercentOfFloat")
+                        result["pe"]           = _inf.get("trailingPE")
+                    except Exception:
+                        pass
+                    try:
+                        _fi = getattr(tkr_obj, "fast_info", None)
+                        if _fi is not None:
+                            _pm_p  = getattr(_fi, "pre_market_price", None)
+                            _pm_pc = getattr(_fi, "previous_close",   None)
+                            if _pm_p is None and hasattr(_fi, "get"):
+                                _pm_p  = (_fi.get("preMarketPrice")
+                                          or _fi.get("pre_market_price"))
+                                _pm_pc = (_fi.get("regularMarketPreviousClose")
+                                          or _fi.get("previous_close"))
+                            if _pm_p and _pm_pc and float(_pm_pc) > 0:
+                                result["pm_price"] = float(_pm_p)
+                                result["pm_chg"]   = round(
+                                    (float(_pm_p) / float(_pm_pc) - 1) * 100, 2)
+                                result["pm_ok"]    = True
+                    except Exception:
+                        pass
+                break  # success — don't retry
+
+            except Exception as _e:
+                _emsg = str(_e).lower()
+                if "401" in _emsg or "crumb" in _emsg or "unauthorized" in _emsg:
+                    # Crumb expired — wait briefly and retry with a fresh Ticker
+                    _time.sleep(0.5 + _attempt * 0.5)
+                    _shared_session = None   # drop session so next attempt re-initialises
+                    continue
+                break  # non-auth error — don't retry
+
+        return t, result
+
+    status_text.text(
+        f"⚡ Pre-fetching meta for {len(all_tickers)} tickers "
+        f"({_WORKERS} parallel workers)…"
+    )
+    try:
+        with ThreadPoolExecutor(max_workers=_WORKERS) as _pool:
+            _futs = {_pool.submit(_fetch_one_meta, t): t for t in all_tickers}
+            _done = 0
+            for _fut in _as_completed(_futs):
+                _done += 1
+                if _done % 50 == 0:
+                    status_text.text(
+                        f"⚡ Pre-fetching meta {_done}/{len(all_tickers)}…"
+                    )
+                try:
+                    _t, _res = _fut.result(timeout=15)
+                    with _meta_lock:
+                        _meta_cache[_t] = _res
+                except Exception:
+                    pass
+    except Exception:
+        # ThreadPool failed entirely — _meta_cache stays empty.
+        # The main loop will still run; it just won't have float/short/PE/PM data.
+        pass
+    status_text.text("✅ Meta ready — computing signals…")
+
     for i, ticker in enumerate(all_tickers):
         try:
             status_text.text(f"Scanning {ticker} ({i+1}/{total})...")
 
-            # ── Earnings guard (14 days) ──────────────────────────────────────
+            # ── Earnings guard — pre-fetched calendar cache ──────────────
             if skip_earnings:
-                try:
-                    info_cal = yf.Ticker(ticker).calendar
-                    if info_cal is not None and not info_cal.empty:
-                        ed = info_cal.loc["Earnings Date"].iloc[0] \
-                             if "Earnings Date" in info_cal.index else info_cal.iloc[0, 0]
-                        if not pd.isnull(ed):
-                            days_out = (pd.Timestamp(ed).date() - datetime.today().date()).days
-                            if 0 <= days_out <= 7:   # 7-day guard (was 14)
-                                scan_debug["skipped_earnings"] += 1
-                                progress_bar.progress((i + 1) / total)
-                                continue
-                except Exception:
-                    pass
+                _cal_days = _meta_cache.get(ticker, {}).get("cal_days")
+                if _cal_days is not None and 0 <= _cal_days <= 7:
+                    scan_debug["skipped_earnings"] += 1
+                    progress_bar.progress((i + 1) / total)
+                    continue
+
 
             # Use pre-fetched batch or individual fallback
             if ticker in batch_cache:
@@ -638,15 +766,11 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             long_sig  = {**long_sig,  **opt_long}
             short_sig = {**short_sig, **opt_short}
 
-            # ── Float and short interest from yfinance.info ───────────────────
-            float_shares = short_pct = pe = None
-            try:
-                inf = yf.Ticker(ticker).info
-                float_shares = inf.get("floatShares")
-                short_pct    = inf.get("shortPercentOfFloat")
-                pe           = inf.get("trailingPE")
-            except Exception:
-                pass
+            # ── Float / short / PE — pre-fetched meta cache ──────────────────
+            _m          = _meta_cache.get(ticker, {})
+            float_shares = _m.get("float_shares")
+            short_pct    = _m.get("short_pct")
+            pe           = _m.get("pe")
 
             float_str = f"{float_shares/1e6:.0f}M" if float_shares else "–"
             short_str = f"{short_pct*100:.1f}%" if short_pct else "–"
@@ -881,26 +1005,13 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 (support_quality_ok or trend_ok_for_support or l_score >= 1 or l_prob >= 0.38)
             )
 
-            pm_chg_pct    = 0.0
-            pm_price      = 0.0
-            pm_volume_str = "–"
-            pm_data_ok    = False
-            pm_source     = "PM"
-            try:
-                _fi = getattr(yf.Ticker(ticker), "fast_info", None)
-                if _fi is not None:
-                    _pm_p  = getattr(_fi, "pre_market_price", None)
-                    _pm_pc = getattr(_fi, "previous_close", None)
-                    if _pm_p is None and hasattr(_fi, "get"):
-                        _pm_p = _fi.get("preMarketPrice") or _fi.get("pre_market_price")
-                        _pm_pc = _fi.get("regularMarketPreviousClose") or _fi.get("previous_close")
-                    if _pm_p and _pm_pc and float(_pm_pc) > 0:
-                        pm_price = float(_pm_p)
-                        pm_chg_pct = round((pm_price / float(_pm_pc) - 1) * 100, 2)
-                        pm_data_ok = True
-                        pm_source = "PM"
-            except Exception:
-                pm_data_ok = False
+            # ── Pre-market price — pre-fetched meta cache ────────────────────
+            _pm_m       = _meta_cache.get(ticker, {})
+            pm_chg_pct  = float(_pm_m.get("pm_chg",   0.0) or 0.0)
+            pm_price    = float(_pm_m.get("pm_price", 0.0) or 0.0)
+            pm_data_ok  = bool(_pm_m.get("pm_ok",    False))
+            pm_source   = "PM" if pm_data_ok else "LIVE"
+
 
             # Premarket data is unreliable in yfinance/Streamlit Cloud.
             # When true PM fields are missing, do NOT return an empty strategy.

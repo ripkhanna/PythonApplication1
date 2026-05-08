@@ -265,7 +265,7 @@ def render_diagnostics(ctx: dict) -> None:
         diag_logs.append(f"Auto refresh interval: {_lt.get('refresh_interval', 'Off')}")
         diag_logs.append(f"Next refresh/check: {_lt.get('next_refresh_in', 'Auto refresh off')} at {_lt.get('next_refresh_at', 'Auto refresh off')}")
         diag_logs.append(f"Bucket-cap Bayesian: {'ON' if st.session_state.get('use_bucket_cap', True) else 'OFF'}")
-        diag_logs.append("Trade Journal: removed from Trade Desk in v13.46; current build v13.61")
+        diag_logs.append("Trade Journal: removed from Trade Desk in v13.46; current build v13.62")
     except Exception as e:
         diag_logs.append(f"Diagnostics log build error: {e}")
     st.text_area(
