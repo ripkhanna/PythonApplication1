@@ -1241,6 +1241,42 @@ from swing_trader_app.tabs.strategy_lab_tab import render_strategy_lab
 from swing_trader_app.tabs.swing_picks_tab import render_swing_picks
 from swing_trader_app.tabs.trade_desk_tab import render_trade_desk
 
+def format_latest_bar_time(latest_bar_time):
+    import pandas as pd
+
+    if latest_bar_time is None or str(latest_bar_time).strip() == "":
+        return "Latest bar: unknown"
+
+    raw = str(latest_bar_time).strip()
+
+    # Remove duplicate label if already passed as "Latest bar: ..."
+    raw = raw.replace("Latest bar:", "").strip()
+
+    # Handle text ending with ET
+    # Example: "2026-05-07 20:00:00 ET"
+    if raw.endswith(" ET"):
+        raw = raw.replace(" ET", "").strip()
+        ts = pd.to_datetime(raw, errors="coerce")
+        if pd.isna(ts):
+            return f"Latest bar: {latest_bar_time}"
+
+        ts = ts.tz_localize("America/New_York")
+        ts_sgt = ts.tz_convert("Asia/Singapore")
+        return f"Latest bar: {ts_sgt.strftime('%Y-%m-%d %H:%M:%S')} SGT"
+
+    # Normal timestamp handling: UTC-aware / offset-aware / naive
+    ts = pd.to_datetime(raw, errors="coerce")
+
+    if pd.isna(ts):
+        return f"Latest bar: {latest_bar_time}"
+
+    # If no timezone, assume UTC from Yahoo
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+
+    ts_sgt = ts.tz_convert("Asia/Singapore")
+    return f"Latest bar: {ts_sgt.strftime('%Y-%m-%d %H:%M:%S')} SGT"
+
 def _safe_render_tab(tab_name, render_fn):
     try:
         render_fn(globals())
@@ -1424,6 +1460,7 @@ if run:
         )
 
         _latest_bar_for_status = _latest_bar_time_from_df(df_long_master) or _latest_bar_time_from_df(df_short_master) or "unknown"
+        _latest_bar_for_status = format_latest_bar_time(_latest_bar_for_status)
         _top_scan_status.success(
             f"✅ Yahoo master scan refreshed for **{len(active_tickers)} {market_sel} stocks** · "
             f"Latest bar: **{_latest_bar_for_status}** · "
