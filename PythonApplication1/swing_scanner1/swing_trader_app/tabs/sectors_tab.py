@@ -49,7 +49,7 @@ def render_sectors(ctx: dict) -> None:
             elif pct < -0.1: return "#f5b7b1","#7b241c"
             else:            return "#e8e8e8","#555555"
 
-        p_sym = "₹" if market_sel == "🇮🇳 India" else ("S$" if market_sel == "🇸🇬 SGX" else "$")
+        p_sym = "₹" if market_sel == "🇮🇳 India" else ("HK$" if market_sel == "🇭🇰 HK" else ("S$" if market_sel == "🇸🇬 SGX" else "$"))
         html = "<div style='display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:16px'>"
         for _, row in sector_df.iterrows():
             bg, fg = tile_color(row["Today %"])

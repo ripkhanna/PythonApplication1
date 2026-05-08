@@ -103,6 +103,8 @@ def _market_cache_key(market: str) -> str:
         return "sgx"
     if "India" in market:
         return "india"
+    if "HK" in market or "Hong Kong" in market or "🇭🇰" in market:
+        return "hk"
     return "market"
 
 
@@ -222,6 +224,8 @@ def _market_now(market: str):
             return datetime.now(ZoneInfo("Asia/Singapore"))
         if "India" in m:
             return datetime.now(ZoneInfo("Asia/Kolkata"))
+        if "HK" in m or "Hong Kong" in m or "🇭🇰" in m:
+            return datetime.now(ZoneInfo("Asia/Hong_Kong"))
         if "US" in m:
             return datetime.now(ZoneInfo("America/New_York"))
     except Exception:
@@ -245,6 +249,8 @@ def _is_market_live_now(market: str, now=None) -> bool:
             return (9 * 60) <= mins <= (17 * 60 + 20)
         if "India" in m:
             return (9 * 60 + 15) <= mins <= (15 * 60 + 45)
+        if "HK" in m or "Hong Kong" in m or "🇭🇰" in m:
+            return (9 * 60 + 30) <= mins <= (16 * 60 + 10)
         if "US" in m:
             # Include premarket + regular + after-hours so PM momentum stays fresh.
             return (4 * 60) <= mins <= (20 * 60)

@@ -1,5 +1,5 @@
 """
-Swing Scanner v13.66 — Bayesian Ensemble
+Swing Scannerv13.70 — Bayesian Ensemble
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -16,7 +16,7 @@ v12 add-ons  : options-derived signals — call/put unusual flow, IV term
 Install:
   pip install financedatabase ta streamlit yfinance pandas numpy nsepython requests streamlit-autorefresh
 """
-# v13.66: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
+#v13.70: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
 # NotImplementedError from __annotate__ when @st.cache_data wraps functions
 # with bare unsubscripted generics like `-> tuple`. This `from __future__`
 # downgrades all annotations in this module to strings at parse time,
@@ -42,7 +42,7 @@ import streamlit as st
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v13.66",
+    page_title="Swing Scannerv13.70",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -224,9 +224,9 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v13.66")
+st.title("📈 Swing/Long Term Scannerv13.70")
 
-# v13.66: COMPACT SELF-STAMP
+#v13.70: COMPACT SELF-STAMP
 # The build identity (path, mtime, hash, size) is still computed so it can
 # self-prove the running file, but only the short hash and mtime are visible
 # in the caption. The full path and size are tucked into the tooltip — hover
@@ -822,7 +822,7 @@ elif regime == "CAUTION":
     st.warning("🟡 Caution zone — Long probabilities reduced 12% · Short boosted +3%")
 
 market_sel = st.radio(
-    "🌍 Market", ["🇺🇸 US", "🇸🇬 SGX", "🇮🇳 India"],
+    "🌍 Market", ["🇺🇸 US", "🇸🇬 SGX", "🇮🇳 India", "🇭🇰 HK"],
     horizontal=True, key="market_selector", label_visibility="collapsed"
 )
 
@@ -833,6 +833,9 @@ if market_sel == "🇺🇸 US":
 elif market_sel == "🇸🇬 SGX":
     _active_tickers = SG_TICKERS;  _active_sectors = {}
     _currency_sym = "S$";          _price_fmt = lambda p: f"S${p:,.3f}"
+elif market_sel == "🇭🇰 HK":
+    _active_tickers = HK_TICKERS;  _active_sectors = {}
+    _currency_sym = "HK$";         _price_fmt = lambda p: f"HK${p:,.3f}"
 else:
     _active_tickers = INDIA_TICKERS; _active_sectors = INDIA_SECTOR_ETFS
     _currency_sym = "₹";            _price_fmt = lambda p: f"₹{p:,.2f}"
@@ -1198,11 +1201,12 @@ def _show_top_spinner(message: str):
         _top_scan_status.info(message)
 
 
-tab_sectors, tab_trade_desk, tab_long, tab_swing_picks, tab_short, tab_operator, tab_both, tab_etf, tab_stock, tab_earn, tab_event, tab_lt, tab_diag, tab_backtest, tab_strategy, tab_help = st.tabs([
+tab_sectors, tab_trade_desk, tab_long, tab_swing_picks, tab_top_movers, tab_short, tab_operator, tab_both, tab_etf, tab_stock, tab_earn, tab_event, tab_lt, tab_diag, tab_backtest, tab_strategy, tab_help = st.tabs([
     "🗂️ Sector Heatmap",
     "📋 Trade Desk",
     "📈 Long Setups",
     "🎯 Swing Picks",
+    "🚀 Movers/Losers",
     "📉 Short Setups",
     "🪤 Operator Activity",
     "🔄 Side by Side",
@@ -1240,6 +1244,7 @@ from swing_trader_app.tabs.stock_analysis_tab import render_stock_analysis
 from swing_trader_app.tabs.strategy_lab_tab import render_strategy_lab
 from swing_trader_app.tabs.swing_picks_tab import render_swing_picks
 from swing_trader_app.tabs.trade_desk_tab import render_trade_desk
+from swing_trader_app.tabs.top_movers_tab import render_top_movers
 
 def format_latest_bar_time(latest_bar_time):
     import pandas as pd
@@ -1301,6 +1306,8 @@ def _safe_sector_df_for_market(_market_sel: str, _context: str = "sector") -> pd
             return get_sector_performance()
         if _market_sel == "🇸🇬 SGX":
             return get_sg_sector_performance()
+        if _market_sel == "🇭🇰 HK":
+            return pd.DataFrame({"Sector": ["HK Mixed"], "ETF": ["HK curated"], "Today %": [0.0], "5d %": [0.0], "Price": [0.0], "Status": ["⚪ FLAT"]})
         _df = get_india_sector_performance()
         if isinstance(_df, pd.DataFrame) and not _df.empty and "ETF" in _df.columns:
             _df = _df[_df["ETF"] != "^NSEI"]
@@ -1374,7 +1381,7 @@ if run:
     if False and not green_sectors and not red_sectors:
         st.warning("All sectors flat — market may be closed or data unavailable.")
     else:
-        # Fetch live ETF holdings only for US (India/SGX use static ticker lists)
+        # Fetch live ETF holdings only for US (India/SGX/HK use static ticker lists)
         live_sectors = {}
         if market_sel == "🇺🇸 US":
             _show_top_spinner("📡 Fetching live US ETF holdings...")
@@ -1594,6 +1601,8 @@ if "last_scan_opt_enabled" in st.session_state:
                 "options market — there is no option chain to fetch. The toggle "
                 "has no effect on SGX scans by design."
             )
+        elif _last_mkt == "🇭🇰 HK":
+            st.info("🧩 Options enrichment is ON, but HK single-stock option-chain enrichment is not supported here. The stock scan still works using Yahoo price/volume data.")
         elif _last_mkt == "🇮🇳 India" and not _nse_opt_available:
             st.caption(
                 "🧩 Options enrichment is ON, but `nsepython` is not installed. "
@@ -1668,6 +1677,13 @@ with tab_stock:
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_swing_picks:
     _safe_render_tab('swing_picks', render_swing_picks)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB — TOP MOVERS / LOSERS
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_top_movers:
+    _safe_render_tab('top_movers', render_top_movers)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

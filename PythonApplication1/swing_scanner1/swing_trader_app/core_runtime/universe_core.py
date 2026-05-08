@@ -393,6 +393,27 @@ def fetch_nse_market_universe(max_symbols: int = 220) -> list:
     return _unique_keep_order(tickers)[:max_symbols]
 
 
+
+@st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
+def fetch_hk_market_universe(max_symbols: int = 160) -> list:
+    """Return Hong Kong watchlist. Yahoo HK live universe is unreliable, so use curated liquid .HK names."""
+    try:
+        base = globals().get("HK_TICKERS", [])
+        # Normalize numeric HK tickers to 4 digits for Yahoo, e.g. 700.HK -> 0700.HK.
+        out = []
+        for t in base:
+            s = str(t or "").strip().upper()
+            if not s:
+                continue
+            if s.endswith(".HK"):
+                code = s[:-3]
+                if code.isdigit():
+                    s = f"{int(code):04d}.HK"
+            out.append(s)
+        return _unique_keep_order(out)[:max_symbols]
+    except Exception:
+        return []
+
 @st.cache_data(ttl=30 * 60, show_spinner=False)
 def fetch_live_market_universe(market_name: str, max_symbols: int = 350) -> tuple:
     """
@@ -411,6 +432,9 @@ def fetch_live_market_universe(market_name: str, max_symbols: int = 350) -> tupl
     elif market_name == "🇸🇬 SGX":
         tickers = fetch_sgx_market_universe(max_symbols=max_symbols)
         source = "SGX securities feed + STI/current curated SGX fallback"
+    elif market_name == "🇭🇰 HK":
+        tickers = fetch_hk_market_universe(max_symbols=max_symbols)
+        source = "Hong Kong expanded curated high-beta/liquid .HK watchlist"
     else:
         tickers = fetch_nse_market_universe(max_symbols=max_symbols)
         source = "NSE live index constituents"

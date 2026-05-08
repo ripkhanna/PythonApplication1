@@ -14,6 +14,11 @@ def render_help(ctx: dict) -> None:
     with st.expander("🆕 What changed recently", expanded=True):
         st.markdown("""
 ### Latest build
+- **🇭🇰 Hong Kong market added** as a full market radio option.
+- **HK expanded universe**: 137 curated liquid/high-beta `.HK` stocks, including your original 30 core names.
+- **🚀 Movers/Losers tab added** — Top Gainers, Top Losers, and Volume Leaders for US/SGX/India/HK.
+- **Master Yahoo cache architecture** — Yahoo data is downloaded once, then strategy changes only re-filter cached data.
+- **Latest bar time formatting** — latest bar display can be converted to Singapore time for clearer diagnostics.
 - **7 Swing Strategies** in the sidebar dropdown (was 3).
 - **Speed**: parallel pre-fetch cuts scan time from ~15 min → ~2 min for 410 tickers.
 - **Always include tickers** is the single place to add custom tickers (duplicate "Custom tickers" field removed).
@@ -33,14 +38,14 @@ def render_help(ctx: dict) -> None:
     # ── Quick start ───────────────────────────────────────────────────────────
     with st.expander("🚀 Quick start — daily workflow"):
         st.markdown("""
-1. Pick market: **US**, **SGX**, or **India**.
+1. Pick market: **US**, **SGX**, **India**, or **HK**.
 2. Choose a **Swing strategy** (see table below).
-3. Add must-scan names in **Always include tickers** — e.g. `UUUU, APP, NVDA, S58.SI`.
+3. Add must-scan names in **Always include tickers** — e.g. `UUUU, APP, NVDA, S58.SI, 0700.HK`.
 4. Click **🚀 Scan**.
 5. Review tabs:
 
 ```
-Sector Heatmap → Long Setups → Swing Picks → Trade Desk → Stock Analysis
+Movers/Losers → Sector Heatmap → Long Setups → Swing Picks → Trade Desk → Stock Analysis
 ```
 
 **Best strategy by time of day:**
@@ -106,6 +111,7 @@ Look for `HC[T+M+V+S+X](5/5)` in the Signals column to see which fired.
         st.markdown("""
 | Tab | Purpose |
 |---|---|
+| 🚀 **Movers/Losers** | Top Gainers, Top Losers, and Volume Leaders across US/SGX/India/HK |
 | 🗂️ **Sector Heatmap** | Market direction first — color tiles, green/red summary |
 | 📋 **Trade Desk** | Execution: entry zone, stop, target, R/R, position size |
 | 📈 **Long Setups** | Bullish swing candidates — strategy-aware sections |
@@ -228,6 +234,52 @@ Tick **📍 Near support only** to filter to stocks at technically attractive lo
 | Min analyst upside | Skip low-conviction analyst targets |
         """)
 
+    # ── Movers and cache ──────────────────────────────────────────────────────
+    with st.expander("🚀 Movers/Losers tab + master cache"):
+        st.markdown("""
+### Movers/Losers tab
+Use this tab to quickly see what is active before selecting a strategy.
+
+| Section | Meaning |
+|---|---|
+| **Top Gainers** | Biggest positive movers for selected market/timeframe |
+| **Top Losers** | Biggest negative movers for selected market/timeframe |
+| **Volume Leaders** | Most active names by relative/absolute volume |
+
+Supported markets:
+```
+Current selected market, US, SGX, India, HK
+```
+
+### Master Yahoo cache
+The scanner now stores one broad Yahoo-enriched master scan per market.
+Strategy changes should re-filter cached data instead of downloading Yahoo again.
+
+Expected cache examples:
+```
+us_long_setups.csv
+sgx_long_setups.csv
+india_long_setups.csv
+hk_long_setups.csv
+```
+
+Metadata file:
+```
+*_scan_meta.json
+```
+
+Look for:
+```json
+"cache_type": "master_scan_v1",
+"strategy_mode": "MASTER"
+```
+
+### Freshness rule
+- During market hours: shorter refresh interval for minimum delay.
+- Outside market hours: longer cache is used.
+- Changing Strategy should show a grid refresh message and should not force a Yahoo download unless cache expired or you manually refresh.
+        """)
+
     # ── Diagnostics ───────────────────────────────────────────────────────────
     with st.expander("🔍 Diagnostics — debugging no-data issues"):
         st.markdown("""
@@ -272,9 +324,29 @@ Operator: 274, Long: 0  → signals compute but action assignment failing; updat
 
 ```
 Always include tickers  ← highest priority, always present
-+ Curated hard-coded watchlist (US/SGX/India)
-+ Live movers (when "Use live market universe" is ON)
++ Curated hard-coded watchlist (US/SGX/India/HK)
++ Live movers / Yahoo-derived universe where available
 = active_tickers passed to the scan
+```
+
+### Hong Kong universe
+HK is now a full market option, not only a Movers/Losers filter.
+
+- Default universe: **137 curated `.HK` stocks**.
+- Includes your original core HK tickers first.
+- Covers Hang Seng blue chips, Hang Seng TECH, EV/auto, semiconductors, brokers, casino, property, and biotech names.
+- HK cache files use the `hk_` prefix, for example:
+
+```
+hk_long_setups.csv
+hk_short_setups.csv
+hk_operator_activity.csv
+hk_scan_meta.json
+```
+
+Core HK examples:
+```
+0700.HK,9988.HK,3690.HK,1810.HK,1024.HK,9618.HK,9888.HK,9999.HK,2015.HK,9868.HK,1211.HK,0981.HK,2382.HK,2018.HK,6618.HK
 ```
 
 **Always include tickers** (sidebar) is the single place to add custom stocks. Type comma-separated or line-separated:
@@ -282,6 +354,7 @@ Always include tickers  ← highest priority, always present
 UUUU, APP, NVDA
 S58.SI, D05.SI
 RELIANCE.NS
+0700.HK, 9988.HK
 ```
 
 ### Speed: why scanning is faster now
@@ -381,7 +454,7 @@ Key packages: `streamlit` · `yfinance` · `pandas` · `numpy` · `ta` ·
 
     st.markdown("---")
     st.caption(
-        "Swing Scanner · 7 strategies · US + SGX + India · "
+        "Swing Scanner · 7 strategies · US + SGX + India + HK · "
         "Bayesian engine + operator layer + options signals · "
         "Not financial advice"
     )

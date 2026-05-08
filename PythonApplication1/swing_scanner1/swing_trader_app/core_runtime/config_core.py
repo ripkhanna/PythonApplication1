@@ -312,6 +312,43 @@ SGX_LIQUID_FALLBACK_TICKERS = [
 ]
 SG_TICKERS = list(dict.fromkeys(SG_TICKERS + SGX_LIQUID_FALLBACK_TICKERS))
 
+
+HK_TICKERS = [
+    # Hong Kong expanded liquid / volatile / high-beta universe for yfinance.
+    # Includes the original 30-stock core plus HSI, HS Tech, EV, broker,
+    # casino, property, biotech, semiconductor, and active China beta names.
+    "0700.HK","9988.HK","3690.HK","1810.HK","1024.HK","9618.HK",
+    "9888.HK","9999.HK","2015.HK","9868.HK","1211.HK","0981.HK",
+    "2382.HK","2018.HK","6618.HK","1347.HK","0241.HK","9961.HK",
+    "3888.HK","6690.HK","0772.HK","6611.HK","6060.HK","9992.HK",
+    "2318.HK","0388.HK","2331.HK","2333.HK","0175.HK","1929.HK",
+
+    # Hang Seng / blue-chip / liquid China beta
+    "0001.HK","0002.HK","0003.HK","0005.HK","0006.HK","0011.HK",
+    "0012.HK","0016.HK","0017.HK","0027.HK","0066.HK","0101.HK",
+    "0267.HK","0291.HK","0316.HK","0322.HK","0386.HK","0669.HK",
+    "0688.HK","0728.HK","0762.HK","0788.HK","0823.HK","0836.HK",
+    "0857.HK","0868.HK","0881.HK","0883.HK","0939.HK","0960.HK",
+    "0968.HK","0992.HK","1038.HK","1044.HK","1088.HK","1093.HK",
+    "1109.HK","1113.HK","1177.HK","1209.HK","1299.HK","1378.HK",
+    "1398.HK","1800.HK","1876.HK","1919.HK","1928.HK","1997.HK",
+    "2020.HK","2313.HK","2319.HK","2388.HK","2628.HK","2688.HK",
+    "2888.HK","2899.HK","3968.HK","3988.HK","9633.HK",
+
+    # Higher-beta tech, EV, semiconductor, software, healthcare/biotech
+    "0268.HK","0285.HK","0522.HK","0986.HK","1478.HK","1801.HK",
+    "1833.HK","1877.HK","2013.HK","2238.HK","2268.HK","2269.HK",
+    "2359.HK","3800.HK","3808.HK","6160.HK","6699.HK","6862.HK",
+    "6969.HK","9863.HK","9866.HK","9896.HK","9926.HK","9969.HK",
+
+    # Brokers / financial beta / Macau / property beta watchlist
+    "0606.HK","0607.HK","0683.HK","0880.HK","1128.HK","1336.HK",
+    "1339.HK","1658.HK","1776.HK","1918.HK","2007.HK","2282.HK",
+    "2600.HK","3323.HK","3900.HK","6030.HK","6066.HK","6098.HK",
+    "6178.HK","6666.HK","6881.HK","6886.HK","9600.HK","9869.HK",
+]
+
+
 INDIA_TICKERS = [
     # Nifty 50 Blue Chips
     "RELIANCE.NS","TCS.NS","INFY.NS","HDFCBANK.NS","ICICIBANK.NS",
@@ -335,7 +372,7 @@ INDIA_TICKERS = [
 ]
 
 # Keep BASE_TICKERS as combined list for backward compatibility
-BASE_TICKERS = US_TICKERS + SG_TICKERS + INDIA_TICKERS
+BASE_TICKERS = US_TICKERS + SG_TICKERS + INDIA_TICKERS + HK_TICKERS
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SECTOR ETF MAP

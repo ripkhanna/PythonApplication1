@@ -18,7 +18,7 @@ def render_earnings(ctx: dict) -> None:
     with ec1:
         earn_days = st.slider("Days ahead", 5, 30, 15, key="earn_days")
     with ec2:
-        earn_market = st.radio("Market", ["🇺🇸 US", "🇸🇬 SGX", "🇮🇳 India"],
+        earn_market = st.radio("Market", ["🇺🇸 US", "🇸🇬 SGX", "🇮🇳 India", "🇭🇰 HK"],
                                horizontal=True, key="earn_market_sel")
     with ec3:
         # v13.49: avoid scanning the entire market by default. Yahoo earnings
@@ -36,6 +36,8 @@ def render_earnings(ctx: dict) -> None:
         earn_base = list(US_TICKERS)
     elif earn_market == "🇸🇬 SGX":
         earn_base = list(SG_TICKERS)
+    elif earn_market == "🇭🇰 HK":
+        earn_base = list(HK_TICKERS)
     else:
         earn_base = list(INDIA_TICKERS)
 

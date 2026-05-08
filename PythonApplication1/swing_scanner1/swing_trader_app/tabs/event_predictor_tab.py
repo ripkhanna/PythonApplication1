@@ -17,7 +17,7 @@ def render_event_predictor(ctx: dict) -> None:
     with ev1:
         ev_days = st.slider("Earnings window", 7, 60, 30, key="event_days")
     with ev2:
-        ev_market = st.radio("Market", ["🇺🇸 US", "🇸🇬 SGX", "🇮🇳 India"], horizontal=True, key="event_market")
+        ev_market = st.radio("Market", ["🇺🇸 US", "🇸🇬 SGX", "🇮🇳 India", "🇭🇰 HK"], horizontal=True, key="event_market")
     with ev3:
         ev_extra = st.text_input("Tickers to check", placeholder="AIY.SI, OYY.SI, UUUU, NVDA", key="event_extra").strip().upper()
 
@@ -25,6 +25,8 @@ def render_event_predictor(ctx: dict) -> None:
         ev_base = list(US_TICKERS[:120])
     elif ev_market == "🇸🇬 SGX":
         ev_base = list(SG_TICKERS)
+    elif ev_market == "🇭🇰 HK":
+        ev_base = list(HK_TICKERS)
     else:
         ev_base = list(INDIA_TICKERS)
 
