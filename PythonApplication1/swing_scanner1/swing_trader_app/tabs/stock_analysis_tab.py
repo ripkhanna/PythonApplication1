@@ -167,17 +167,65 @@ def render_stock_analysis(ctx: dict) -> None:
                         if l_rec != l_rec_base:
                             st.caption(f"_base tier was: {l_rec_base}_")
 
-                        # Trap evidence affecting LONG side — always shown
+                        # ── Operator Activity — matches scanner "Operator" column ────
+                        # operator_label / operator_score come from compute_all_signals()
+                        # via the raw dict. They are the SAME values shown in Long Setups.
+                        _op_label = rv_sa.get("operator_label", "⚪ NONE")
+                        _op_score = int(rv_sa.get("operator_score", 0))
+                        _op_color = (
+                            "success" if _op_score >= 6
+                            else "info"    if _op_score >= 4
+                            else "warning" if _op_score >= 2
+                            else None
+                        )
+                        st.markdown("**📊 Operator Activity (scanner-matched)**")
+                        _op_cols = st.columns(2)
+                        _op_cols[0].metric("Operator label", _op_label)
+                        _op_cols[1].metric("Operator score", f"{_op_score}/10")
+                        if _op_color:
+                            getattr(st, _op_color)(
+                                f"**{_op_label}** (score {_op_score}) — "
+                                + {
+                                    "success": "Smart money accumulation confirmed across multiple indicators.",
+                                    "info":    "Accumulation signals present — trend + volume support.",
+                                    "warning": "Weak operator signs — monitor for confirmation.",
+                                }.get(_op_color, "")
+                            )
+                        else:
+                            st.caption("⚪ No operator activity detected.")
+                        # Show individual signals that contributed
+                        with st.expander("🔬 Operator signal breakdown", expanded=False):
+                            _op_details = [
+                                ("Green candle + vol ≥ 2×",     (not rv_sa.get("candle_red", True)) and rv_sa.get("vr", 0) >= 2.0, "+2"),
+                                ("Vol ≥ 1.5× + strong close",   rv_sa.get("vr", 0) >= 1.5 and rv_sa.get("closing_pos_raw", 0) >= 0.75 if "closing_pos_raw" in rv_sa else False, "+2"),
+                                ("OBV rising 5 days",           rv_sa.get("obv_rising", False), "+1"),
+                                ("10d high + vol ≥ 1.8×",       rv_sa.get("p", 0) >= rv_sa.get("h10", 999) * 0.995 and rv_sa.get("vr", 0) >= 1.8, "+2"),
+                                ("Above VWAP",                   rv_sa.get("above_vwap", False), "+1"),
+                                ("Above MA20 + MA60",            rv_sa.get("p", 0) > rv_sa.get("ma20", 0) and rv_sa.get("above_ma60", False), "+1"),
+                                ("Up day (0–8% today)",          0 < rv_sa.get("today_chg_pct", 0) < 8, "+1"),
+                                ("Absorption (red+vol+close>lo)",rv_sa.get("candle_red", False) and rv_sa.get("vr", 0) >= 1.8, "+2"),
+                                ("False breakout / gap chase",   rv_sa.get("false_breakout", False) or rv_sa.get("gap_chase_risk", False), "−2"),
+                            ]
+                            for _sig_name, _sig_val, _pts in _op_details:
+                                _icon = "✅" if _sig_val else "❌"
+                                st.markdown(f"{_icon} {_sig_name} `{_pts}`")
+
+                        st.markdown("---")
+                        # ── Trap patterns (detect_traps) — separate from operator_score ──
+                        # detect_traps() looks for manipulation traps (false breakouts,
+                        # distribution). A stock CAN have high operator_score (accumulation)
+                        # AND zero trap patterns — that is the ideal setup.
                         n_supp_l, n_contra_l = len(l_supp), len(l_contra)
                         if n_supp_l == 0 and n_contra_l == 0:
-                            st.caption("🪤 **Operator patterns:** ✅ none detected")
+                            st.caption("🪤 **Trap patterns:** ✅ none detected "
+                                       "_(trap patterns ≠ operator score — both are shown above)_")
                         else:
                             parts = []
                             if n_supp_l:
                                 parts.append(f"⭐ {n_supp_l} supporting")
                             if n_contra_l:
                                 parts.append(f"⚠️ {n_contra_l} contradicting")
-                            st.markdown(f"🪤 **Operator patterns:** {' · '.join(parts)}")
+                            st.markdown(f"🪤 **Trap patterns:** {' · '.join(parts)}")
                             for sev, label, detail, _, _ in l_supp:
                                 with st.expander(f"⭐ {label}  _(supports long)_", expanded=(sev == "high")):
                                     st.markdown(detail)
@@ -228,17 +276,17 @@ def render_stock_analysis(ctx: dict) -> None:
                         if s_rec != s_rec_base:
                             st.caption(f"_base tier was: {s_rec_base}_")
 
-                        # Trap evidence affecting SHORT side — always shown
+                        # Trap evidence affecting SHORT side
                         n_supp_s, n_contra_s = len(s_supp), len(s_contra)
                         if n_supp_s == 0 and n_contra_s == 0:
-                            st.caption("🪤 **Operator patterns:** ✅ none detected")
+                            st.caption("🪤 **Trap patterns (short):** ✅ none detected")
                         else:
                             parts = []
                             if n_supp_s:
                                 parts.append(f"⭐ {n_supp_s} supporting")
                             if n_contra_s:
                                 parts.append(f"⚠️ {n_contra_s} contradicting")
-                            st.markdown(f"🪤 **Operator patterns:** {' · '.join(parts)}")
+                            st.markdown(f"🪤 **Trap patterns (short):** {' · '.join(parts)}")
                             for sev, label, detail, _, _ in s_supp:
                                 with st.expander(f"⭐ {label}  _(supports short)_", expanded=(sev == "high")):
                                     st.markdown(detail)
