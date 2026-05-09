@@ -104,6 +104,8 @@ All five must fire at least one signal:
 | 🌍 Market | RS > SPY, RS momentum, sector leader, near 52W high |
 
 Look for `HC[T+M+V+S+X](5/5)` in the Signals column to see which fired.
+
+**Top Swing Buys panel:** In High Conviction mode, the Long Setups tab also shows a configurable **Top Swing Buys** panel above the full grid. It ranks only the High Conviction results by rise probability, scanner score, volume confirmation, entry/support quality, extension risk, and options confirmation. This is a display-only ranking layer and does not change the strategy logic.
         """)
 
     # ── Tab guide ─────────────────────────────────────────────────────────────

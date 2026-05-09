@@ -36,6 +36,115 @@ def _mode_banner(m: str) -> None:
         )
 
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# High Conviction display-only ranking helpers
+# These helpers do NOT change scanner/strategy logic. They only rank the already
+# returned High Conviction dataframe so the user can focus on the best few names.
+# ─────────────────────────────────────────────────────────────────────────────
+def _hc_num(series, default=0.0):
+    try:
+        return pd.to_numeric(
+            series.astype(str)
+                  .str.replace("%", "", regex=False)
+                  .str.replace("+", "", regex=False)
+                  .str.replace("x", "", regex=False)
+                  .str.replace("–", "", regex=False)
+                  .str.strip(),
+            errors="coerce",
+        ).fillna(default)
+    except Exception:
+        return pd.Series([default] * len(series), index=getattr(series, "index", None))
+
+
+def _hc_score_num(series, default=0.0):
+    try:
+        # Handles "7", "7/10", "Score 7", etc.
+        out = pd.to_numeric(series.astype(str).str.extract(r"(\d+(?:\.\d+)?)")[0], errors="coerce")
+        return out.fillna(default)
+    except Exception:
+        return pd.Series([default] * len(series), index=getattr(series, "index", None))
+
+
+def _build_top_swing_buys(df, top_n=10):
+    """Return a display-only ranked Top Swing Buys dataframe for High Conviction."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    ranked = df.copy()
+    idx = ranked.index
+
+    rise = _hc_num(ranked.get("Rise Prob", pd.Series([0] * len(ranked), index=idx)), 0).clip(0, 100)
+    raw_score = _hc_score_num(ranked.get("Score", pd.Series([0] * len(ranked), index=idx)), 0)
+    # If Score is on 0-10 scale, normalize to 0-100; if already 0-100, keep it.
+    score_norm = raw_score.where(raw_score > 10, raw_score * 10).clip(0, 100)
+    vol_ratio = _hc_num(ranked.get("Vol Ratio", pd.Series([0] * len(ranked), index=idx)), 0)
+    vol_score = (vol_ratio.clip(0, 3.0) / 3.0 * 100).fillna(0)
+    today = _hc_num(ranked.get("Today %", pd.Series([0] * len(ranked), index=idx)), 0)
+
+    # Prefer stocks that have moved, but are not too extended. This is display-only.
+    today_score = pd.Series([60.0] * len(ranked), index=idx)
+    today_score = today_score.mask((today >= 0) & (today <= 6), 95)
+    today_score = today_score.mask((today > 6) & (today <= 10), 70)
+    today_score = today_score.mask(today > 10, 35)
+    today_score = today_score.mask(today < -3, 40)
+
+    entry_text = (
+        ranked.get("Entry Quality", pd.Series([""] * len(ranked), index=idx)).astype(str) + " " +
+        ranked.get("Setup Type", pd.Series([""] * len(ranked), index=idx)).astype(str) + " " +
+        ranked.get("Support Tier", pd.Series([""] * len(ranked), index=idx)).astype(str) + " " +
+        ranked.get("Action", pd.Series([""] * len(ranked), index=idx)).astype(str)
+    )
+    entry_score = pd.Series([60.0] * len(ranked), index=idx)
+    entry_score = entry_score.mask(entry_text.str.contains("✅|SUPPORT|MA20|MA60|VWAP|PRECISION|STRONG BUY", na=False, regex=True), 90)
+    entry_score = entry_score.mask(entry_text.str.contains("WAIT|EXTENDED|TRAP|AVOID", na=False, regex=True), 35)
+
+    opt_text = ranked.get("Opt Flow", pd.Series(["–"] * len(ranked), index=idx)).astype(str)
+    opt_score = pd.Series([50.0] * len(ranked), index=idx).mask(opt_text.ne("–") & opt_text.ne(""), 100)
+
+    final = (
+        rise * 0.35 +
+        score_norm * 0.20 +
+        vol_score * 0.15 +
+        entry_score * 0.15 +
+        today_score * 0.10 +
+        opt_score * 0.05
+    ).round(1)
+
+    ranked.insert(0, "Final Swing Score", final)
+    ranked.insert(1, "Rank", final.rank(method="first", ascending=False).astype(int))
+
+    decision = pd.Series(["WATCH – GOOD SETUP"] * len(ranked), index=idx)
+    decision = decision.mask(final >= 85, "TOP BUY – SWING")
+    decision = decision.mask((final >= 78) & (final < 85), "BUY – HIGH PROBABILITY")
+    decision = decision.mask((final >= 70) & (final < 78), "WATCH – WAIT FOR ENTRY")
+    decision = decision.mask(final < 70, "WATCH ONLY")
+    ranked.insert(2, "Decision", decision)
+
+    why = []
+    for i in ranked.index:
+        reasons = []
+        try:
+            if rise.loc[i] >= 70: reasons.append("high rise probability")
+            if score_norm.loc[i] >= 70: reasons.append("strong signal score")
+            if vol_ratio.loc[i] >= 2: reasons.append("volume expansion")
+            elif vol_ratio.loc[i] >= 1.3: reasons.append("rising volume")
+            if entry_score.loc[i] >= 85: reasons.append("good entry/support")
+            if 0 <= today.loc[i] <= 6: reasons.append("not over-extended")
+            if opt_score.loc[i] >= 100: reasons.append("options confirmed")
+        except Exception:
+            pass
+        why.append(", ".join(reasons[:4]) if reasons else "best ranked High Conviction candidate")
+    ranked.insert(3, "Why Selected", why)
+
+    ranked = ranked.sort_values("Final Swing Score", ascending=False, kind="stable")
+    try:
+        n = int(top_n)
+    except Exception:
+        n = 10
+    return ranked.head(max(1, n)).copy()
+
 def render_long(ctx: dict) -> None:
     _bind_runtime(ctx)
 
@@ -215,6 +324,16 @@ def render_long(ctx: dict) -> None:
             "📈 Trend · ⚡ Momentum · 🔊 Volume · 🏗️ Structure · 🌍 Market alignment.  \n"
             "Check the **Signals** column for the **HC[T+M+V+S+X](5/5)** tag."
         )
+        _top_n = int(st.session_state.get("ui_hc_top_n", 10) or 10)
+        top_buys = _build_top_swing_buys(df_long, _top_n)
+        if not top_buys.empty:
+            st.markdown(f"#### 🏆 Top {_top_n} Swing Buys — ranked from High Conviction results")
+            st.caption(
+                "This is a display-only decision layer. It does **not** change High Conviction scanner logic or any other strategy. "
+                "Ranking favours rise probability, signal score, volume confirmation, entry/support quality, not being over-extended, and options confirmation."
+            )
+            show_table(top_buys, "hc_top_swing_buys", "Final Swing Score")
+
         if not hc_strong.empty:
             st.markdown("#### 🎯 Full Confluence — All 5 Categories")
             st.caption(

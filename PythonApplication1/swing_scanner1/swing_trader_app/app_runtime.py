@@ -489,8 +489,20 @@ elif _sm_upper == "HIGH CONVICTION":
         "🎯 **High Conviction mode**\n\n"
         "Requires ALL 5 signal categories simultaneously:\n"
         "📈 Trend  ⚡ Momentum  🔊 Volume  🏗️ Structure  🌍 Market alignment\n\n"
-        "Expect 5–15 stocks instead of 40–80. Every pick has genuine multi-dimensional "
-        "confirmation — not just a high score from correlated signals."
+        "The grid can still show all High Conviction candidates, but the Long Setups tab now "
+        "shows a ranked Top Swing Buys panel above the grid so you know which names to focus on first."
+    )
+    st.sidebar.slider(
+        "Top Swing Buys to show",
+        min_value=3,
+        max_value=25,
+        value=int(st.session_state.get("ui_hc_top_n", 10)),
+        step=1,
+        key="ui_hc_top_n",
+        help=(
+            "Only affects the High Conviction display panel. It does not change the scanner logic "
+            "or any other strategy."
+        ),
     )
 skip_earnings  = st.sidebar.checkbox(
     "Skip earnings within 7 days", key="ui_skip_earnings",
