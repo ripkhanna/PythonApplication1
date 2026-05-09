@@ -1,8 +1,8 @@
-# Swing Scannerv13.70
+# Swing Scanner v13.70
 
 Modular Streamlit build for the Swing/Long Term Scanner.
 
-## Latest changes inv13.70
+## Latest changes in v13.70
 
 - Updated Help tab to match the latest live-market swing trading behavior.
 - Documents the new **Swing signal mode**: Strict / Balanced / Discovery.

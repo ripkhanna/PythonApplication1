@@ -6,8 +6,11 @@ long/short strategy engine.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Iterable
+import json
+import urllib.parse
+import urllib.request
 
 import numpy as np
 import pandas as pd
@@ -40,6 +43,19 @@ MARKET_LABEL = {
     "🇸🇬 SGX": "SGX",
     "🇮🇳 India": "India",
     "🇭🇰 HK": "Hong Kong",
+}
+
+YAHOO_REGION = {
+    "US": "US",
+    "SGX": "SG",
+    "India": "IN",
+    "Hong Kong": "HK",
+}
+
+YAHOO_SCREENER_IDS = {
+    "Top Gainers": "day_gainers",
+    "Top Losers": "day_losers",
+    "Most Active": "most_actives",
 }
 
 
@@ -178,6 +194,159 @@ def _row_from_intraday_df(ticker: str, df: pd.DataFrame, market_key: str) -> dic
     }
 
 
+
+def _epoch_to_sgt(epoch_value) -> str:
+    try:
+        if epoch_value is None or (isinstance(epoch_value, float) and not np.isfinite(epoch_value)):
+            return "unknown"
+        ts = pd.to_datetime(int(epoch_value), unit="s", utc=True, errors="coerce")
+        if pd.isna(ts):
+            return "unknown"
+        return ts.tz_convert("Asia/Singapore").strftime("%Y-%m-%d %H:%M:%S SGT")
+    except Exception:
+        return "unknown"
+
+
+def _safe_quote_value(quote: dict, *names):
+    for name in names:
+        if name in quote and quote.get(name) is not None:
+            val = quote.get(name)
+            if isinstance(val, dict):
+                if "raw" in val:
+                    return val.get("raw")
+                if "fmt" in val:
+                    return val.get("fmt")
+            return val
+    return np.nan
+
+
+def _quote_to_mover_row(quote: dict, source_bucket: str) -> dict | None:
+    symbol = str(quote.get("symbol") or "").strip().upper()
+    if not symbol:
+        return None
+
+    price = _safe_quote_value(quote, "regularMarketPrice", "postMarketPrice", "preMarketPrice")
+    prev_close = _safe_quote_value(quote, "regularMarketPreviousClose")
+    change_pct = _safe_quote_value(quote, "regularMarketChangePercent")
+    volume = _safe_quote_value(quote, "regularMarketVolume", "averageDailyVolume3Month")
+    market_time = _safe_quote_value(quote, "regularMarketTime")
+
+    try:
+        price = float(price)
+    except Exception:
+        price = np.nan
+    try:
+        prev_close = float(prev_close)
+    except Exception:
+        prev_close = np.nan
+    try:
+        change_pct = float(change_pct)
+    except Exception:
+        if np.isfinite(price) and np.isfinite(prev_close) and prev_close > 0:
+            change_pct = ((price - prev_close) / prev_close) * 100.0
+        else:
+            change_pct = np.nan
+    try:
+        volume = float(volume)
+    except Exception:
+        volume = np.nan
+
+    if not np.isfinite(change_pct):
+        return None
+
+    return {
+        "Ticker": symbol,
+        "Name": str(quote.get("shortName") or quote.get("longName") or ""),
+        "Price": price,
+        "Prev Close": prev_close,
+        "Chg %": change_pct,
+        "Today Volume": volume,
+        "Vol Ratio": np.nan,
+        "Last Bar Vol Ratio": np.nan,
+        "Day High": _safe_quote_value(quote, "regularMarketDayHigh"),
+        "Day Low": _safe_quote_value(quote, "regularMarketDayLow"),
+        "Latest Bar SGT": _epoch_to_sgt(market_time),
+        "Mover Source": source_bucket,
+    }
+
+
+def _fetch_yahoo_predefined_screener(region: str, screener_id: str, count: int) -> tuple[list[dict], str | None]:
+    """Fetch Yahoo's own predefined market movers list.
+
+    This is intentionally universe-independent.  It asks Yahoo for the market's
+    top gainers / losers / most active symbols instead of starting from our
+    scanner universe.  If Yahoo blocks or returns nothing, caller falls back to
+    universe scanning.
+    """
+    params = urllib.parse.urlencode({
+        "formatted": "false",
+        "lang": "en-US",
+        "region": region,
+        "scrIds": screener_id,
+        "count": int(count),
+    })
+    url = f"https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?{params}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json,text/plain,*/*",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+        result = (((payload or {}).get("finance") or {}).get("result") or [])
+        quotes = (result[0].get("quotes") if result else []) or []
+        return quotes, None
+    except Exception as exc:
+        return [], f"{screener_id}: {type(exc).__name__}: {exc}"
+
+
+@st.cache_data(ttl=180, show_spinner=False)
+def _download_market_movers_feed_cached(market_key: str, count_per_bucket: int) -> tuple[pd.DataFrame, dict]:
+    region = YAHOO_REGION.get(market_key, "US")
+    rows: list[dict] = []
+    errors: list[str] = []
+    seen: set[str] = set()
+
+    for bucket_name, screener_id in YAHOO_SCREENER_IDS.items():
+        quotes, err = _fetch_yahoo_predefined_screener(region, screener_id, int(count_per_bucket))
+        if err:
+            errors.append(err)
+        for quote in quotes:
+            row = _quote_to_mover_row(quote, bucket_name)
+            if not row:
+                continue
+            key = row["Ticker"]
+            # Keep first bucket assignment, but do not duplicate rows across tabs.
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(row)
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        for col in ["Chg %", "Today Volume", "Price", "Prev Close", "Day High", "Day Low"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.dropna(subset=["Chg %"]).sort_values("Chg %", ascending=False).reset_index(drop=True)
+
+    latest_vals = []
+    if not df.empty and "Latest Bar SGT" in df.columns:
+        latest_vals = [v for v in df["Latest Bar SGT"].astype(str).tolist() if v and v != "unknown"]
+    meta = {
+        "market": market_key,
+        "region": region,
+        "rows": int(len(df)),
+        "source": "Yahoo predefined market movers feed",
+        "latest_bar_sgt": max(latest_vals) if latest_vals else "unknown",
+        "refreshed_at_sgt": datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "errors": errors[:8],
+    }
+    return df, meta
+
+
 @st.cache_data(ttl=180, show_spinner=False)
 def _download_top_movers_cached(tickers_tuple: tuple[str, ...], market_key: str, period: str, interval: str, prepost: bool, max_tickers: int) -> tuple[pd.DataFrame, dict]:
     """Download intraday Yahoo data and calculate top movers/losers.
@@ -282,35 +451,54 @@ def render_top_movers(g: dict) -> None:
     market_key = _market_key_from_selection(market_choice, current_market_label)
 
     with c2:
-        max_tickers = st.slider("Universe size", 30, 600, 180, 30, key="top_movers_max_tickers")
-    with c3:
         rows_to_show = st.slider("Rows", 5, 50, 15, 5, key="top_movers_rows")
+    with c3:
+        mover_count = st.slider("Movers per list", 25, 250, 100, 25, key="top_movers_feed_count")
     with c4:
-        interval = st.selectbox("Interval", ["5m", "15m", "1d"], index=0, key="top_movers_interval")
+        interval = st.selectbox("Fallback interval", ["5m", "15m", "1d"], index=0, key="top_movers_interval")
+
+    use_market_feed = st.checkbox(
+        "Use Yahoo market movers feed, not scanner universe",
+        value=True,
+        key="top_movers_use_feed",
+        help="When enabled, this tab asks Yahoo for day gainers, day losers and most active symbols. It does not depend on the app's US/SGX/India/HK universe lists.",
+    )
 
     period = "5d" if interval in ("5m", "15m") else "1mo"
     prepost = market_key == "US"
     tickers = _tickers_for_market(g, market_key)
 
-    if not tickers:
-        st.warning(f"No ticker universe found for {market_key}.")
-        return
-
     b1, b2 = st.columns([1, 5])
     with b1:
         if st.button("🔄 Refresh movers", key="refresh_top_movers"):
+            _download_market_movers_feed_cached.clear()
             _download_top_movers_cached.clear()
             st.rerun()
     with b2:
-        st.caption(f"Universe: **{market_key}** · requested up to **{min(len(tickers), max_tickers)}** tickers · cache TTL **3 min**")
+        if use_market_feed:
+            st.caption(f"Market: **{market_key}** · source: **Yahoo day gainers / losers / most active** · cache TTL **3 min**")
+        else:
+            st.caption(f"Fallback universe mode: **{market_key}** · requested up to **{min(len(tickers), mover_count)}** tickers · cache TTL **3 min**")
 
-    with st.spinner(f"Loading {market_key} movers from Yahoo..."):
-        df, meta = _download_top_movers_cached(tuple(tickers), market_key, period, interval, prepost, int(max_tickers))
+    if use_market_feed:
+        with st.spinner(f"Loading {market_key} movers directly from Yahoo market movers feed..."):
+            df, meta = _download_market_movers_feed_cached(market_key, int(mover_count))
+        if df.empty:
+            st.warning("Yahoo market movers feed returned no rows. Falling back to scanner-universe intraday scan.")
+            use_market_feed = False
 
+    if not use_market_feed:
+        if not tickers:
+            st.warning(f"No ticker universe found for {market_key}.")
+            return
+        with st.spinner(f"Loading {market_key} movers from scanner universe fallback..."):
+            df, meta = _download_top_movers_cached(tuple(tickers), market_key, period, interval, prepost, int(mover_count))
+
+    source_label = meta.get("source") or "Scanner universe fallback"
+    loaded_against = meta.get("tickers_requested", "Yahoo feed")
     st.success(
-        f"Loaded **{meta.get('rows', 0)}** / {meta.get('tickers_requested', 0)} rows · "
-        f"Latest bar: **{meta.get('latest_bar_sgt', 'unknown')}** · "
-        f"Interval: **{meta.get('interval')}**"
+        f"Loaded **{meta.get('rows', 0)}** rows · Source: **{source_label}** · "
+        f"Latest bar: **{meta.get('latest_bar_sgt', 'unknown')}**"
     )
 
     if meta.get("errors"):

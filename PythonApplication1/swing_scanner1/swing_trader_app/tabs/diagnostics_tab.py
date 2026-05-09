@@ -224,108 +224,159 @@ def render_diagnostics(ctx: dict) -> None:
     else:
         st.info("No scan debug summary yet. Run 🚀 Scan to populate it.")
 
-    st.markdown("**Stocks scanned in last scan**")
+    st.markdown("**Stocks scanned for selected market**")
+
+    # IMPORTANT FIX:
+    # Diagnostics must be market-aware. Previously it displayed the global
+    # `last_scanned_tickers` list, so after switching from HK -> US the panel
+    # could still show the HK ticker universe. This block resolves the ticker
+    # list for the *currently selected* market only, using session state when it
+    # matches, otherwise the selected market's cache metadata.
+    _diag_market_now = st.session_state.get("market_selector", globals().get("market_sel", "🇺🇸 US"))
+
+    def _diag_scan_state_for_market(_market):
+        _state = {
+            "market": _market,
+            "source": "",
+            "tickers": [],
+            "tickers_csv": "",
+            "universe_source": "No scan yet for selected market",
+            "live_count": 0,
+            "existing_count": 0,
+            "always_list": [],
+            "from_cache": False,
+            "cache_saved_at": "",
+        }
+        try:
+            # Use in-memory values only when they belong to the selected market.
+            if st.session_state.get("last_market") == _market:
+                _tickers = list(st.session_state.get("last_scanned_tickers", []) or [])
+                _csv = st.session_state.get("last_scanned_tickers_csv", "") or ", ".join(_tickers)
+                _state.update({
+                    "source": "current session",
+                    "tickers": _tickers,
+                    "tickers_csv": _csv,
+                    "universe_source": st.session_state.get("last_universe_source", "current session scan"),
+                    "live_count": int(st.session_state.get("last_live_ticker_count", 0) or 0),
+                    "existing_count": int(st.session_state.get("last_existing_ticker_count", 0) or 0),
+                    "always_list": list(st.session_state.get("last_always_include_list", []) or []),
+                    "from_cache": False,
+                })
+                return _state
+
+            # Otherwise read the selected market cache metadata. This prevents
+            # HK cache/list from being shown while US/SGX/India is selected.
+            _loaded = None
+            try:
+                _loaded = _load_scan_cache(_market)
+            except Exception:
+                _loaded = None
+            if _loaded and isinstance(_loaded, dict):
+                _meta = _loaded.get("meta", {}) or {}
+                _csv = str(_meta.get("scanned_tickers_csv", "") or "")
+                _tickers = [t.strip() for t in _csv.split(",") if t.strip()]
+                _always_csv = str(_meta.get("always_include_tickers", "") or "")
+                _always = [t.strip() for t in _always_csv.split(",") if t.strip()]
+                _state.update({
+                    "source": "selected market cache",
+                    "tickers": _tickers,
+                    "tickers_csv": _csv,
+                    "universe_source": _meta.get("universe_source", "CSV cached master scan"),
+                    "live_count": int(_meta.get("live_ticker_count", 0) or 0),
+                    "existing_count": int(_meta.get("existing_ticker_count", 0) or 0),
+                    "always_list": _always,
+                    "from_cache": True,
+                    "cache_saved_at": _meta.get("saved_at", ""),
+                })
+        except Exception as _e:
+            _state["universe_source"] = f"Diagnostics state error: {type(_e).__name__}: {_e}"
+        return _state
+
+    _diag_state = _diag_scan_state_for_market(_diag_market_now)
+    _diag_tickers = _diag_state.get("tickers", [])
+    _diag_tickers_csv = _diag_state.get("tickers_csv", "")
+    _diag_always_scanned = _diag_state.get("always_list", [])
 
     # ── Always-include status ─────────────────────────────────────────────────
-    _always_now     = [t.strip().upper() for t in
-                       st.session_state.get("ui_always_include","").replace("\n",",").split(",")
-                       if t.strip()]
-    _always_scanned = st.session_state.get("last_always_include_list", [])
+    _always_now = [t.strip().upper() for t in
+                   st.session_state.get("ui_always_include", "").replace("\n", ",").split(",")
+                   if t.strip()]
 
-    if _always_now:
-        _missing = [t for t in _always_now if last_scanned_tickers and t not in last_scanned_tickers]
+    if _always_now and _diag_tickers:
+        _missing = [t for t in _always_now if t not in [x.upper() for x in _diag_tickers]]
         if _missing:
             st.warning(
-                f"⚠️ **Always-include tickers NOT in last scan:** "
+                f"⚠️ **Always-include tickers NOT in the selected-market scan:** "
                 f"**{', '.join(_missing)}**  \n"
-                "These were added after the last scan. "
-                "Click **🚀 Scan** to include them."
+                f"These were added after the last **{_diag_market_now}** scan. "
+                f"Click **🚀 Scan {_diag_market_now} Stocks** to include them."
             )
         else:
-            included_str = ", ".join(_always_now)
-            st.success(
-                f"✅ **Always-include tickers present in last scan:** {included_str}"
-            )
-    elif _always_scanned:
+            st.success(f"✅ **Always-include tickers present in {_diag_market_now} scan:** {', '.join(_always_now)}")
+    elif _diag_always_scanned:
         st.info(
-            f"📌 Last scan included always-include tickers: "
-            f"**{', '.join(_always_scanned)}** "
-            "(removed from sidebar since then)."
+            f"📌 Last **{_diag_market_now}** scan included always-include tickers: "
+            f"**{', '.join(_diag_always_scanned)}**"
         )
 
-    # ── Scanned ticker list ───────────────────────────────────────────────────
-    if last_scanned_tickers:
-        _ai_count = len(_always_scanned)
-        _diag_sel_now = st.session_state.get("market_selector", last_market)
-        _mkt_match = (last_market == _diag_sel_now)
-        if not _mkt_match:
-            st.warning(
-                f"⚠️ This ticker list is from the **{last_market}** scan — "
-                f"you have now switched to **{_diag_sel_now}**.  \n"
-                f"Click **🚀 Scan {_diag_sel_now} Stocks** to see {_diag_sel_now} tickers."
+    # ── Selected market ticker list ───────────────────────────────────────────
+    if _diag_tickers:
+        _ai_count = len(_diag_always_scanned)
+        if _diag_state.get("from_cache"):
+            st.info(
+                f"Showing ticker list from the **{_diag_market_now}** cache"
+                + (f" saved at **{_diag_state.get('cache_saved_at')}**." if _diag_state.get("cache_saved_at") else ".")
             )
         st.caption(
-            f"Market: **{last_market}** · Universe: **{last_universe_source}** · "
-            f"Total: **{len(last_scanned_tickers)}** · "
-            f"Live: **{last_live_ticker_count}** · "
-            f"Existing: **{last_existing_ticker_count}** · "
+            f"Market: **{_diag_market_now}** · Universe: **{_diag_state.get('universe_source')}** · "
+            f"Total: **{len(_diag_tickers)}** · "
+            f"Live: **{_diag_state.get('live_count', 0)}** · "
+            f"Existing: **{_diag_state.get('existing_count', 0)}** · "
             f"Always-include: **{_ai_count}**"
         )
-        if last_market == "🇺🇸 US":
+        if _diag_market_now == "🇺🇸 US":
+            _diag_upper = [t.upper() for t in _diag_tickers]
             st.caption(
-                f"UUUU: **{'✅' if 'UUUU' in last_scanned_tickers else '❌'}** · "
-                f"APP:  **{'✅' if 'APP'  in last_scanned_tickers else '❌'}**"
+                f"UUUU: **{'✅' if 'UUUU' in _diag_upper else '❌'}** · "
+                f"APP:  **{'✅' if 'APP'  in _diag_upper else '❌'}**"
                 + (f" · Always-include in list: "
                    + " ".join(
-                       f"**{t} {'✅' if t in last_scanned_tickers else '❌'}**"
+                       f"**{t} {'✅' if t in _diag_upper else '❌'}**"
                        for t in _always_now[:8]
                    ) if _always_now else "")
             )
 
-        # Show always-include separately so it's easy to spot
-        if _always_scanned:
-            st.markdown("**📌 Always-include tickers (from last scan):**")
-            st.code(", ".join(_always_scanned))
+        if _diag_always_scanned:
+            st.markdown("**📌 Always-include tickers from selected-market scan:**")
+            st.code(", ".join(_diag_always_scanned))
 
         st.text_area(
-            "All scanned tickers (comma-separated)",
-            value=last_scanned_tickers_csv,
+            f"All scanned tickers for {_diag_market_now} (comma-separated)",
+            value=_diag_tickers_csv,
             height=120,
-            key="diag_scanned_tickers_csv",
+            key=f"diag_scanned_tickers_csv_{_diag_market_now}",
             disabled=True,
         )
 
-        # Quick search box so user can verify any specific ticker
         _search_t = st.text_input(
-            "🔍 Check if a ticker was scanned",
-            placeholder="e.g. TSLA, D05.SI, RELIANCE.NS",
+            "🔍 Check if a ticker was scanned in the selected market",
+            placeholder="e.g. TSLA, D05.SI, RELIANCE.NS, 0700.HK",
             key="diag_ticker_search",
         ).strip().upper()
         if _search_t:
-            _found = _search_t in [t.upper() for t in last_scanned_tickers]
+            _found = _search_t in [t.upper() for t in _diag_tickers]
             if _found:
-                st.success(f"✅ **{_search_t}** was included in the last scan.")
+                st.success(f"✅ **{_search_t}** was included in the **{_diag_market_now}** scan.")
             else:
                 st.error(
-                    f"❌ **{_search_t}** was NOT in the last scan.  \n"
-                    "Add it to **Always include tickers** in the sidebar "
-                    "and click **🚀 Scan** to include it."
+                    f"❌ **{_search_t}** was NOT in the **{_diag_market_now}** scan.  \n"
+                    "Add it to **Always include tickers** in the sidebar and click **🚀 Scan**."
                 )
     else:
-        _diag_market_now = st.session_state.get("market_selector", "🇺🇸 US")
-        _diag_last_market = st.session_state.get("_diag_market", _diag_market_now)
-        if _diag_market_now != _diag_last_market:
-            st.info(
-                f"Market switched to **{_diag_market_now}** — no scan has been run "
-                f"for this market yet this session.  \n"
-                f"Click **🚀 Scan {_diag_market_now} Stocks** to populate this section."
-            )
-        else:
-            st.info(
-                f"No **{_diag_market_now}** scan yet this session.  \n"
-                "Run **🚀 Scan** to populate this section — it will show every "
-                "ticker attempted, always-include status, and a search box."
-            )
+        st.info(
+            f"No ticker list found for **{_diag_market_now}**.  \n"
+            f"Click **🚀 Scan {_diag_market_now} Stocks** to populate this section."
+        )
 
     st.markdown("**Logs / scan notes**")
     st.caption("These are UI-level diagnostics from the latest scan/session. They are not a separate file log.")
@@ -333,10 +384,11 @@ def render_diagnostics(ctx: dict) -> None:
     try:
         diag_logs.append(f"Market selected: {market_sel}")
         diag_logs.append(f"Market regime: {regime}")
-        diag_logs.append(f"Universe source: {last_universe_source if last_universe_source else 'No scan yet'}")
-        diag_logs.append(f"Scanned tickers: {len(last_scanned_tickers) if last_scanned_tickers else 0}")
-        diag_logs.append(f"Live tickers used: {last_live_ticker_count}")
-        diag_logs.append(f"Existing tickers used: {last_existing_ticker_count}")
+        diag_logs.append(f"Selected market for Diagnostics: {_diag_market_now}")
+        diag_logs.append(f"Universe source: {_diag_state.get('universe_source', 'No scan yet')}")
+        diag_logs.append(f"Scanned tickers for selected market: {len(_diag_tickers) if _diag_tickers else 0}")
+        diag_logs.append(f"Live tickers used: {_diag_state.get('live_count', 0)}")
+        diag_logs.append(f"Existing tickers used: {_diag_state.get('existing_count', 0)}")
         diag_logs.append(f"Long setups shown: {len(df_long) if isinstance(df_long, pd.DataFrame) else 0}")
         diag_logs.append(f"Short setups shown: {len(df_short) if isinstance(df_short, pd.DataFrame) else 0}")
         diag_logs.append(f"Operator activity rows: {len(df_operator) if isinstance(df_operator, pd.DataFrame) else 0}")
@@ -346,7 +398,7 @@ def render_diagnostics(ctx: dict) -> None:
         diag_logs.append(f"Auto refresh interval: {_lt.get('refresh_interval', 'Off')}")
         diag_logs.append(f"Next refresh/check: {_lt.get('next_refresh_in', 'Auto refresh off')} at {_lt.get('next_refresh_at', 'Auto refresh off')}")
         diag_logs.append(f"Bucket-cap Bayesian: {'ON' if st.session_state.get('use_bucket_cap', True) else 'OFF'}")
-        diag_logs.append("Trade Journal: removed from Trade Desk in v13.46; current buildv13.70")
+        diag_logs.append("Trade Journal: removed from Trade Desk in v13.46; current build v13.70")
     except Exception as e:
         diag_logs.append(f"Diagnostics log build error: {e}")
     st.text_area(
