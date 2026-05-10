@@ -82,21 +82,41 @@ def render_earnings(ctx: dict) -> None:
         # earnings-calendar function's own cache; leave other cached data
         # (sector heatmaps, dividends, prices) intact. This also avoids
         # the side-effect of resetting unkeyed sidebar widgets.
-        try:
-            fetch_earnings_calendar.clear()
-        except Exception:
-            pass
+        # Clear all earnings-specific caches.  Clearing only the outer
+        # fetch_earnings_calendar cache can still leave stale empty
+        # per-ticker results from _fast_earnings_date_for_ticker.
+        for _fn_name in (
+            "fetch_earnings_calendar",
+            "_fast_earnings_date_for_ticker",
+            "_earnings_info_for_candidate",
+        ):
+            try:
+                _fn = globals().get(_fn_name)
+                if _fn is not None and hasattr(_fn, "clear"):
+                    _fn.clear()
+            except Exception:
+                pass
         with st.spinner(f"Scanning earnings for up to {earn_max} tickers…"):
             earn_df = fetch_earnings_calendar(tuple(earn_base), earn_days, int(earn_max))
         st.session_state["earn_df"] = earn_df
         st.session_state["earn_last_scan_count"] = min(len(earn_base), int(earn_max))
+        st.session_state["earn_last_checked_sgt"] = pd.Timestamp.now(tz="Asia/Singapore").strftime("%Y-%m-%d %H:%M:%S SGT")
 
     st.caption(f"Fast mode: checks earnings dates first, then loads full Yahoo info only for matching candidates. Current cap: {earn_max} tickers.")
 
     earn_df = st.session_state.get("earn_df", pd.DataFrame())
 
     if earn_df.empty:
-        st.info("Click 📅 Fetch Earnings Calendar. Add UUUU in the ➕ Add tickers box to include it. Default scan is capped for speed; raise Max scan only when needed.")
+        _last_checked = st.session_state.get("earn_last_checked_sgt")
+        _last_count = st.session_state.get("earn_last_scan_count")
+        if _last_checked:
+            st.warning(
+                f"No earnings rows found in the selected window. Last checked: {_last_checked}. "
+                f"Tickers scanned: {_last_count or 0}. Try US market, Days ahead = 30, Max scan = 500/1000, "
+                "or add known tickers manually in ➕ Add tickers. Yahoo often has sparse earnings dates for SGX/HK/India."
+            )
+        else:
+            st.info("Click 📅 Fetch Earnings Calendar. Add tickers in the ➕ Add tickers box to force-check them. Default scan is capped for speed; raise Max scan only when needed.")
     else:
         buys   = (earn_df["_vcol"] == "buy").sum()
         watch  = (earn_df["_vcol"] == "watch").sum()
@@ -140,7 +160,7 @@ def render_earnings(ctx: dict) -> None:
                 "Ticker","Earnings Date","Days Out","Price",
                 "EPS Est","EPS Last","EPS Trend","Fwd PE",
                 "Analyst Target","Upside","Above MA50","Above MA200",
-                "Analyst Rec","Verdict",
+                "Analyst Rec","Data","Verdict",
             ] if c in df_filtered.columns]
 
             df_show = df_filtered[disp_cols].copy()
@@ -161,7 +181,9 @@ def render_earnings(ctx: dict) -> None:
                 "Above MA50":     st.column_config.TextColumn("MA50",    width=42),
                 "Above MA200":    st.column_config.TextColumn("MA200",   width=45),
                 "Analyst Rec":    st.column_config.TextColumn("Rec",     width=68),
-                "Verdict":        st.column_config.TextColumn("Verdict", width=100),
+                "Data":           st.column_config.TextColumn("Data",    width=48,
+                    help="Data quality: criteria available out of 5. SGX/HK/India often 2-3/5 due to sparse Yahoo coverage."),
+                "Verdict":        st.column_config.TextColumn("Verdict", width=120),
             }
             cfg = {k: v for k, v in col_cfg.items() if k in df_show.columns}
 
@@ -176,8 +198,10 @@ def render_earnings(ctx: dict) -> None:
                          height=min(40 + len(df_show) * 35, 520))
 
         st.caption(
-            "**✅ BUY** = ≥4/5: above MA50, above MA200, analyst target higher, EPS↑>5%, Buy rated · "
-            "**👀 WATCH** = 3/5 · **⏳ WAIT** = 2/5 · **🚫 AVOID** = ≤1/5 or near 52W low"
+            "**✅ BUY** — majority of available criteria pass (MA50, MA200, analyst target, EPS trend, analyst rec) · "
+            "**👀 WATCH** — roughly half pass · **⏳ WAIT** — minority pass · **🚫 AVOID** — fails or near 52W low · "
+            "**Data** = criteria with real data out of 5. SGX/HK/India typically 2–3/5 (Yahoo coverage sparse). "
+            "⚠️partial = verdict based on incomplete data — treat with caution."
         )
         st.warning(
             "⚠️ Earnings are binary — stocks can gap ±20% overnight. "
