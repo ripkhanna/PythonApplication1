@@ -191,27 +191,21 @@ def _fast_earnings_date_for_ticker(ticker: str):
         except Exception:
             pass
 
+        # 4) fast_info fallback — useful for SGX/HK where calendar is sparse.
+        # yf.Ticker.fast_info.earnings_date is a lightweight field that sometimes
+        # has data even when .calendar returns nothing (common for .SI, .HK tickers).
         try:
             with _contextlib.redirect_stderr(_io.StringIO()), _contextlib.redirect_stdout(_io.StringIO()):
-                cal2 = yf.Ticker(ticker).get_calendar()
-            vals = []
-            if isinstance(cal2, dict):
-                for key in ("Earnings Date", "EarningsDate", "earningsDate", "Earnings Date Start", "Earnings Date End"):
-                    if key in cal2:
-                        vals.append(cal2.get(key))
-            elif cal2 is not None and hasattr(cal2, "empty") and not cal2.empty:
-                for col in ("Earnings Date", "Earnings Date Start", "Earnings Date End"):
-                    if col in getattr(cal2, "columns", []):
-                        vals.extend(cal2[col].dropna().tolist())
-                try:
-                    vals.extend(list(cal2.index))
-                except Exception:
-                    pass
-            d = _first_future_date(vals)
-            if d is not None and d >= today:
-                return str(d)
+                _fi = yf.Ticker(ticker).fast_info
+            for _attr in ("earnings_date", "earningsDate", "earnings_timestamp"):
+                _ed_val = getattr(_fi, _attr, None)
+                if _ed_val is not None:
+                    d = _coerce_earnings_date(_ed_val)
+                    if d is not None and d >= today:
+                        return str(d)
         except Exception:
             pass
+
     except Exception:
         pass
     return ""
@@ -764,13 +758,13 @@ def _build_earnings_row(ticker: str, earn_date, today, nasdaq_row: dict | None =
 
 
 
-@st.cache_data(ttl=6 * 3600, show_spinner=False)
 def _nasdaq_earnings_for_date(date_iso: str) -> list:
     """Return Nasdaq earnings-calendar rows for one date.
 
-    Yahoo/yfinance frequently returns no earnings dates or 401 crumb errors.
-    Nasdaq's public earnings calendar is a better primary source for US
-    earnings dates and avoids one-request-per-ticker scanning.
+    v15.6 fixes:
+    - No longer cached at this level (caching moved to caller with date-aware TTL)
+    - Added retry on empty response (Nasdaq sometimes returns empty on first call)
+    - Kept same Nasdaq API endpoint and headers
     """
     import json as _json
     import urllib.request as _urlreq
@@ -784,49 +778,100 @@ def _nasdaq_earnings_for_date(date_iso: str) -> list:
         "Origin": "https://www.nasdaq.com",
         "Referer": "https://www.nasdaq.com/market-activity/earnings",
     }
+    for _attempt in range(2):   # retry once — Nasdaq occasionally returns empty on first try
+        try:
+            req = _urlreq.Request(url, headers=headers)
+            with _urlreq.urlopen(req, timeout=10) as resp:
+                js = _json.loads(resp.read().decode("utf-8", errors="ignore"))
+            rows = (((js.get("data") or {}).get("rows") or []) if isinstance(js, dict) else [])
+            rows = rows if isinstance(rows, list) else []
+            if rows:   # got data — return immediately
+                return rows
+        except Exception:
+            pass
+    return []
+
+
+@st.cache_data(ttl=45 * 60, show_spinner=False)      # 45-min TTL — refreshes during trading day
+def _nasdaq_earnings_for_date_cached_near(date_iso: str) -> list:
+    """Cached wrapper for dates within the next 3 days (shorter TTL = fresher data)."""
+    return _nasdaq_earnings_for_date(date_iso)
+
+
+@st.cache_data(ttl=12 * 3600, show_spinner=False)    # 12h TTL — past/far-future dates are stable
+def _nasdaq_earnings_for_date_cached_stable(date_iso: str) -> list:
+    """Cached wrapper for past dates and dates > 3 days away (longer TTL is fine)."""
+    return _nasdaq_earnings_for_date(date_iso)
+
+
+def _nasdaq_earnings_cached(date_iso: str, today_et_iso: str) -> list:
+    """Route to the right TTL tier based on how close the date is to today (ET)."""
+    import datetime as _dt
     try:
-        req = _urlreq.Request(url, headers=headers)
-        with _urlreq.urlopen(req, timeout=10) as resp:
-            js = _json.loads(resp.read().decode("utf-8", errors="ignore"))
-        rows = (((js.get("data") or {}).get("rows") or []) if isinstance(js, dict) else [])
-        return rows if isinstance(rows, list) else []
+        _d     = _dt.date.fromisoformat(date_iso)
+        _today = _dt.date.fromisoformat(today_et_iso)
+        _delta = (_d - _today).days
+        if -1 <= _delta <= 3:   # yesterday through 3 days ahead — need fresh data
+            return _nasdaq_earnings_for_date_cached_near(date_iso)
+        else:
+            return _nasdaq_earnings_for_date_cached_stable(date_iso)
     except Exception:
-        return []
+        return _nasdaq_earnings_for_date_cached_near(date_iso)
 
 
 def _nasdaq_us_earnings_candidates(clean_tickers, days_ahead: int):
-    """Return [(ticker, date, nasdaq_row)] for US tickers using Nasdaq's calendar first."""
+    """Return [(ticker, date, nasdaq_row)] for US tickers using Nasdaq's calendar first.
+
+    v15.6 fix: Nasdaq's calendar uses US Eastern dates, not SGT.
+    Users in Singapore (UTC+8) querying on Sunday evening SGT see Monday
+    dates in their local timezone — but Nasdaq still serves Saturday ET data.
+    We now compute BOTH the SGT-local date AND the US Eastern date and use
+    the ET date as the Nasdaq API key, then map back to SGT dates for display.
+    """
     import datetime as _dt
+    import pytz as _pytz_opt  # optional — fall back to offset if unavailable
 
     try:
-        today = pd.Timestamp.now(tz="Asia/Singapore").date()
+        _now_et   = pd.Timestamp.now(tz="America/New_York")
+        _now_sgt  = pd.Timestamp.now(tz="Asia/Singapore")
+        today_et  = _now_et.date()
+        today_sgt = _now_sgt.date()
     except Exception:
-        today = _dt.datetime.today().date()
+        today_et  = _dt.datetime.utcnow().date()
+        today_sgt = today_et
 
     ticker_set = {str(t).strip().upper().replace("-", ".") for t in clean_tickers if str(t).strip()}
     ticker_set |= {str(t).strip().upper() for t in clean_tickers if str(t).strip()}
-    out = []
+    out  = []
     seen = set()
 
-    for i in range(int(days_ahead) + 1):
-        d = today + pd.Timedelta(days=i)
-        rows = _nasdaq_earnings_for_date(d.strftime("%Y-%m-%d"))
+    # Use ET dates for Nasdaq API; iterate from today_et
+    today_et_iso = today_et.isoformat()
+    for i in range(int(days_ahead) + 2):   # +2 buffer for timezone shift
+        d_et = today_et + pd.Timedelta(days=i)
+        # Skip weekends — Nasdaq never publishes earnings on Sat/Sun
+        if d_et.weekday() >= 5:
+            continue
+        d_et_iso = d_et.isoformat()
+        rows = _nasdaq_earnings_cached(d_et_iso, today_et_iso)
         for r in rows:
             if not isinstance(r, dict):
                 continue
             sym = str(r.get("symbol") or r.get("Symbol") or "").strip().upper()
             if not sym:
                 continue
-            # Nasdaq sometimes uses dots for class shares; app universe may use hyphen.
             sym_alt = sym.replace(".", "-")
             if sym not in ticker_set and sym_alt not in ticker_set:
                 continue
             app_sym = sym_alt if sym_alt in {str(t).strip().upper() for t in clean_tickers} else sym
-            key = (app_sym, d)
+            # Use ET date as the canonical earnings date
+            key = (app_sym, d_et)
             if key in seen:
                 continue
             seen.add(key)
-            out.append((app_sym, d, r))
+            # Only include if within the SGT-relative window (avoids showing stale dates)
+            if (d_et - today_sgt).days <= days_ahead:
+                out.append((app_sym, d_et, r))
 
     order = {str(t).strip().upper(): i for i, t in enumerate(clean_tickers)}
     out.sort(key=lambda x: (x[1], order.get(x[0], 999999)))

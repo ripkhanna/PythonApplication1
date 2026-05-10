@@ -1,5 +1,5 @@
 """
-Swing Scanner v13.82 — Bayesian Ensemble
+Swing Scanner v13.83 — Bayesian Ensemble
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -16,7 +16,7 @@ v12 add-ons  : options-derived signals — call/put unusual flow, IV term
 Install:
   pip install financedatabase ta streamlit yfinance pandas numpy nsepython requests streamlit-autorefresh
 """
-# v13.82: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
+# v13.83: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
 # NotImplementedError from __annotate__ when @st.cache_data wraps functions
 # with bare unsubscripted generics like `-> tuple`. This `from __future__`
 # downgrades all annotations in this module to strings at parse time,
@@ -43,7 +43,7 @@ import streamlit as st
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v13.82",
+    page_title="Swing Scanner v13.83",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -225,9 +225,9 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v13.82")
+st.title("📈 Swing/Long Term Scanner v13.83")
 
-# v13.82: COMPACT SELF-STAMP
+# v13.83: COMPACT SELF-STAMP
 # The build identity (path, mtime, hash, size) is still computed so it can
 # self-prove the running file, but only the short hash and mtime are visible
 # in the caption. The full path and size are tucked into the tooltip — hover
@@ -325,7 +325,7 @@ _SIDEBAR_DEFAULTS = {
     "ui_swing_mode":          "Balanced",  # Options: Strict/Balanced/Discovery/Support Entry/Premarket Momentum/High Volume/High Conviction/PSM Strategy
     "ui_skip_earnings":       False,
     "ui_use_live_universe":   True,
-    "ui_max_live_universe":   1000,
+    "ui_max_live_universe":   350,
     "ui_always_include":      "",
     # Options layer
     "ui_enable_options":      False,
@@ -554,8 +554,12 @@ use_live_universe = st.sidebar.checkbox(
 max_live_universe = st.sidebar.slider(
     "Max live stocks to scan", 50, 1000, step=25,
     key="ui_max_live_universe",
-    help="Limits only the live/Yahoo side of the universe. Existing curated tickers "
-         "and always-include tickers are added on top of this limit.",
+    help=(
+        "Controls the live/Yahoo universe size. "
+        "350 = fast (10-20s, recommended). "
+        "1000 = slow (60-120s). "
+        "Curated + always-include tickers are always added on top."
+    ),
 )
 always_include_text = st.sidebar.text_area(
     "Always include tickers",

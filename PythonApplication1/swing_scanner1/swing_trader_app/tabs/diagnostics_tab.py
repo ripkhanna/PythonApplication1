@@ -273,6 +273,42 @@ def render_diagnostics(ctx: dict) -> None:
     st.markdown("**Scan debug summary**")
     _scan_dbg = st.session_state.get("last_scan_debug", {})
     if _scan_dbg:
+        # ── Timing breakdown (v15.6) ──────────────────────────────────────────
+        _timing = _scan_dbg.get("timing", {})
+        if _timing and _timing.get("total_s", 0) > 0:
+            st.markdown("**Scan phase timing**")
+            _phases = [
+                ("SPY + Sectors",  "spy_sector_fetch_s",  "SPY + 11 sector ETF downloads"),
+                ("Intraday",       "intraday_fetch_s",    "5-min bars — only during market hours"),
+                ("Batch OHLCV",    "batch_ohlcv_s",       f"3-month daily bars for {_scan_dbg.get('total_tickers', 0)} tickers"),
+                ("Meta prefetch",  "meta_prefetch_s",     "Float, short%, PE, earnings date per ticker (5 workers)"),
+                ("Signal loop",    "signal_loop_s",       "Bayesian scoring + pattern detection per ticker"),
+            ]
+            _tc1, _tc2, _tc3, _tc4, _tc5, _tc6 = st.columns(6)
+            _cols = [_tc1, _tc2, _tc3, _tc4, _tc5, _tc6]
+            for _col, (_label, _key, _help) in zip(_cols[:5], _phases):
+                _val = _timing.get(_key, 0)
+                _col.metric(_label, f"{_val:.1f}s", help=_help)
+            _tc6.metric("**Total**", f"{_timing.get('total_s', 0):.1f}s", help="Wall time from scan start to results ready")
+
+            # Bottleneck callout
+            _phase_times = {label: _timing.get(key, 0) for label, key, _ in _phases}
+            _slowest     = max(_phase_times, key=_phase_times.get)
+            _slowest_t   = _phase_times[_slowest]
+            if _slowest_t > 15:
+                _tips = {
+                    "Batch OHLCV":   "Reduce 'Max live stocks' slider (try 200–350). This is the main scan bottleneck.",
+                    "Meta prefetch": "Meta workers capped at 5 to avoid Yahoo crumb errors. Normal for large universes.",
+                    "Signal loop":   "More tickers = longer signal loop. Reduce universe size.",
+                    "SPY + Sectors": "Yahoo rate-limited? SPY+sector fetch should be <5s normally.",
+                    "Intraday":      "5-min intraday fetch for all tickers. Only runs when market is live.",
+                }
+                st.caption(
+                    f"⏱ Slowest phase: **{_slowest}** ({_slowest_t:.0f}s). "
+                    f"{_tips.get(_slowest, 'Consider reducing the ticker universe size.')}"
+                )
+            st.divider()
+
         d1, d2, d3, d4 = st.columns(4)
         d1.metric("Tickers attempted", _scan_dbg.get("total_tickers", 0))
         d2.metric("Batch loaded", _scan_dbg.get("batch_loaded", 0))
@@ -469,7 +505,7 @@ def render_diagnostics(ctx: dict) -> None:
         diag_logs.append(f"Auto refresh interval: {_lt.get('refresh_interval', 'Off')}")
         diag_logs.append(f"Next refresh/check: {_lt.get('next_refresh_in', 'Auto refresh off')} at {_lt.get('next_refresh_at', 'Auto refresh off')}")
         diag_logs.append(f"Bucket-cap Bayesian: {'ON' if st.session_state.get('use_bucket_cap', True) else 'OFF'}")
-        diag_logs.append("Trade Journal: removed from Trade Desk in v13.46; current build v13.82")
+        diag_logs.append("Trade Journal: removed from Trade Desk in v13.46; current build v13.83")
     except Exception as e:
         diag_logs.append(f"Diagnostics log build error: {e}")
     st.text_area(

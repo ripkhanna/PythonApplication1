@@ -236,7 +236,19 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         "latest_intraday_bar": "",
         "data_freshness_bucket": str(data_freshness_bucket or ""),
         "empty_reason": "",
+        # v15.6: per-phase timing breakdown
+        "timing": {
+            "spy_sector_fetch_s":   0.0,
+            "intraday_fetch_s":     0.0,
+            "batch_ohlcv_s":        0.0,
+            "meta_prefetch_s":      0.0,
+            "signal_loop_s":        0.0,
+            "total_s":              0.0,
+        },
     }
+    import time as _time_mod
+    _t_start = _time_mod.perf_counter()
+    _t_phase = _t_start
     if total == 0:
         scan_debug["empty_reason"] = "No tickers were passed to fetch_analysis"
         try:
@@ -290,6 +302,11 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 continue
     except Exception:
         pass
+
+    # timing checkpoint: SPY + sector ETF fetch
+    _t_now = _time_mod.perf_counter()
+    scan_debug["timing"]["spy_sector_fetch_s"] = round(_t_now - _t_phase, 1)
+    _t_phase = _t_now
 
     # ── Intraday overlay pre-fetch ────────────────────────────────────────────
     # The 6-month daily Yahoo bars can remain on yesterday's candle for a while
@@ -395,6 +412,10 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             except Exception:
                 pass
 
+    # timing checkpoint: intraday fetch (only runs when market is open)
+    _t_now = _time_mod.perf_counter()
+    scan_debug["timing"]["intraday_fetch_s"] = round(_t_now - _t_phase, 1)
+    _t_phase = _t_now
 
     # ── Batch OHLCV pre-fetch ─────────────────────────────────────────────────
     status_text.text(f"📥 Batch downloading {total} stocks...")
@@ -432,6 +453,11 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         except Exception:
             pass
         status_text.text(f"Batch failed ({e}), fetching individually...")
+
+    # timing checkpoint: batch OHLCV download
+    _t_now = _time_mod.perf_counter()
+    scan_debug["timing"]["batch_ohlcv_s"] = round(_t_now - _t_phase, 1)
+    _t_phase = _t_now
 
     # ── Regime + mode thresholds ─────────────────────────────────────────────
     # v13.52: The old scanner was too strict for live markets: a stock needed
@@ -610,6 +636,11 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         # The main loop will still run; it just won't have float/short/PE/PM data.
         pass
     status_text.text("✅ Meta ready — computing signals…")
+
+    # timing checkpoint: meta prefetch
+    _t_now = _time_mod.perf_counter()
+    scan_debug["timing"]["meta_prefetch_s"] = round(_t_now - _t_phase, 1)
+    _t_phase = _t_now
 
     for i, ticker in enumerate(all_tickers):
         try:
@@ -1752,6 +1783,12 @@ def fetch_analysis(green_sectors, red_sectors, regime,
     df_long_out = make_df(long_results, "Rise Prob")
     df_short_out = make_df(short_results, "Fall Prob")
     df_operator_out = make_op_df(operator_results)
+
+    # timing checkpoint: signal loop (everything after meta prefetch)
+    _t_now = _time_mod.perf_counter()
+    scan_debug["timing"]["signal_loop_s"] = round(_t_now - _t_phase, 1)
+    scan_debug["timing"]["total_s"]       = round(_t_now - _t_start, 1)
+
     scan_debug.update({
         "finished_at": datetime.now().isoformat(timespec="seconds"),
         "long_rows_raw": int(len(df_long_out)),

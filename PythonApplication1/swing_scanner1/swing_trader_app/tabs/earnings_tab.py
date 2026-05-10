@@ -21,16 +21,19 @@ def render_earnings(ctx: dict) -> None:
         earn_market = st.radio("Market", ["🇺🇸 US", "🇸🇬 SGX", "🇮🇳 India", "🇭🇰 HK"],
                                horizontal=True, key="earn_market_sel")
     with ec3:
-        # v13.49: avoid scanning the entire market by default. Yahoo earnings
-        # calls are slow/rate-limited on Streamlit Cloud, so scan a practical
-        # capped list and allow the user to raise the limit when needed.
         earn_max = st.selectbox("Max scan", [50, 100, 150, 250, 500, 1000],
                                 index=1, key="earn_max_scan",
                                 help="Keeps Earnings Calendar fast. Extra tickers are always scanned first.")
     with ec4:
-        # Custom tickers — always include these even if not in base list
         extra_earn = st.text_input("➕ Add tickers",
             placeholder="UUUU, NVDA, AAPL", key="earn_extra").strip().upper()
+
+    # ── Market-aware state: clear earn_df when user switches market ───────────
+    _prev_earn_market = st.session_state.get("earn_df_market", "")
+    if _prev_earn_market and _prev_earn_market != earn_market:
+        st.session_state.pop("earn_df", None)
+        st.session_state.pop("earn_last_checked_sgt", None)
+        st.session_state.pop("earn_last_scan_count", None)
 
     if earn_market == "🇺🇸 US":
         earn_base = list(US_TICKERS)
@@ -89,6 +92,8 @@ def render_earnings(ctx: dict) -> None:
             "fetch_earnings_calendar",
             "_fast_earnings_date_for_ticker",
             "_earnings_info_for_candidate",
+            "_nasdaq_earnings_for_date_cached_near",    # v15.6: was missing — caused stale empty dates
+            "_nasdaq_earnings_for_date_cached_stable",  # v15.6: also clear stable cache on manual refresh
         ):
             try:
                 _fn = globals().get(_fn_name)
@@ -99,24 +104,56 @@ def render_earnings(ctx: dict) -> None:
         with st.spinner(f"Scanning earnings for up to {earn_max} tickers…"):
             earn_df = fetch_earnings_calendar(tuple(earn_base), earn_days, int(earn_max))
         st.session_state["earn_df"] = earn_df
+        st.session_state["earn_df_market"] = earn_market           # ← market tag
         st.session_state["earn_last_scan_count"] = min(len(earn_base), int(earn_max))
         st.session_state["earn_last_checked_sgt"] = pd.Timestamp.now(tz="Asia/Singapore").strftime("%Y-%m-%d %H:%M:%S SGT")
 
-    st.caption(f"Fast mode: checks earnings dates first, then loads full Yahoo info only for matching candidates. Current cap: {earn_max} tickers.")
+    st.caption(
+        f"Fast mode: checks earnings dates first, then loads full Yahoo info only for matching candidates. "
+        f"Current cap: {earn_max} tickers. "
+        f"**Note:** Nasdaq calendar uses US Eastern dates. "
+        f"Today ET: **{pd.Timestamp.now(tz='America/New_York').strftime('%Y-%m-%d %H:%M ET')}** — "
+        "if your local date is ahead of ET (SGT users), Monday earnings appear only after ~midnight ET Sunday."
+    )
 
     earn_df = st.session_state.get("earn_df", pd.DataFrame())
 
+    # Show stale-market warning if df is from a different market
+    _df_market = st.session_state.get("earn_df_market", "")
+    if not earn_df.empty and _df_market and _df_market != earn_market:
+        st.warning(f"⚠️ Showing **{_df_market}** results — click 📅 Fetch to load **{earn_market}** earnings.")
+
     if earn_df.empty:
         _last_checked = st.session_state.get("earn_last_checked_sgt")
-        _last_count = st.session_state.get("earn_last_scan_count")
+        _last_count   = st.session_state.get("earn_last_scan_count")
+        _is_sgx_hk    = earn_market in ("🇸🇬 SGX", "🇭🇰 HK")
         if _last_checked:
-            st.warning(
-                f"No earnings rows found in the selected window. Last checked: {_last_checked}. "
-                f"Tickers scanned: {_last_count or 0}. Try US market, Days ahead = 30, Max scan = 500/1000, "
-                "or add known tickers manually in ➕ Add tickers. Yahoo often has sparse earnings dates for SGX/HK/India."
-            )
+            if _is_sgx_hk:
+                st.warning(
+                    f"No earnings rows found for **{earn_market}** (last checked: {_last_checked}). \n\n"
+                    "**Why SGX/HK earnings are sparse:** Yahoo Finance does not maintain an earnings "
+                    "calendar for most SGX/HK tickers. The scan relies on per-ticker Yahoo data which "
+                    "is rarely populated for these markets.\n\n"
+                    "**Workarounds:**\n"
+                    "- Use **➕ Add tickers** to force-check specific stocks you know are reporting\n"
+                    "- Check [SGX announcements](https://www.sgx.com/securities/company-announcements) directly\n"
+                    "- Increase **Days ahead** to 30 and **Max scan** to 500"
+                )
+            else:
+                st.warning(
+                    f"No earnings rows found in the selected window. Last checked: {_last_checked}. "
+                    f"Tickers scanned: {_last_count or 0}. Try Days ahead = 30, Max scan = 500/1000, "
+                    "or add known tickers manually in ➕ Add tickers."
+                )
         else:
-            st.info("Click 📅 Fetch Earnings Calendar. Add tickers in the ➕ Add tickers box to force-check them. Default scan is capped for speed; raise Max scan only when needed.")
+            if _is_sgx_hk:
+                st.info(
+                    f"Click 📅 Fetch Earnings Calendar to scan **{earn_market}** earnings.\n\n"
+                    "**Tip for SGX/HK:** Add specific tickers in ➕ Add tickers (e.g. `D05.SI, O39.SI`) "
+                    "since Yahoo's earnings calendar coverage for these markets is limited."
+                )
+            else:
+                st.info("Click 📅 Fetch Earnings Calendar. Add tickers in the ➕ Add tickers box to force-check them. Default scan is capped for speed; raise Max scan only when needed.")
     else:
         buys   = (earn_df["_vcol"] == "buy").sum()
         watch  = (earn_df["_vcol"] == "watch").sum()
