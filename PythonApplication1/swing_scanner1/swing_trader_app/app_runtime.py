@@ -1,5 +1,5 @@
 """
-Swing Scanner v13.81 — Bayesian Ensemble
+Swing Scanner v13.82 — Bayesian Ensemble
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -16,7 +16,7 @@ v12 add-ons  : options-derived signals — call/put unusual flow, IV term
 Install:
   pip install financedatabase ta streamlit yfinance pandas numpy nsepython requests streamlit-autorefresh
 """
-# v13.81: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
+# v13.82: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
 # NotImplementedError from __annotate__ when @st.cache_data wraps functions
 # with bare unsubscripted generics like `-> tuple`. This `from __future__`
 # downgrades all annotations in this module to strings at parse time,
@@ -43,7 +43,7 @@ import streamlit as st
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v13.81",
+    page_title="Swing Scanner v13.82",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -225,9 +225,9 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v13.81")
+st.title("📈 Swing/Long Term Scanner v13.82")
 
-# v13.81: COMPACT SELF-STAMP
+# v13.82: COMPACT SELF-STAMP
 # The build identity (path, mtime, hash, size) is still computed so it can
 # self-prove the running file, but only the short hash and mtime are visible
 # in the caption. The full path and size are tucked into the tooltip — hover
@@ -1910,11 +1910,15 @@ if run:
     green_sectors = sdf[sdf["Today %"] >  0.1]["Sector"].tolist()
     red_sectors   = sdf[sdf["Today %"] < -0.1]["Sector"].tolist()
     if not green_sectors and not red_sectors:
-        try:
-            _record_app_warning("scan_flat_sectors", "All sectors flat or sector data unavailable; scanner will still run on the selected ticker universe", extra={"market": market_sel})
-        except Exception:
-            pass
-        st.warning("All sectors are flat or sector data is unavailable — scanner will still run on the selected ticker universe.")
+        # v15.6: suppress the warning when market is closed (all-flat is expected)
+        # or when the sector df carries _market_closed=True from the new fetch logic.
+        _mkt_closed = bool(sdf.get("_market_closed", pd.Series([False])).any()) if "_market_closed" in sdf.columns else False
+        if not _mkt_closed:
+            try:
+                _record_app_warning("scan_flat_sectors", "All sectors flat or sector data unavailable; scanner will still run on the selected ticker universe", extra={"market": market_sel})
+            except Exception:
+                pass
+            st.info("🕐 Sector data shows all-flat — market may be closed or data is loading. Scanner will run on the full ticker universe.")
 
     extra_tickers = [t.strip().upper() for t in extra_input.split(",") if t.strip()]
 
