@@ -297,9 +297,9 @@ def render_diagnostics(ctx: dict) -> None:
             _slowest_t   = _phase_times[_slowest]
             if _slowest_t > 15:
                 _tips = {
-                    "Batch OHLCV":   "Reduce 'Max live stocks' slider (try 200–350). This is the main scan bottleneck.",
-                    "Meta prefetch": "Meta workers capped at 5 to avoid Yahoo crumb errors. Normal for large universes.",
-                    "Signal loop":   "More tickers = longer signal loop. Reduce universe size.",
+                    "Batch OHLCV":   "Yahoo batch download is the slowest I/O step. The app still scans the full universe, but cached runs should avoid this.",
+                    "Meta prefetch": "Metadata is now deferred/limited so this should normally be small.",
+                    "Signal loop":   "The app now uses a cheap pre-filter before the heavy signal engine. Check 'Signal engine ran' vs 'Cheap skipped' below.",
                     "SPY + Sectors": "Yahoo rate-limited? SPY+sector fetch should be <5s normally.",
                     "Intraday":      "5-min intraday fetch for all tickers. Only runs when market is live.",
                 }
@@ -317,8 +317,11 @@ def render_diagnostics(ctx: dict) -> None:
         d5, d6, d7, d8 = st.columns(4)
         d5.metric("Skipped history", _scan_dbg.get("skipped_history", 0))
         d6.metric("Skipped earnings", _scan_dbg.get("skipped_earnings", 0))
-        d7.metric("Raw long rows", _scan_dbg.get("long_rows_raw", 0))
-        d8.metric("Raw short rows", _scan_dbg.get("short_rows_raw", 0))
+        d7.metric("Signal engine ran", _scan_dbg.get("signal_engine_ran", 0))
+        d8.metric("Cheap skipped", _scan_dbg.get("cheap_prefilter_skipped", 0))
+        d9, d10 = st.columns(2)
+        d9.metric("Raw long rows", _scan_dbg.get("long_rows_raw", 0))
+        d10.metric("Raw short rows", _scan_dbg.get("short_rows_raw", 0))
         if _scan_dbg.get("empty_reason"):
             st.warning(_scan_dbg.get("empty_reason"))
         if _scan_dbg.get("batch_error"):

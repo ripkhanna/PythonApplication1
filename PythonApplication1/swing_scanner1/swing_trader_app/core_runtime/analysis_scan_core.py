@@ -236,6 +236,18 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         "latest_intraday_bar": "",
         "data_freshness_bucket": str(data_freshness_bucket or ""),
         "empty_reason": "",
+        # v15.7 speed: full universe is still checked, but the expensive
+        # Bayesian signal engine is only run on tickers that pass a cheap
+        # price/volume/structure pre-filter.
+        "cheap_prefilter_skipped": 0,
+        "signal_engine_ran": 0,
+        # v15.8 speed: if the full batch download already completed, do not
+        # make slow per-ticker Yahoo fallback calls for symbols missing from
+        # the batch. Missing batch symbols are usually invalid/delisted/funds
+        # and per-ticker fallback is the main reason the signal loop stays slow.
+        "skipped_batch_miss_no_fallback": 0,
+        "options_enriched": 0,
+        "options_skipped_speed_cap": 0,
         # v15.6: per-phase timing breakdown
         "timing": {
             "spy_sector_fetch_s":   0.0,
@@ -272,6 +284,18 @@ def fetch_analysis(green_sectors, red_sectors, regime,
     operator_results = []
     progress_bar  = st.progress(0)
     status_text   = st.empty()
+
+    # v15.7 speed: Streamlit rerendering on every ticker is surprisingly
+    # expensive for 1,000+ names. Update the UI only periodically while still
+    # keeping the final progress accurate.
+    def _scan_progress(i, msg=None, force=False):
+        try:
+            if force or i == 0 or (i + 1) == total or (i % 25 == 0):
+                if msg:
+                    status_text.text(msg)
+                progress_bar.progress(min(1.0, max(0.0, (i + 1) / max(total, 1))))
+        except Exception:
+            pass
 
     # ── Monday filter ─────────────────────────────────────────────────────────
     is_monday = datetime.today().weekday() == 0
@@ -420,31 +444,105 @@ def fetch_analysis(green_sectors, red_sectors, regime,
     # ── Batch OHLCV pre-fetch ─────────────────────────────────────────────────
     status_text.text(f"📥 Batch downloading {total} stocks...")
     batch_cache = {}
-    try:
-        raw_batch = yf.download(
-            all_tickers, period="3mo", interval="1d",  # 3mo is enough for 60d MA + all signals
-            progress=False, group_by="ticker", threads=True, auto_adjust=True
-        )
-        for tkr in all_tickers:
-            try:
-                if isinstance(raw_batch.columns, pd.MultiIndex):
-                    lvl1 = raw_batch.columns.get_level_values(1)
-                    lvl0 = raw_batch.columns.get_level_values(0)
-                    if tkr in lvl1:    df_t = raw_batch.xs(tkr, axis=1, level=1).copy()
-                    elif tkr in lvl0:  df_t = raw_batch[tkr].copy()
-                    else:              continue
-                elif len(all_tickers) == 1:
-                    df_t = raw_batch.copy()
-                else:
+
+    # v15.9 speed: one giant yf.download(all 1200+) can randomly take 70s+ or
+    # stall behind a few bad symbols.  Download fixed-size chunks concurrently;
+    # each chunk is parsed independently so one slow/failed chunk does not block
+    # the whole universe.  This still scans the full universe — it only changes
+    # the transport layer.
+    def _chunks(seq, n):
+        for _i in range(0, len(seq), n):
+            yield list(seq[_i:_i + n])
+
+    def _download_daily_chunk(chunk, chunk_no=0):
+        out = {}
+        err = ""
+        try:
+            raw = yf.download(
+                chunk if len(chunk) > 1 else chunk[0],
+                period="3mo", interval="1d",  # 3mo is enough for 60d MA + all signals
+                progress=False, group_by="ticker", threads=True, auto_adjust=True,
+            )
+            if raw is None or getattr(raw, "empty", True):
+                return out, "empty"
+            for tkr in chunk:
+                try:
+                    if isinstance(raw.columns, pd.MultiIndex):
+                        lvl1 = raw.columns.get_level_values(1)
+                        lvl0 = raw.columns.get_level_values(0)
+                        if tkr in lvl1:
+                            df_t = raw.xs(tkr, axis=1, level=1).copy()
+                        elif tkr in lvl0:
+                            df_t = raw[tkr].copy()
+                        else:
+                            continue
+                    elif len(chunk) == 1:
+                        df_t = raw.copy()
+                    else:
+                        continue
+                    df_t = _clean_scan_ohlcv(df_t)
+                    if tkr in intraday_cache:
+                        df_t = _overlay_intraday_daily(df_t, intraday_cache[tkr])
+                    if len(df_t) >= 60:
+                        out[tkr] = df_t
+                except Exception:
                     continue
-                df_t = _clean_scan_ohlcv(df_t)
-                if tkr in intraday_cache:
-                    df_t = _overlay_intraday_daily(df_t, intraday_cache[tkr])
-                if len(df_t) >= 60:
-                    batch_cache[tkr] = df_t
-            except Exception:
-                continue
+        except Exception as e:
+            err = f"{type(e).__name__}: {e}"
+        return out, err
+
+    try:
+        # Tune for Yahoo reliability: enough parallelism to avoid a 70s single
+        # batch, but not so many connections that Yahoo starts throttling.
+        if total >= 900:
+            _chunk_size, _dl_workers = 225, 4
+        elif total >= 400:
+            _chunk_size, _dl_workers = 225, 3
+        else:
+            _chunk_size, _dl_workers = max(total, 1), 1
+
+        _ticker_chunks = list(_chunks(all_tickers, _chunk_size))
+        scan_debug["batch_chunk_size"] = int(_chunk_size)
+        scan_debug["batch_chunk_workers"] = int(_dl_workers)
+        scan_debug["batch_chunks"] = int(len(_ticker_chunks))
+        scan_debug["batch_chunk_errors"] = []
+
+        if len(_ticker_chunks) <= 1:
+            _out, _err = _download_daily_chunk(_ticker_chunks[0] if _ticker_chunks else [], 1)
+            batch_cache.update(_out)
+            if _err:
+                scan_debug["batch_chunk_errors"].append(f"chunk 1: {_err}")
+        else:
+            from concurrent.futures import ThreadPoolExecutor as _DLThreadPoolExecutor, as_completed as _dl_as_completed
+            status_text.text(
+                f"📥 Batch downloading {total} stocks in {len(_ticker_chunks)} chunks "
+                f"({_dl_workers} workers)..."
+            )
+            with _DLThreadPoolExecutor(max_workers=_dl_workers) as _pool:
+                _futs = {
+                    _pool.submit(_download_daily_chunk, ch, idx + 1): idx + 1
+                    for idx, ch in enumerate(_ticker_chunks)
+                }
+                _done_chunks = 0
+                for _fut in _dl_as_completed(_futs):
+                    _done_chunks += 1
+                    _idx = _futs[_fut]
+                    try:
+                        _out, _err = _fut.result(timeout=90)
+                        batch_cache.update(_out)
+                        if _err:
+                            scan_debug["batch_chunk_errors"].append(f"chunk {_idx}: {_err}")
+                    except Exception as _e:
+                        scan_debug["batch_chunk_errors"].append(f"chunk {_idx}: {type(_e).__name__}: {_e}")
+                    if _done_chunks == 1 or _done_chunks == len(_ticker_chunks) or _done_chunks % 2 == 0:
+                        status_text.text(
+                            f"📥 Loaded {len(batch_cache)}/{total} stocks "
+                            f"({ _done_chunks }/{len(_ticker_chunks)} chunks)..."
+                        )
+
         scan_debug["batch_loaded"] = int(len(batch_cache))
+        if scan_debug.get("batch_chunk_errors"):
+            scan_debug["batch_error"] = " | ".join(scan_debug["batch_chunk_errors"][:5])
         status_text.text(f"✅ {len(batch_cache)}/{total} stocks loaded")
     except Exception as e:
         scan_debug["batch_error"] = f"{type(e).__name__}: {e}"
@@ -642,28 +740,43 @@ def fetch_analysis(green_sectors, red_sectors, regime,
     scan_debug["timing"]["meta_prefetch_s"] = round(_t_now - _t_phase, 1)
     _t_phase = _t_now
 
+    # v15.8 speed: cap expensive option-chain HTTP calls during broad
+    # master scans. Price/volume signals still run for the whole universe;
+    # options are only additive and should not dominate scan time.
+    _option_enrich_count = 0
+    _max_option_enrich = 40 if total >= 700 else 80
+    _skip_individual_fallback = bool(batch_cache) and total >= 200
+
     for i, ticker in enumerate(all_tickers):
         try:
-            status_text.text(f"Scanning {ticker} ({i+1}/{total})...")
+            _scan_progress(i, f"Scanning {ticker} ({i+1}/{total})...")
 
             # ── Earnings guard — pre-fetched calendar cache ──────────────
             if skip_earnings:
                 _cal_days = _meta_cache.get(ticker, {}).get("cal_days")
                 if _cal_days is not None and 0 <= _cal_days <= 7:
                     scan_debug["skipped_earnings"] += 1
-                    progress_bar.progress((i + 1) / total)
+                    _scan_progress(i)
                     continue
 
 
-            # Use pre-fetched batch or individual fallback
+            # Use pre-fetched batch. For large universe scans, do NOT fall
+            # back to one-by-one Yahoo downloads for symbols missing from the
+            # batch. That fallback is very costly and mostly hits invalid,
+            # delisted, mutual-fund, or temporarily unavailable symbols.
             if ticker in batch_cache:
                 df = batch_cache[ticker]
             else:
+                if _skip_individual_fallback:
+                    scan_debug["skipped_history"] += 1
+                    scan_debug["skipped_batch_miss_no_fallback"] += 1
+                    _scan_progress(i)
+                    continue
                 raw_ind = yf.download(ticker, period="6mo", interval="1d",
                                       progress=False, auto_adjust=True)
                 if raw_ind.empty or len(raw_ind) < 60:
                     scan_debug["skipped_history"] += 1
-                    progress_bar.progress((i + 1) / total)
+                    _scan_progress(i)
                     continue
                 if isinstance(raw_ind.columns, pd.MultiIndex):
                     raw_ind.columns = raw_ind.columns.get_level_values(0)
@@ -675,7 +788,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
 
             if len(df) < 60:
                 scan_debug["skipped_history"] += 1
-                progress_bar.progress((i + 1) / total)
+                _scan_progress(i)
                 continue
 
             close = df["Close"].squeeze().ffill()
@@ -690,9 +803,22 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             # ── Pre-filter: liquidity only ────────────────────────────────────
             _vol_avg_s = float(vol.rolling(20).mean().iloc[-1])
             _p_chk     = float(close.iloc[-1])
-            _atr_pct   = float(ta.volatility.average_true_range(
-                             high, low, close, window=14).iloc[-1]) / _p_chk * 100 \
-                         if _p_chk > 0 else 0
+            # v15.7 speed: avoid calling ta.average_true_range for every ticker
+            # before we know it is a real candidate. A simple ATR approximation
+            # is enough for the early liquidity/range gate and is much faster.
+            if _p_chk > 0:
+                try:
+                    _prev_close = close.shift(1)
+                    _tr_fast = pd.concat([
+                        (high - low).abs(),
+                        (high - _prev_close).abs(),
+                        (low - _prev_close).abs(),
+                    ], axis=1).max(axis=1)
+                    _atr_pct = float(_tr_fast.tail(14).mean()) / _p_chk * 100
+                except Exception:
+                    _atr_pct = float((high.tail(14).max() - low.tail(14).min()) / _p_chk * 100 / 3)
+            else:
+                _atr_pct = 0.0
             # Market-aware liquidity gate. The old single threshold was tuned
             # for US names and was too harsh for SGX on Streamlit Cloud, where
             # only a smaller universe may load and many valid Singapore stocks
@@ -718,20 +844,73 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 # Only skip rows with unusable price/volume data.
                 if _p_chk <= 0 or _vol_avg_s <= 0:
                     scan_debug["skipped_liquidity"] += 1
-                    progress_bar.progress((i + 1) / total)
+                    _scan_progress(i)
                     continue
             elif swing_mode in ("SUPPORT ENTRY", "PREMARKET MOMENTUM"):
                 _strategy_min_turnover = max(_min_turnover * 0.25, 50_000)
                 _strategy_min_atr_pct = max(_min_atr_pct * 0.35, 0.15)
                 if _p_chk * _vol_avg_s < _strategy_min_turnover or _atr_pct < _strategy_min_atr_pct:
                     scan_debug["skipped_liquidity"] += 1
-                    progress_bar.progress((i + 1) / total)
+                    _scan_progress(i)
                     continue
             else:
                 if _p_chk * _vol_avg_s < _min_turnover or _atr_pct < _min_atr_pct:
                     scan_debug["skipped_liquidity"] += 1
-                    progress_bar.progress((i + 1) / total)
+                    _scan_progress(i)
                     continue
+
+            # v15.7 SPEED PREFILTER -------------------------------------------------
+            # This still evaluates every ticker in the universe, but avoids the
+            # expensive full signal engine for quiet/flat names with no useful
+            # swing setup today.  It keeps broad conditions for long, short,
+            # support, high-volume, and PM/live-momentum strategies.
+            try:
+                _c_now = float(close.iloc[-1])
+                _c_prev = float(close.iloc[-2]) if len(close) >= 2 and float(close.iloc[-2]) != 0 else _c_now
+                _today_pct_fast = (_c_now / _c_prev - 1.0) * 100 if _c_prev else 0.0
+                _ma20_fast = float(close.tail(20).mean()) if len(close) >= 20 else _c_now
+                _ma60_fast = float(close.tail(60).mean()) if len(close) >= 60 else _ma20_fast
+                _hi20_fast = float(high.tail(20).max()) if len(high) >= 20 else _c_now
+                _lo20_fast = float(low.tail(20).min()) if len(low) >= 20 else _c_now
+                _vol20_fast = float(vol.tail(21).iloc[:-1].mean()) if len(vol) >= 21 else _vol_avg_s
+                _vr_fast = float(vol.iloc[-1]) / _vol20_fast if _vol20_fast > 0 else 0.0
+                _range_fast = max(float(high.iloc[-1]) - float(low.iloc[-1]), 0.0)
+                _close_pos_fast = ((_c_now - float(low.iloc[-1])) / _range_fast) if _range_fast > 0 else 0.5
+                _near_support_fast = (
+                    (_ma20_fast > 0 and abs(_c_now / _ma20_fast - 1.0) <= 0.045) or
+                    (_ma60_fast > 0 and abs(_c_now / _ma60_fast - 1.0) <= 0.055) or
+                    (_lo20_fast > 0 and _c_now <= _lo20_fast * 1.08)
+                )
+                _breakout_fast = (_hi20_fast > 0 and _c_now >= _hi20_fast * 0.985)
+                _breakdown_fast = (_lo20_fast > 0 and _c_now <= _lo20_fast * 1.015)
+                _trend_fast = (_c_now >= _ma20_fast * 0.99 and _ma20_fast >= _ma60_fast * 0.985)
+                _long_candidate_fast = (
+                    _today_pct_fast >= 1.2 or _vr_fast >= 1.25 or _breakout_fast or
+                    _trend_fast or _near_support_fast
+                )
+                _short_candidate_fast = (
+                    _today_pct_fast <= -1.2 or _breakdown_fast or
+                    (_vr_fast >= 1.35 and _close_pos_fast <= 0.40) or
+                    (_c_now < _ma20_fast * 0.985 and _ma20_fast < _ma60_fast)
+                )
+                if swing_mode == "HIGH VOLUME":
+                    _cheap_ok = (_vr_fast >= 1.05 or abs(_today_pct_fast) >= 0.8 or _vol_avg_s > 0)
+                elif swing_mode == "SUPPORT ENTRY":
+                    _cheap_ok = (_near_support_fast or _vr_fast >= 1.10 or abs(_today_pct_fast) >= 0.8)
+                elif swing_mode == "PREMARKET MOMENTUM":
+                    _cheap_ok = (_today_pct_fast >= 0.2 or _vr_fast >= 1.10 or _breakout_fast or _trend_fast)
+                else:
+                    _cheap_ok = (_long_candidate_fast or _short_candidate_fast)
+                if not _cheap_ok:
+                    scan_debug["cheap_prefilter_skipped"] += 1
+                    _scan_progress(i)
+                    continue
+            except Exception:
+                # If the cheap gate itself has trouble, fall through to the
+                # original full signal engine rather than risk missing a ticker.
+                pass
+
+            scan_debug["signal_engine_ran"] += 1
 
             # Get sector ETF close for this ticker
             sec_name   = sector_membership.get(ticker, "")
@@ -797,15 +976,20 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 pre_l = sum(1 for v in long_sig.values()  if v)
                 pre_s = sum(1 for v in short_sig.values() if v)
                 if pre_l >= 4 or pre_s >= 3:
-                    try:
-                        rets   = close.pct_change().dropna().tail(20)
-                        rv_pct = float(rets.std() * (252 ** 0.5) * 100) \
-                                 if len(rets) >= 10 else None
-                        opt_long, opt_short, opt_raw = compute_options_signals(
-                            ticker, p, rv_pct
-                        )
-                    except Exception:
-                        opt_long, opt_short, opt_raw = ({}, {}, {})
+                    if _option_enrich_count >= _max_option_enrich:
+                        scan_debug["options_skipped_speed_cap"] += 1
+                    else:
+                        try:
+                            rets   = close.pct_change().dropna().tail(20)
+                            rv_pct = float(rets.std() * (252 ** 0.5) * 100) \
+                                     if len(rets) >= 10 else None
+                            opt_long, opt_short, opt_raw = compute_options_signals(
+                                ticker, p, rv_pct
+                            )
+                            _option_enrich_count += 1
+                            scan_debug["options_enriched"] = int(_option_enrich_count)
+                        except Exception:
+                            opt_long, opt_short, opt_raw = ({}, {}, {})
 
             # Merge option signals into the existing signal dicts. The
             # Bayesian engine only consumes keys present in LONG_WEIGHTS /
@@ -1760,7 +1944,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 _record_app_error("scan_ticker", e, ticker=ticker, extra={"index": i + 1, "total": total})
             except Exception:
                 pass
-        progress_bar.progress((i + 1) / total)
+        _scan_progress(i, force=True)
 
     status_text.empty()
     progress_bar.empty()

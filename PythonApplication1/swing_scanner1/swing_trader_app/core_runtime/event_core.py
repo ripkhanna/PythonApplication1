@@ -893,22 +893,15 @@ def fetch_earnings_calendar(tickers: tuple, days_ahead: int = 15, max_tickers: i
     rows   = []
 
     # Keep order but remove duplicates / blanks.
-    # IMPORTANT: keep TWO lists.
-    #   full_clean_tickers = full selected market universe. Used for market-wide
-    #                        calendars such as Nasdaq so tickers beyond Max scan
-    #                        are not accidentally missed.
-    #   clean_tickers      = capped list. Used only for expensive per-ticker
-    #                        Yahoo fallback calls.
-    full_clean_tickers = []
+    clean_tickers = []
     seen = set()
     for t in tickers:
         t = str(t).strip().upper()
         if not t or t in seen:
             continue
         seen.add(t)
-        full_clean_tickers.append(t)
+        clean_tickers.append(t)
 
-    clean_tickers = list(full_clean_tickers)
     if max_tickers and max_tickers > 0:
         clean_tickers = clean_tickers[:int(max_tickers)]
 
@@ -924,9 +917,8 @@ def fetch_earnings_calendar(tickers: tuple, days_ahead: int = 15, max_tickers: i
     def _is_non_us(t: str) -> bool:
         return str(t).upper().endswith((".SI", ".HK", ".NS", ".BO", ".KL", ".BK", ".NZ", ".AX"))
 
-    us_tickers_full = [t for t in full_clean_tickers if not _is_non_us(t)]
-    us_tickers      = [t for t in clean_tickers if not _is_non_us(t)]
-    non_us_tickers  = [t for t in clean_tickers if _is_non_us(t)]
+    us_tickers     = [t for t in clean_tickers if not _is_non_us(t)]
+    non_us_tickers = [t for t in clean_tickers if _is_non_us(t)]
 
     def _date_job(ticker):
         try:
@@ -942,39 +934,30 @@ def fetch_earnings_calendar(tickers: tuple, days_ahead: int = 15, max_tickers: i
 
     candidates = []
 
-    # US tickers: Nasdaq market-wide calendar (fast, no per-ticker call).
-    # Use the FULL US universe here, not the capped Max scan list.  Otherwise
-    # symbols that sit after the cap (for example mid-list names such as HIMS)
-    # can be missed even when Nasdaq has the row.
-    if us_tickers_full:
+    # US tickers: Nasdaq market-wide calendar (fast, no per-ticker call)
+    if us_tickers:
         try:
-            us_cands = _nasdaq_us_earnings_candidates(tuple(us_tickers_full), int(days_ahead))
+            us_cands = _nasdaq_us_earnings_candidates(tuple(us_tickers), int(days_ahead))
             if us_cands:
                 candidates.extend(us_cands)
                 st.caption(f"US earnings source: Nasdaq calendar · {len(us_cands)} matching tickers")
         except Exception:
             pass
-
-        # Supplemental Yahoo fallback for capped/priority US tickers that Nasdaq
-        # did NOT return.  The old logic only ran Yahoo fallback when Nasdaq
-        # returned zero rows.  That misses tickers if Nasdaq returns some rows
-        # but omits a specific stock.
-        _already_us = {str(c[0]).strip().upper() for c in candidates if not _is_non_us(c[0])}
-        _fallback_us = [t for t in us_tickers if str(t).strip().upper() not in _already_us]
-        if _fallback_us:
-            prog_us = st.progress(0, text=f"Supplementing {len(_fallback_us)} US tickers via Yahoo…")
+        # US fallback: Yahoo per-ticker if Nasdaq returned nothing
+        if not [c for c in candidates if not _is_non_us(c[0])]:
+            prog_us = st.progress(0, text=f"Scanning {len(us_tickers)} US tickers via Yahoo…")
             st_us   = st.empty()
             done_us = 0
             try:
                 with _fut.ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
-                    fm = {ex.submit(_date_job, t): t for t in _fallback_us}
+                    fm = {ex.submit(_date_job, t): t for t in us_tickers}
                     for fut in _fut.as_completed(fm):
                         done_us += 1
                         res = fut.result()
                         if res is not None:
                             candidates.append(res)
-                        if done_us % 5 == 0 or done_us == len(_fallback_us):
-                            prog_us.progress(min(1.0, done_us / max(len(_fallback_us), 1)))
+                        if done_us % 5 == 0 or done_us == len(us_tickers):
+                            prog_us.progress(min(1.0, done_us / max(len(us_tickers), 1)))
             finally:
                 prog_us.empty(); st_us.empty()
 
@@ -999,8 +982,8 @@ def fetch_earnings_calendar(tickers: tuple, days_ahead: int = 15, max_tickers: i
 
     if not candidates:
         st.session_state["earn_last_debug"] = {
-            "scanned": total, "full_universe": len(full_clean_tickers), "candidates": 0, "workers": workers,
-            "days_ahead": days_ahead, "mode": "v15.7-full-nasdaq-plus-supplemental-yahoo",
+            "scanned": total, "candidates": 0, "workers": workers,
+            "days_ahead": days_ahead, "mode": "v15.5-split-market-scan",
         }
         return pd.DataFrame()
 
@@ -1041,7 +1024,7 @@ def fetch_earnings_calendar(tickers: tuple, days_ahead: int = 15, max_tickers: i
 
     st.session_state["earn_last_debug"] = {
         "scanned": total, "candidates": cand_total, "rows": len(rows),
-        "workers": workers, "days_ahead": days_ahead, "full_universe": len(full_clean_tickers), "mode": "full-nasdaq-calendar-plus-supplemental-yahoo",
+        "workers": workers, "days_ahead": days_ahead, "mode": "nasdaq-then-yahoo-date-and-detail-scan",
         "eps_blank_row_keys_sample": st.session_state.get("earn_eps_blank_row_keys", []),
     }
 
