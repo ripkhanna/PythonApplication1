@@ -326,7 +326,6 @@ _SIDEBAR_DEFAULTS = {
     "ui_skip_earnings":       False,
     "ui_use_live_universe":   True,
     "ui_max_live_universe":   1000,
-    "ui_max_total_scan":      1500,
     "ui_always_include":      "",
     # Options layer
     "ui_enable_options":      False,
@@ -556,17 +555,10 @@ max_live_universe = st.sidebar.slider(
     "Max live stocks to scan", 50, 1000, step=25,
     key="ui_max_live_universe",
     help=(
-        "Controls how many live/Yahoo tickers are collected before merging. "
-        "350 = faster. 1000 = slower. The total scan cap below controls the final scan size."
-    ),
-)
-max_total_scan = st.sidebar.slider(
-    "Max total stocks to scan", 100, 1500, step=50,
-    key="ui_max_total_scan",
-    help=(
-        "Keeps the full universe by default. Speed is improved inside the scanner by "
-        "chunked Yahoo downloads and avoiding full-universe metadata calls, not by dropping tickers. "
-        "Lower this only if you intentionally want a smaller scan."
+        "Controls the live/Yahoo universe size. "
+        "350 = fast (10-20s, recommended). "
+        "1000 = slow (60-120s). "
+        "Curated + always-include tickers are always added on top."
     ),
 )
 always_include_text = st.sidebar.text_area(
@@ -1843,62 +1835,6 @@ def _safe_sector_df_for_market(_market_sel: str, _context: str = "sector") -> pd
         return pd.DataFrame(columns=["Sector", "ETF", "Today %", "5d %", "Price", "Status"])
 
 
-
-
-def _cap_scan_universe(
-    live_tickers,
-    existing_tickers,
-    forced_tickers,
-    max_total: int,
-):
-    """Return capped scan universe while always preserving forced tickers.
-
-    Order of priority:
-    1. Always-include / extra tickers
-    2. Live market universe candidates
-    3. Existing curated watchlist fill-ins
-
-    This prevents expensive scans such as 1000 live + 410 curated = 1200+ tickers
-    unless the user explicitly raises the cap.
-    """
-    try:
-        cap = int(max_total or 0)
-    except Exception:
-        cap = 500
-    if cap <= 0:
-        cap = 500
-
-    forced = _unique_keep_order(list(forced_tickers or []))
-    live = _unique_keep_order(list(live_tickers or []))
-    existing = _unique_keep_order(list(existing_tickers or []))
-
-    full = _unique_keep_order(forced + live + existing)
-    if len(full) <= cap:
-        return full, {
-            "was_capped": False,
-            "requested": len(full),
-            "used": len(full),
-            "dropped": 0,
-            "cap": cap,
-            "forced_count": len(forced),
-            "live_count": len(live),
-            "existing_count": len(existing),
-        }
-
-    # Preserve forced tickers first. If forced itself is larger than cap, still cap
-    # deterministically but report it so Diagnostics makes the reason clear.
-    capped = _unique_keep_order(forced + live + existing)[:cap]
-    return capped, {
-        "was_capped": True,
-        "requested": len(full),
-        "used": len(capped),
-        "dropped": max(len(full) - len(capped), 0),
-        "cap": cap,
-        "forced_count": len(forced),
-        "live_count": len(live),
-        "existing_count": len(existing),
-    }
-
 # ─────────────────────────────────────────────────────────────────────────────
 # SCAN BUTTON  (market-aware)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2023,6 +1959,7 @@ if run:
                 live_tickers, live_source = fetch_live_market_universe(
                     market_sel, max_symbols=max_live_universe
                 )
+            active_tickers = _unique_keep_order(list(live_tickers) + list(_active_tickers))
             universe_source = (
                 f"{live_source} + existing curated watchlist"
                 if live_tickers else
@@ -2030,40 +1967,18 @@ if run:
             )
         else:
             live_tickers = []
-            live_source = ""
+            active_tickers = list(_active_tickers)
             universe_source = "existing curated watchlist"
 
         forced_tickers = _unique_keep_order(always_include_tickers + extra_tickers)
         if forced_tickers:
+            active_tickers = _unique_keep_order(forced_tickers + active_tickers)
             universe_source = f"{universe_source} + always-include/extra tickers"
-
-        active_tickers, _scan_cap_info = _cap_scan_universe(
-            live_tickers=live_tickers,
-            existing_tickers=_active_tickers,
-            forced_tickers=forced_tickers,
-            max_total=max_total_scan,
-        )
-        st.session_state["last_scan_cap_info"] = dict(_scan_cap_info)
-        _cap_note = ""
-        if _scan_cap_info.get("was_capped"):
-            _cap_note = (
-                f" · capped from <b>{_scan_cap_info.get('requested')}</b> to "
-                f"<b>{_scan_cap_info.get('used')}</b> by Max total stocks"
-            )
-            try:
-                _record_scan_note(
-                    f"Scan universe capped from {_scan_cap_info.get('requested')} to {_scan_cap_info.get('used')} tickers",
-                    context="scan_universe_cap",
-                    extra=_scan_cap_info,
-                )
-            except Exception:
-                pass
 
         _show_top_spinner(
             f"📊 Scanning <b>{len(active_tickers)} {market_sel} stocks</b> for signals... "
             f"Universe: <b>{universe_source}</b> · "
             f"Live: <b>{len(live_tickers)}</b> · Existing: <b>{len(_active_tickers)}</b>"
-            f"{_cap_note}"
         )
 
         try:

@@ -28,43 +28,12 @@ def render_earnings(ctx: dict) -> None:
         extra_earn = st.text_input("➕ Add tickers",
             placeholder="UUUU, NVDA, AAPL", key="earn_extra").strip().upper()
 
-    # ── Market-aware state ───────────────────────────────────────────────────
-    # Do NOT keep a single global earn_df/last_checked for all markets.  That was
-    # the source of the intermittent US→SGX / SGX→US bug: switching the radio
-    # cleared the global dataframe and last-checked value, then every rerun/tab
-    # switch could show a different/empty state.
-    #
-    # Instead, each market gets its own earnings result + metadata.  Switching
-    # markets only changes which market-specific state is displayed; it does not
-    # destroy another market's results.
-    def _earn_market_code(_market: str) -> str:
-        if "SGX" in str(_market) or "🇸🇬" in str(_market):
-            return "sgx"
-        if "India" in str(_market) or "🇮🇳" in str(_market):
-            return "india"
-        if "HK" in str(_market) or "🇭🇰" in str(_market):
-            return "hk"
-        return "us"
-
-    _earn_code = _earn_market_code(earn_market)
-    _prev_selected_earn_market = st.session_state.get("earn_selected_market", "")
-    if _prev_selected_earn_market and _prev_selected_earn_market != earn_market:
-        st.session_state["earn_market_switch_msg"] = (
-            f"Market changed from {_prev_selected_earn_market} to {earn_market}. "
-            "Showing saved results for the selected market, if available. "
-            "Click Fetch Earnings Calendar to refresh this market."
-        )
-    st.session_state["earn_selected_market"] = earn_market
-
-    # One-time migration from older global keys into the new per-market keys.
-    _legacy_df_market = st.session_state.get("earn_df_market", "")
-    _legacy_df = st.session_state.get("earn_df", None)
-    if _legacy_df_market:
-        _legacy_code = _earn_market_code(_legacy_df_market)
-        if isinstance(_legacy_df, pd.DataFrame) and f"earn_df_{_legacy_code}" not in st.session_state:
-            st.session_state[f"earn_df_{_legacy_code}"] = _legacy_df
-            st.session_state[f"earn_last_checked_sgt_{_legacy_code}"] = st.session_state.get("earn_last_checked_sgt")
-            st.session_state[f"earn_last_scan_count_{_legacy_code}"] = st.session_state.get("earn_last_scan_count")
+    # ── Market-aware state: clear earn_df when user switches market ───────────
+    _prev_earn_market = st.session_state.get("earn_df_market", "")
+    if _prev_earn_market and _prev_earn_market != earn_market:
+        st.session_state.pop("earn_df", None)
+        st.session_state.pop("earn_last_checked_sgt", None)
+        st.session_state.pop("earn_last_scan_count", None)
 
     if earn_market == "🇺🇸 US":
         earn_base = list(US_TICKERS)
@@ -80,15 +49,10 @@ def render_earnings(ctx: dict) -> None:
     # stocks you are actually looking at before the rest of the universe.
     try:
         scan_priority = []
-        # Only prioritize scanner rows when the last scanner market matches the
-        # Earnings market.  Otherwise switching Earnings from US→SGX could push
-        # US scan tickers into the SGX earnings query and make results look random.
-        _last_scan_market = st.session_state.get("last_scan_market", st.session_state.get("last_market", ""))
-        if not _last_scan_market or _last_scan_market == earn_market:
-            for _df_name in ("df_long", "df_short", "df_swing_picks"):
-                _df = st.session_state.get(_df_name, pd.DataFrame())
-                if isinstance(_df, pd.DataFrame) and not _df.empty and "Ticker" in _df.columns:
-                    scan_priority.extend([str(x).strip().upper() for x in _df["Ticker"].head(150).tolist()])
+        for _df_name in ("df_long", "df_short", "df_swing_picks"):
+            _df = st.session_state.get(_df_name, pd.DataFrame())
+            if isinstance(_df, pd.DataFrame) and not _df.empty and "Ticker" in _df.columns:
+                scan_priority.extend([str(x).strip().upper() for x in _df["Ticker"].head(150).tolist()])
         for _t in reversed([x for x in scan_priority if x]):
             if _t in earn_base:
                 earn_base.remove(_t)
@@ -139,21 +103,10 @@ def render_earnings(ctx: dict) -> None:
                 pass
         with st.spinner(f"Scanning earnings for up to {earn_max} tickers…"):
             earn_df = fetch_earnings_calendar(tuple(earn_base), earn_days, int(earn_max))
-        _checked_sgt = pd.Timestamp.now(tz="Asia/Singapore").strftime("%Y-%m-%d %H:%M:%S SGT")
-        _scan_count = min(len(earn_base), int(earn_max))
-
-        # Save under the selected market so US/SGX/HK/India do not overwrite
-        # each other when the radio button changes.
-        st.session_state[f"earn_df_{_earn_code}"] = earn_df
-        st.session_state[f"earn_last_scan_count_{_earn_code}"] = _scan_count
-        st.session_state[f"earn_last_checked_sgt_{_earn_code}"] = _checked_sgt
-
-        # Compatibility keys for any older helper code.  They now always mirror
-        # the selected market, so they do not trigger repeated clearing.
         st.session_state["earn_df"] = earn_df
-        st.session_state["earn_df_market"] = earn_market
-        st.session_state["earn_last_scan_count"] = _scan_count
-        st.session_state["earn_last_checked_sgt"] = _checked_sgt
+        st.session_state["earn_df_market"] = earn_market           # ← market tag
+        st.session_state["earn_last_scan_count"] = min(len(earn_base), int(earn_max))
+        st.session_state["earn_last_checked_sgt"] = pd.Timestamp.now(tz="Asia/Singapore").strftime("%Y-%m-%d %H:%M:%S SGT")
 
     st.caption(
         f"Fast mode: checks earnings dates first, then loads full Yahoo info only for matching candidates. "
@@ -163,25 +116,16 @@ def render_earnings(ctx: dict) -> None:
         "if your local date is ahead of ET (SGT users), Monday earnings appear only after ~midnight ET Sunday."
     )
 
-    _switch_msg = st.session_state.pop("earn_market_switch_msg", None)
-    if _switch_msg:
-        st.info(_switch_msg)
+    earn_df = st.session_state.get("earn_df", pd.DataFrame())
 
-    # Always display the dataframe that belongs to the selected earnings market.
-    # This is the core fix for intermittent radio-button switching issues.
-    earn_df = st.session_state.get(f"earn_df_{_earn_code}", pd.DataFrame())
-    if not isinstance(earn_df, pd.DataFrame):
-        earn_df = pd.DataFrame()
-
-    # Keep compatibility keys in sync with what is actually displayed.
-    st.session_state["earn_df"] = earn_df
-    st.session_state["earn_df_market"] = earn_market
-    st.session_state["earn_last_checked_sgt"] = st.session_state.get(f"earn_last_checked_sgt_{_earn_code}")
-    st.session_state["earn_last_scan_count"] = st.session_state.get(f"earn_last_scan_count_{_earn_code}")
+    # Show stale-market warning if df is from a different market
+    _df_market = st.session_state.get("earn_df_market", "")
+    if not earn_df.empty and _df_market and _df_market != earn_market:
+        st.warning(f"⚠️ Showing **{_df_market}** results — click 📅 Fetch to load **{earn_market}** earnings.")
 
     if earn_df.empty:
-        _last_checked = st.session_state.get(f"earn_last_checked_sgt_{_earn_code}")
-        _last_count   = st.session_state.get(f"earn_last_scan_count_{_earn_code}")
+        _last_checked = st.session_state.get("earn_last_checked_sgt")
+        _last_count   = st.session_state.get("earn_last_scan_count")
         _is_sgx_hk    = earn_market in ("🇸🇬 SGX", "🇭🇰 HK")
         if _last_checked:
             if _is_sgx_hk:
