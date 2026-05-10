@@ -32,6 +32,7 @@ import json
 from pathlib import Path
 import streamlit.components.v1 as components
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import os
 import stat
 import shutil
@@ -1573,15 +1574,26 @@ def format_latest_bar_time(latest_bar_time):
     # Remove duplicate label if already passed as "Latest bar: ..."
     raw = raw.replace("Latest bar:", "").strip()
 
+    # Handle display strings ending with SGT before pandas parses them.
+    # Pandas does not recognize the short label "SGT" reliably and emits a FutureWarning.
+    # Example: "2026-05-08 08:00:00 SGT"
+    if raw.endswith(" SGT"):
+        raw_sgt = raw[:-4].strip()
+        ts = pd.to_datetime(raw_sgt, errors="coerce")
+        if pd.isna(ts):
+            return f"Latest bar: {latest_bar_time}"
+        ts = ts.tz_localize("Asia/Singapore") if ts.tzinfo is None else ts.tz_convert("Asia/Singapore")
+        return f"Latest bar: {ts.strftime('%Y-%m-%d %H:%M:%S')} SGT"
+
     # Handle text ending with ET
     # Example: "2026-05-07 20:00:00 ET"
     if raw.endswith(" ET"):
-        raw = raw.replace(" ET", "").strip()
-        ts = pd.to_datetime(raw, errors="coerce")
+        raw_et = raw[:-3].strip()
+        ts = pd.to_datetime(raw_et, errors="coerce")
         if pd.isna(ts):
             return f"Latest bar: {latest_bar_time}"
 
-        ts = ts.tz_localize("America/New_York")
+        ts = ts.tz_localize("America/New_York") if ts.tzinfo is None else ts.tz_convert("America/New_York")
         ts_sgt = ts.tz_convert("Asia/Singapore")
         return f"Latest bar: {ts_sgt.strftime('%Y-%m-%d %H:%M:%S')} SGT"
 
@@ -1661,6 +1673,25 @@ def _normalise_bar_for_compare(latest_bar_time):
         return None
 
 
+def _newer_bar_time_value(a, b):
+    """Return whichever bar timestamp is newer, preserving the original value.
+
+    Used after a lightweight freshness probe: the full scan output can sometimes
+    derive its latest bar only from rows that pass scanner construction, while
+    the probe may have already proven Yahoo has a newer 5m bar.  In that case,
+    cache metadata must not be saved with the older displayed bar.
+    """
+    an = _normalise_bar_for_compare(a)
+    bn = _normalise_bar_for_compare(b)
+    if an is None and bn is None:
+        return a or b or ""
+    if an is None:
+        return b
+    if bn is None:
+        return a
+    return a if an >= bn else b
+
+
 def _quick_yahoo_latest_bar_for_market(market: str, meta: dict, sample_size: int = 25) -> dict:
     """Cheap freshness probe: download only 1d/5m bars for a small ticker sample.
 
@@ -1668,7 +1699,7 @@ def _quick_yahoo_latest_bar_for_market(market: str, meta: dict, sample_size: int
     newer bar than the cache already contains. It is intentionally best-effort:
     on any error the caller should continue with the normal full refresh.
     """
-    checked_at = datetime.now().isoformat(timespec="seconds")
+    checked_at = datetime.now(ZoneInfo("Asia/Singapore")).strftime("%Y-%m-%d %H:%M:%S SGT")
     result = {
         "ok": False,
         "checked_at": checked_at,
@@ -1677,6 +1708,7 @@ def _quick_yahoo_latest_bar_for_market(market: str, meta: dict, sample_size: int
         "latest_available_bar_sgt": "unknown",
         "cached_latest_bar_time": str((meta or {}).get("latest_bar_time", "")),
         "cached_latest_bar_sgt": _latest_bar_display_value((meta or {}).get("latest_bar_time", "")),
+        "previous_cached_bar_sgt": _latest_bar_display_value((meta or {}).get("latest_bar_time", "")),
         "is_newer": True,
         "message": "Freshness probe not run",
     }
@@ -1765,6 +1797,7 @@ def _write_scan_cache_check_meta(market: str, check_info: dict) -> None:
             "last_available_bar_time": check_info.get("latest_available_bar_time", ""),
             "last_available_bar_sgt": check_info.get("latest_available_bar_sgt", "unknown"),
             "last_cached_bar_sgt": check_info.get("cached_latest_bar_sgt", "unknown"),
+            "last_previous_cached_bar_sgt": check_info.get("previous_cached_bar_sgt", check_info.get("cached_latest_bar_sgt", "unknown")),
             "last_data_check_sample": check_info.get("sample_tickers", ""),
             "last_data_check_newer": bool(check_info.get("is_newer", True)),
         })
@@ -1973,8 +2006,11 @@ if run:
             opt_required=opt_required, enable_options=enable_options,
         )
 
-        _latest_bar_for_status = _latest_bar_time_from_df(df_long_master) or _latest_bar_time_from_df(df_short_master) or "unknown"
-        _latest_bar_for_status = format_latest_bar_time(_latest_bar_for_status)
+        _latest_bar_from_scan = _latest_bar_time_from_df(df_long_master) or _latest_bar_time_from_df(df_short_master) or "unknown"
+        _fresh_probe = st.session_state.get("scan_cache_last_data_check", {}) or {}
+        _probe_latest = _fresh_probe.get("latest_available_bar_time") if _fresh_probe.get("ok") else ""
+        _latest_bar_for_cache = _newer_bar_time_value(_latest_bar_from_scan, _probe_latest)
+        _latest_bar_for_status = format_latest_bar_time(_latest_bar_for_cache)
         _top_scan_status.success(
             f"✅ Yahoo master scan refreshed for **{len(active_tickers)} {market_sel} stocks** · "
             f"Latest bar: **{_latest_bar_display_value(_latest_bar_for_status)}** · "
@@ -2052,7 +2088,7 @@ if run:
                 "effective_refresh_minutes": int(effective_refresh_minutes),
                 "market_live_now": bool(_is_market_live_now(market_sel)),
                 "freshness_cache_bucket": str(freshness_cache_bucket),
-                "latest_bar_time": _latest_bar_time_from_df(df_long_master) or _latest_bar_time_from_df(df_short_master),
+                "latest_bar_time": _latest_bar_for_cache,
                 "data_source": "yahoo_daily_6mo_plus_intraday_5m_overlay",
                 "yahoo_delay_note": "Yahoo quotes may still be exchange-delayed; app cache TTL is shortened during market hours.",
                 "always_include_tickers": ", ".join(always_include_tickers),
@@ -2060,6 +2096,36 @@ if run:
             },
         )
         if _saved_cache_meta:
+            # If this scan was triggered after a lightweight freshness probe,
+            # update the diagnostics fields so Available latest bar and Current
+            # cached latest bar no longer look inconsistent after the refresh.
+            try:
+                _fresh_probe = st.session_state.get("scan_cache_last_data_check", {}) or {}
+                if _fresh_probe:
+                    _saved_cache_meta.update({
+                        "last_data_check_at": _fresh_probe.get("checked_at", ""),
+                        "last_data_check_result": "Newer Yahoo bar was available — full scanner cache refreshed",
+                        "last_available_bar_time": _fresh_probe.get("latest_available_bar_time", ""),
+                        "last_available_bar_sgt": _fresh_probe.get("latest_available_bar_sgt", "unknown"),
+                        "last_previous_cached_bar_sgt": _fresh_probe.get("previous_cached_bar_sgt", _fresh_probe.get("cached_latest_bar_sgt", "unknown")),
+                        "last_cached_bar_sgt": _latest_bar_display_value(_saved_cache_meta.get("latest_bar_time", "")),
+                        "last_data_check_sample": _fresh_probe.get("sample_tickers", ""),
+                        "last_data_check_newer": False,
+                    })
+                    _paths = _scan_cache_paths(market_sel)
+                    _paths["meta"].write_text(json.dumps(_saved_cache_meta, indent=2, default=str), encoding="utf-8")
+                    st.session_state["scan_cache_last_data_check"] = {
+                        **_fresh_probe,
+                        "message": "Newer Yahoo bar was available — full scanner cache refreshed",
+                        "cached_latest_bar_sgt": _saved_cache_meta.get("last_cached_bar_sgt", "unknown"),
+                        "previous_cached_bar_sgt": _saved_cache_meta.get("last_previous_cached_bar_sgt", "unknown"),
+                        "is_newer": False,
+                    }
+            except Exception as _e:
+                try:
+                    _record_app_warning("cache_freshness_post_save_meta", f"Could not update post-refresh freshness meta: {_e}", extra={"market": market_sel})
+                except Exception:
+                    pass
             st.session_state["scan_cache_meta"] = _saved_cache_meta
             st.session_state["scan_cache_timing"] = _cache_timing_info(_saved_cache_meta, effective_refresh_minutes)
             st.session_state["scan_cache_refresh_minutes"] = effective_refresh_minutes

@@ -9,6 +9,42 @@ def _bind_runtime(ctx: dict) -> None:
     """Expose original app globals to this module for monolith-compatible tab code."""
     globals().update(ctx)
 
+
+
+def _format_diag_sgt_time(value):
+    """Display diagnostics timestamps consistently as Singapore time.
+
+    Accepts existing values like:
+    - 2026-05-10T01:33:59
+    - 2026-05-10 09:33:59 SGT
+    - 2026-05-10 01:33:59+00:00
+    and returns: 2026-05-10 09:33:59 SGT
+    """
+    try:
+        if value is None or str(value).strip() == "":
+            return "–"
+        raw = str(value).strip()
+        raw = raw.replace("Last checked:", "").replace("Last data checked:", "").strip()
+        raw = raw.replace("Latest bar:", "").strip()
+        if raw.endswith(" SGT"):
+            raw_no_tz = raw[:-4].strip()
+            ts = pd.to_datetime(raw_no_tz, errors="coerce")
+            if pd.isna(ts):
+                return raw
+            return ts.strftime("%Y-%m-%d %H:%M:%S") + " SGT"
+        ts = pd.to_datetime(raw, errors="coerce")
+        if pd.isna(ts):
+            return raw
+        if getattr(ts, "tzinfo", None) is None:
+            # Existing older metadata used naive ISO strings from the server;
+            # treat them as UTC for a consistent Singapore display.
+            ts = ts.tz_localize("UTC")
+        else:
+            ts = ts.tz_convert("Asia/Singapore")
+        return ts.strftime("%Y-%m-%d %H:%M:%S") + " SGT"
+    except Exception:
+        return str(value) if value is not None else "–"
+
 def render_diagnostics(ctx: dict) -> None:
     _bind_runtime(ctx)
     st.caption("🔍 Diagnostics")
@@ -59,21 +95,27 @@ def render_diagnostics(ctx: dict) -> None:
             "message": _diag_meta.get("last_data_check_result", ""),
             "latest_available_bar_sgt": _diag_meta.get("last_available_bar_sgt", ""),
             "cached_latest_bar_sgt": _diag_meta.get("last_cached_bar_sgt", ""),
+            "previous_cached_bar_sgt": _diag_meta.get("last_previous_cached_bar_sgt", ""),
             "sample_tickers": _diag_meta.get("last_data_check_sample", ""),
             "is_newer": _diag_meta.get("last_data_check_newer", None),
         }
     if _fresh_check and _fresh_check.get("checked_at"):
-        fc1, fc2, fc3 = st.columns(3)
-        fc1.metric("Last data checked", _fresh_check.get("checked_at", "–"))
+        fc1, fc2, fc3, fc4 = st.columns(4)
+        fc1.metric("Last data checked", _format_diag_sgt_time(_fresh_check.get("checked_at", "–")))
         fc2.metric("Available latest bar", _fresh_check.get("latest_available_bar_sgt", "unknown") or "unknown")
-        fc3.metric("Cached latest bar", _fresh_check.get("cached_latest_bar_sgt", "unknown") or "unknown")
+        fc3.metric("Current cached latest bar", _fresh_check.get("cached_latest_bar_sgt", "unknown") or "unknown")
+        fc4.metric("Previous cached latest bar", _fresh_check.get("previous_cached_bar_sgt", "–") or "–")
         _newer = _fresh_check.get("is_newer")
+        _msg = _fresh_check.get("message", "Freshness check status unavailable.")
         if _newer is False:
-            st.success("No newer Yahoo bar available — existing scanner cache was kept; no full Yahoo scan was run.")
+            if "refreshed" in str(_msg).lower():
+                st.success("Newer Yahoo bar was available — full scanner cache was refreshed. Current cached latest bar should now match the available latest bar.")
+            else:
+                st.success("No newer Yahoo bar available — existing scanner cache was kept; no full Yahoo scan was run.")
         elif _newer is True:
-            st.info("A newer Yahoo bar was available on the last check, so the scanner cache should refresh on the next scan/auto-refresh.")
+            st.warning("A newer Yahoo bar is available but the current cache still shows an older latest bar. Run/auto-refresh should rebuild the scanner cache.")
         else:
-            st.info(_fresh_check.get("message", "Freshness check status unavailable."))
+            st.info(_msg)
         with st.expander("Freshness check sample tickers", expanded=False):
             st.write(_fresh_check.get("sample_tickers", "No sample tickers recorded."))
     if _diag_timing.get("is_due"):
