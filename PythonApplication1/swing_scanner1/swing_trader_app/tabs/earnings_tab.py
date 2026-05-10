@@ -94,6 +94,7 @@ def render_earnings(ctx: dict) -> None:
             "_earnings_info_for_candidate",
             "_nasdaq_earnings_for_date_cached_near",    # v15.6: was missing — caused stale empty dates
             "_nasdaq_earnings_for_date_cached_stable",  # v15.6: also clear stable cache on manual refresh
+            "_sginvestors_sgx_earnings_candidates",      # v15.8: SGX primary calendar source
         ):
             try:
                 _fn = globals().get(_fn_name)
@@ -129,16 +130,35 @@ def render_earnings(ctx: dict) -> None:
         _is_sgx_hk    = earn_market in ("🇸🇬 SGX", "🇭🇰 HK")
         if _last_checked:
             if _is_sgx_hk:
-                st.warning(
-                    f"No earnings rows found for **{earn_market}** (last checked: {_last_checked}). \n\n"
-                    "**Why SGX/HK earnings are sparse:** Yahoo Finance does not maintain an earnings "
-                    "calendar for most SGX/HK tickers. The scan relies on per-ticker Yahoo data which "
-                    "is rarely populated for these markets.\n\n"
-                    "**Workarounds:**\n"
-                    "- Use **➕ Add tickers** to force-check specific stocks you know are reporting\n"
-                    "- Check [SGX announcements](https://www.sgx.com/securities/company-announcements) directly\n"
-                    "- Increase **Days ahead** to 30 and **Max scan** to 500"
-                )
+                if earn_market == "🇸🇬 SGX":
+                    _sgx_dbg = st.session_state.get("earn_sgx_calendar_debug", {}) or {}
+                    _sgx_dbg_txt = ""
+                    if _sgx_dbg:
+                        _sgx_dbg_txt = (
+                            f"\n\n**SGInvestors debug:** "
+                            f"HTTP `{_sgx_dbg.get('status_code', 'n/a')}` · "
+                            f"html `{_sgx_dbg.get('html_len', 0)}` chars · "
+                            f"date markers `{_sgx_dbg.get('date_markers', 0)}` · "
+                            f"SGX mentions `{_sgx_dbg.get('sgx_mentions', 0)}` · "
+                            f"matched rows `{_sgx_dbg.get('matched_rows', 0)}`"
+                        )
+                        if _sgx_dbg.get("error"):
+                            _sgx_dbg_txt += f" · error `{_sgx_dbg.get('error')}`"
+                    st.warning(
+                        f"No earnings rows found for **{earn_market}** (last checked: {_last_checked}). \n\n"
+                        "**SGX source used:** SGInvestors SGX earnings calendar first, then Yahoo fallback for priority/manual tickers.\n\n"
+                        "If this still shows no rows, it usually means either the SGInvestors page was not reachable from your network, "
+                        "or there are no matching SGX result dates in the selected window for the current SGX universe. "
+                        "Try **Days ahead = 30**, or add known tickers in **➕ Add tickers**.\n\n"
+                        "You can verify directly on [SGInvestors SGX earnings calendar](https://sginvestors.io/news/sgx-stocks-earnings-calendar)."
+                        + _sgx_dbg_txt
+                    )
+                else:
+                    st.warning(
+                        f"No earnings rows found for **{earn_market}** (last checked: {_last_checked}). \n\n"
+                        "**Why HK earnings are sparse:** Yahoo Finance does not maintain an earnings calendar for most HK tickers. "
+                        "Use **➕ Add tickers** to force-check known names, or increase **Days ahead** to 30–60."
+                    )
             else:
                 st.warning(
                     f"No earnings rows found in the selected window. Last checked: {_last_checked}. "
@@ -147,11 +167,17 @@ def render_earnings(ctx: dict) -> None:
                 )
         else:
             if _is_sgx_hk:
-                st.info(
-                    f"Click 📅 Fetch Earnings Calendar to scan **{earn_market}** earnings.\n\n"
-                    "**Tip for SGX/HK:** Add specific tickers in ➕ Add tickers (e.g. `D05.SI, O39.SI`) "
-                    "since Yahoo's earnings calendar coverage for these markets is limited."
-                )
+                if earn_market == "🇸🇬 SGX":
+                    st.info(
+                        f"Click 📅 Fetch Earnings Calendar to scan **{earn_market}** earnings.\n\n"
+                        "SGX uses **SGInvestors SGX earnings calendar** first, then Yahoo fallback for priority/manual tickers. "
+                        "Try Days ahead = 30–60 during reporting season."
+                    )
+                else:
+                    st.info(
+                        f"Click 📅 Fetch Earnings Calendar to scan **{earn_market}** earnings.\n\n"
+                        "Tip for HK: Add specific tickers in ➕ Add tickers since Yahoo earnings-calendar coverage is limited."
+                    )
             else:
                 st.info("Click 📅 Fetch Earnings Calendar. Add tickers in the ➕ Add tickers box to force-check them. Default scan is capped for speed; raise Max scan only when needed.")
     else:

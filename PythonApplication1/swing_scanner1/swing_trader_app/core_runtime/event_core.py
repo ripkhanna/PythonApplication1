@@ -159,6 +159,16 @@ def _fast_earnings_date_for_ticker(ticker: str):
 
         # 3) Light yfinance fallbacks.  Suppress stderr/stdout because Yahoo/yfinance
         # may print 401 crumb errors even when exceptions are caught.
+        #
+        # IMPORTANT: For SGX/HK/India and other non-US suffixes, yfinance calendar/fast_info
+        # often triggers Yahoo 401 Invalid Crumb / Unauthorized messages and still returns
+        # no usable earnings calendar.  Do not call those crumb-based fallbacks for these
+        # markets; rely on the crumb-free JSON endpoints above and then return blank.
+        # This keeps the UI clean and avoids repeated 401 noise when switching US ↔ SGX/HK.
+        _non_us_suffixes = (".SI", ".HK", ".NS", ".BO", ".KL", ".BK", ".NZ", ".AX")
+        if ticker.endswith(_non_us_suffixes):
+            return ""
+
         try:
             with _contextlib.redirect_stderr(_io.StringIO()), _contextlib.redirect_stdout(_io.StringIO()):
                 tkr = yf.Ticker(ticker)
@@ -837,7 +847,7 @@ def _nasdaq_us_earnings_candidates(clean_tickers, days_ahead: int):
         today_et  = _now_et.date()
         today_sgt = _now_sgt.date()
     except Exception:
-        today_et  = _dt.datetime.utcnow().date()
+        today_et  = _dt.datetime.now(_dt.timezone.utc).date()
         today_sgt = today_et
 
     ticker_set = {str(t).strip().upper().replace("-", ".") for t in clean_tickers if str(t).strip()}
@@ -877,6 +887,229 @@ def _nasdaq_us_earnings_candidates(clean_tickers, days_ahead: int):
     out.sort(key=lambda x: (x[1], order.get(x[0], 999999)))
     return out
 
+
+
+
+
+def _sgx_bundled_earnings_snapshot(clean_tickers, days_ahead: int):
+    """Bundled SGX earnings snapshot used only when live SGInvestors fetch/parse returns 0.
+
+    This is a safety net, not the primary source. It prevents the SGX Earnings tab
+    from showing empty results when SGInvestors blocks a request, DNS fails, or the
+    page HTML shape changes. Rows are based on the SGInvestors public calendar page
+    and are filtered by the user's selected ticker universe and days-ahead window.
+    """
+    import pandas as _pd
+
+    today_sgt = _pd.Timestamp.now(tz="Asia/Singapore").date()
+    cutoff_sgt = today_sgt + _pd.Timedelta(days=int(days_ahead or 15))
+    wanted = {str(t).strip().upper() for t in (clean_tickers or []) if str(t).strip()}
+    wanted_codes = {w.replace(".SI", "") for w in wanted if w.endswith(".SI")}
+
+    # Keep this short and focused on upcoming/common SGX reporting names. The
+    # live SGInvestors parser remains the main source and will override this.
+    snapshot = [
+        ("2026-05-11", "S59",  "SIA ENGINEERING", "Earnings For FY2025/2026"),
+        ("2026-05-12", "NTDU", "NTT DC REIT", "Earnings For FY2025/2026"),
+        ("2026-05-12", "OXMU", "PRIME US REIT", "Business Update For Q1 FY2026"),
+        ("2026-05-13", "DHLU", "DAIWA HOUSE LOGISTICS TRUST", "Business Update For Q1 FY2026"),
+        ("2026-05-13", "ODBU", "UNITED HAMPSHIRE US REIT", "Business Update For Q1 FY2026"),
+        ("2026-05-14", "S7OU", "ASIAN PAY TV TRUST", "Business Update For Q1 FY2026"),
+        ("2026-05-14", "544",  "CSE GLOBAL", "Business Update For Q1 FY2026"),
+        ("2026-05-14", "BWCU", "EC WORLD REIT", "Earnings For Q1 FY2026"),
+        ("2026-05-14", "A7RU", "KEPPEL INFRA TRUST", "Business Update For Q1 FY2026"),
+        ("2026-05-14", "CJLU", "NETLINK TRUST", "Earnings For FY2026"),
+        ("2026-05-14", "CRPU", "SASSEUR REIT", "Business Update For Q1 FY2026"),
+        ("2026-05-14", "C6L",  "SIA", "Earnings For FY2025/2026"),
+        ("2026-05-14", "S08",  "SINGPOST", "Earnings For FY2026"),
+        ("2026-05-14", "T41",  "TELECHOICE", "Business Update For Q1 FY2026"),
+        ("2026-05-15", "E5H",  "GOLDEN AGRI-RESOURCES", "Earnings For Q1 FY2026"),
+        ("2026-05-18", "JYEU", "LENDLEASE REIT", "Business Update For Q1 FY2026"),
+        ("2026-05-21", "Z74",  "SINGTEL", "Earnings For FY2026"),
+        ("2026-05-25", "S58",  "SATS", "Earnings For FY2026"),
+        ("2026-05-29", "5E2",  "SEATRIUM", "Business Update For Q1 FY2026"),
+    ]
+
+    out = []
+    for d_s, code, company, event in snapshot:
+        d = _pd.to_datetime(d_s, errors="coerce")
+        if _pd.isna(d):
+            continue
+        d = d.date()
+        if d < today_sgt or d > cutoff_sgt:
+            continue
+        ticker = f"{code}.SI"
+        if wanted_codes and code not in wanted_codes and ticker not in wanted:
+            continue
+        out.append((ticker, d, {
+            "source": "Bundled SGInvestors fallback snapshot",
+            "company": company,
+            "event": event,
+            "sgx_code": code,
+        }))
+    order = {str(t).strip().upper(): i for i, t in enumerate(clean_tickers or [])}
+    out.sort(key=lambda x: (x[1], order.get(x[0], 999999)))
+    return out
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _sginvestors_sgx_earnings_candidates(clean_tickers, days_ahead: int):
+    """Return SGX earnings candidates from SGInvestors earnings calendar.
+
+    v15.9: more robust parser + diagnostics.
+    The previous parser depended on one exact text shape and could return 0
+    even when the page contained rows.  This version finds every SGX:CODE
+    occurrence, then assigns it to the nearest preceding date marker.
+    """
+    import re as _re
+    import requests as _requests
+    from html import unescape as _html_unescape
+
+    today_sgt = pd.Timestamp.now(tz="Asia/Singapore").date()
+    cutoff_sgt = today_sgt + pd.Timedelta(days=int(days_ahead or 15))
+
+    wanted = {str(t).strip().upper() for t in (clean_tickers or []) if str(t).strip()}
+    wanted_codes = {w.replace(".SI", "") for w in wanted if w.endswith(".SI")}
+
+    url = "https://sginvestors.io/news/sgx-stocks-earnings-calendar"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+    }
+
+    debug = {
+        "source": "SGInvestors SGX earnings calendar",
+        "url": url,
+        "checked_sgt": pd.Timestamp.now(tz="Asia/Singapore").strftime("%Y-%m-%d %H:%M:%S SGT"),
+        "wanted_tickers": len(wanted),
+        "days_ahead": int(days_ahead or 15),
+        "status_code": None,
+        "html_len": 0,
+        "date_markers": 0,
+        "sgx_mentions": 0,
+        "matched_rows": 0,
+        "error": "",
+        "sample_codes": [],
+    }
+
+    try:
+        resp = _requests.get(url, headers=headers, timeout=15)
+        debug["status_code"] = int(getattr(resp, "status_code", 0) or 0)
+        if resp.status_code >= 400:
+            debug["error"] = f"HTTP {resp.status_code}"
+            fallback = _sgx_bundled_earnings_snapshot(clean_tickers, days_ahead)
+            debug["fallback_rows"] = len(fallback)
+            debug["fallback_source"] = "bundled_snapshot_after_http_error"
+            try:
+                st.session_state["earn_sgx_calendar_debug"] = debug
+            except Exception:
+                pass
+            return fallback
+        html = resp.text or ""
+        debug["html_len"] = len(html)
+    except Exception as e:
+        debug["error"] = f"{type(e).__name__}: {e}"
+        fallback = _sgx_bundled_earnings_snapshot(clean_tickers, days_ahead)
+        debug["fallback_rows"] = len(fallback)
+        debug["fallback_source"] = "bundled_snapshot_after_exception"
+        try:
+            st.session_state["earn_sgx_calendar_debug"] = debug
+        except Exception:
+            pass
+        return fallback
+
+    # Flatten text.  Keep enough spacing so nearest-date matching works.
+    text = _html_unescape(_re.sub(r"<[^>]+>", " ", html))
+    text = _re.sub(r"\s+", " ", text)
+
+    # Date markers are usually "2026-05-25 Monday" but support other page text.
+    date_pat = _re.compile(
+        r"(20\d{2}[-/]\d{1,2}[-/]\d{1,2})\s*(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)?",
+        _re.I,
+    )
+    date_marks = []
+    for dm in date_pat.finditer(text):
+        dt = pd.to_datetime(dm.group(1).replace("/", "-"), errors="coerce")
+        if pd.isna(dt):
+            continue
+        date_marks.append((dm.start(), dt.date()))
+    debug["date_markers"] = len(date_marks)
+
+    # Broad match: company text + SGX:CODE + short event phrase.
+    sgx_pat = _re.compile(r"(.{0,120}?)\bSGX\s*:\s*([A-Z0-9]{1,6})\b(.{0,160})", _re.I)
+    out = []
+    seen = set()
+    sample_codes = []
+
+    def _nearest_prior_date(pos: int):
+        prior = None
+        for p0, d0 in date_marks:
+            if p0 <= pos:
+                prior = d0
+            else:
+                break
+        return prior
+
+    for sm in sgx_pat.finditer(text):
+        code = str(sm.group(2) or "").strip().upper()
+        if not code:
+            continue
+        debug["sgx_mentions"] += 1
+        if len(sample_codes) < 20:
+            sample_codes.append(code)
+        ticker = f"{code}.SI"
+        if wanted_codes and code not in wanted_codes and ticker not in wanted:
+            continue
+
+        d = _nearest_prior_date(sm.start())
+        if not d or d < today_sgt or d > cutoff_sgt:
+            continue
+
+        before = _re.sub(r"\s+", " ", sm.group(1) or "").strip(" -–:;,.•")
+        # Company is usually the last phrase before SGX:CODE.
+        company = before[-80:].strip(" -–:;,.•") or code
+        after = _re.sub(r"\s+", " ", sm.group(3) or "").strip(" -–:;,.•")
+        # Trim event phrase after common page buttons/links.
+        after = _re.split(r"\b(?:See Announcement|Read more|Add To Calendar|Google Calendar|Outlook)\b", after, flags=_re.I)[0].strip(" -–:;,.•")
+        event_match = _re.search(r"((?:Earnings|Business Update|Results|Financial Results)\b.{0,80})", after, _re.I)
+        event = event_match.group(1).strip(" -–:;,.•") if event_match else (after[:90] or "Earnings / Business Update")
+
+        key = (ticker, d)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((ticker, d, {
+            "source": "SGInvestors SGX earnings calendar",
+            "company": company,
+            "event": event,
+            "sgx_code": code,
+        }))
+
+    debug["sample_codes"] = sample_codes
+    debug["matched_rows"] = len(out)
+
+    # If SGInvestors page was reachable but parser found no matching rows, use
+    # the bundled snapshot as a last-resort safety net.  This avoids an empty SGX
+    # tab caused by page-shape changes while still preferring live SGInvestors rows.
+    if not out:
+        fallback = _sgx_bundled_earnings_snapshot(clean_tickers, days_ahead)
+        debug["fallback_rows"] = len(fallback)
+        debug["fallback_source"] = "bundled_snapshot_after_zero_live_matches"
+        out = fallback
+
+    try:
+        st.session_state["earn_sgx_calendar_debug"] = debug
+    except Exception:
+        pass
+
+    order = {str(t).strip().upper(): i for i, t in enumerate(clean_tickers or [])}
+    out.sort(key=lambda x: (x[1], order.get(x[0], 999999)))
+    return out
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_earnings_calendar(tickers: tuple, days_ahead: int = 15, max_tickers: int = 120) -> pd.DataFrame:
     """Fast two-phase earnings scan.
@@ -893,20 +1126,26 @@ def fetch_earnings_calendar(tickers: tuple, days_ahead: int = 15, max_tickers: i
     rows   = []
 
     # Keep order but remove duplicates / blanks.
-    clean_tickers = []
+    # IMPORTANT: keep a full copy for market-wide calendar matching.
+    # Max scan should cap only expensive per-ticker Yahoo fallback, not the
+    # Nasdaq market calendar. Otherwise tickers later in the universe, such as
+    # HIMS, can be missed even when Nasdaq has an earnings row.
+    clean_tickers_full = []
     seen = set()
     for t in tickers:
         t = str(t).strip().upper()
         if not t or t in seen:
             continue
         seen.add(t)
-        clean_tickers.append(t)
+        clean_tickers_full.append(t)
 
+    clean_tickers = list(clean_tickers_full)
     if max_tickers and max_tickers > 0:
         clean_tickers = clean_tickers[:int(max_tickers)]
 
     total = len(clean_tickers)
-    if total == 0:
+    total_full = len(clean_tickers_full)
+    if total_full == 0:
         return pd.DataFrame()
 
     # Keep worker count modest to avoid Yahoo throttling / Streamlit Cloud stalls.
@@ -917,8 +1156,11 @@ def fetch_earnings_calendar(tickers: tuple, days_ahead: int = 15, max_tickers: i
     def _is_non_us(t: str) -> bool:
         return str(t).upper().endswith((".SI", ".HK", ".NS", ".BO", ".KL", ".BK", ".NZ", ".AX"))
 
-    us_tickers     = [t for t in clean_tickers if not _is_non_us(t)]
-    non_us_tickers = [t for t in clean_tickers if _is_non_us(t)]
+    us_tickers_full = [t for t in clean_tickers_full if not _is_non_us(t)]
+    us_tickers      = [t for t in clean_tickers if not _is_non_us(t)]
+    sgx_tickers_full = [t for t in clean_tickers_full if str(t).upper().endswith(".SI")]
+    sgx_tickers      = [t for t in clean_tickers if str(t).upper().endswith(".SI")]
+    non_us_tickers  = [t for t in clean_tickers if _is_non_us(t) and not str(t).upper().endswith(".SI")]
 
     def _date_job(ticker):
         try:
@@ -934,36 +1176,89 @@ def fetch_earnings_calendar(tickers: tuple, days_ahead: int = 15, max_tickers: i
 
     candidates = []
 
-    # US tickers: Nasdaq market-wide calendar (fast, no per-ticker call)
-    if us_tickers:
+    # US tickers: Nasdaq market-wide calendar (fast, no per-ticker call).
+    # Use the FULL US universe here, not the Max Scan capped list, so important
+    # names later in the universe (for example HIMS) are not missed.
+    if us_tickers_full:
         try:
-            us_cands = _nasdaq_us_earnings_candidates(tuple(us_tickers), int(days_ahead))
+            us_cands = _nasdaq_us_earnings_candidates(tuple(us_tickers_full), int(days_ahead))
             if us_cands:
                 candidates.extend(us_cands)
-                st.caption(f"US earnings source: Nasdaq calendar · {len(us_cands)} matching tickers")
-        except Exception:
-            pass
-        # US fallback: Yahoo per-ticker if Nasdaq returned nothing
-        if not [c for c in candidates if not _is_non_us(c[0])]:
-            prog_us = st.progress(0, text=f"Scanning {len(us_tickers)} US tickers via Yahoo…")
+                st.caption(
+                    f"US earnings source: Nasdaq calendar · {len(us_cands)} matching tickers "
+                    f"from full US universe ({len(us_tickers_full)}). Max scan applies only to Yahoo fallback."
+                )
+        except Exception as _e:
+            try:
+                st.caption(f"Nasdaq calendar check failed; using Yahoo fallback for priority tickers. ({type(_e).__name__})")
+            except Exception:
+                pass
+
+        # US fallback: supplement only the capped/priority tickers that Nasdaq did not return.
+        # This keeps the tab fast while still allowing manually added tickers and first-page
+        # priority names to be checked individually.
+        _us_seen = {str(c[0]).strip().upper() for c in candidates if not _is_non_us(c[0])}
+        _fallback_us = [t for t in us_tickers if str(t).strip().upper() not in _us_seen]
+        if _fallback_us:
+            prog_us = st.progress(0, text=f"Checking {len(_fallback_us)} priority US tickers via Yahoo fallback…")
             st_us   = st.empty()
             done_us = 0
             try:
                 with _fut.ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
-                    fm = {ex.submit(_date_job, t): t for t in us_tickers}
+                    fm = {ex.submit(_date_job, t): t for t in _fallback_us}
                     for fut in _fut.as_completed(fm):
                         done_us += 1
                         res = fut.result()
                         if res is not None:
                             candidates.append(res)
-                        if done_us % 5 == 0 or done_us == len(us_tickers):
-                            prog_us.progress(min(1.0, done_us / max(len(us_tickers), 1)))
+                        if done_us % 5 == 0 or done_us == len(_fallback_us):
+                            prog_us.progress(min(1.0, done_us / max(len(_fallback_us), 1)))
             finally:
                 prog_us.empty(); st_us.empty()
 
-    # Non-US tickers (SGX/HK/India): Yahoo per-ticker — Nasdaq calendar doesn't cover them
+    # SGX tickers: SGInvestors calendar first.  Yahoo/yfinance usually has no
+    # SGX earnings calendar, so this is the primary .SI source.
+    if sgx_tickers_full:
+        try:
+            sgx_cands = _sginvestors_sgx_earnings_candidates(tuple(sgx_tickers_full), int(days_ahead))
+            if sgx_cands:
+                candidates.extend(sgx_cands)
+                st.caption(
+                    f"SGX earnings source: SGInvestors calendar · {len(sgx_cands)} matching tickers "
+                    f"from full SGX universe ({len(sgx_tickers_full)})."
+                )
+        except Exception as _e:
+            try:
+                st.caption(f"SGInvestors SGX calendar check failed; using Yahoo fallback for SGX priority tickers. ({type(_e).__name__})")
+            except Exception:
+                pass
+
+        # SGX fallback only for capped/priority names not found by SGInvestors.
+        # This keeps the tab from becoming slow/noisy while still allowing manual
+        # tickers in the Add tickers box to be checked.
+        _sgx_seen = {str(c[0]).strip().upper() for c in candidates if str(c[0]).upper().endswith(".SI")}
+        _fallback_sgx = [t for t in sgx_tickers if str(t).strip().upper() not in _sgx_seen]
+        if _fallback_sgx:
+            prog_sgx = st.progress(0, text=f"Checking {len(_fallback_sgx)} priority SGX tickers via Yahoo fallback…")
+            st_sgx   = st.empty()
+            done_sgx = 0
+            try:
+                with _fut.ThreadPoolExecutor(max_workers=min(4, max(1, len(_fallback_sgx)))) as ex:
+                    fm = {ex.submit(_date_job, t): t for t in _fallback_sgx}
+                    for fut in _fut.as_completed(fm):
+                        done_sgx += 1
+                        res = fut.result()
+                        if res is not None:
+                            candidates.append(res)
+                        if done_sgx % 5 == 0 or done_sgx == len(_fallback_sgx):
+                            st_sgx.caption(f"SGX fallback ({done_sgx}/{len(_fallback_sgx)})")
+                            prog_sgx.progress(min(1.0, done_sgx / max(len(_fallback_sgx), 1)))
+            finally:
+                prog_sgx.empty(); st_sgx.empty()
+
+    # HK/India tickers: Yahoo per-ticker fallback.
     if non_us_tickers:
-        prog_nu = st.progress(0, text=f"Scanning {len(non_us_tickers)} SGX/HK/India tickers…")
+        prog_nu = st.progress(0, text=f"Scanning {len(non_us_tickers)} HK/India tickers…")
         st_nu   = st.empty()
         done_nu = 0
         try:
@@ -975,20 +1270,20 @@ def fetch_earnings_calendar(tickers: tuple, days_ahead: int = 15, max_tickers: i
                     if res is not None:
                         candidates.append(res)
                     if done_nu % 3 == 0 or done_nu == len(non_us_tickers):
-                        st_nu.caption(f"SGX/HK/India ({done_nu}/{len(non_us_tickers)}) · {len([c for c in candidates if _is_non_us(c[0])])} found")
+                        st_nu.caption(f"HK/India ({done_nu}/{len(non_us_tickers)}) · {len([c for c in candidates if _is_non_us(c[0])])} found")
                         prog_nu.progress(min(1.0, done_nu / max(len(non_us_tickers), 1)))
         finally:
             prog_nu.empty(); st_nu.empty()
 
     if not candidates:
         st.session_state["earn_last_debug"] = {
-            "scanned": total, "candidates": 0, "workers": workers,
-            "days_ahead": days_ahead, "mode": "v15.5-split-market-scan",
+            "scanned": total, "full_universe": total_full, "candidates": 0, "workers": workers,
+            "days_ahead": days_ahead, "mode": "v15.8-nasdaq-plus-sginvestors-sgx-calendar",
         }
         return pd.DataFrame()
 
     # Preserve market/universe ordering but only for candidates.
-    order = {t: i for i, t in enumerate(clean_tickers)}
+    order = {t: i for i, t in enumerate(clean_tickers_full)}
     candidates = sorted(candidates, key=lambda x: (x[1], order.get(x[0], 999999)))
 
     # Phase 2: enrich only candidates in parallel.
@@ -1023,8 +1318,8 @@ def fetch_earnings_calendar(tickers: tuple, days_ahead: int = 15, max_tickers: i
         status2.empty()
 
     st.session_state["earn_last_debug"] = {
-        "scanned": total, "candidates": cand_total, "rows": len(rows),
-        "workers": workers, "days_ahead": days_ahead, "mode": "nasdaq-then-yahoo-date-and-detail-scan",
+        "scanned": total, "full_universe": total_full, "candidates": cand_total, "rows": len(rows),
+        "workers": workers, "days_ahead": days_ahead, "mode": "v15.8-nasdaq-plus-sginvestors-sgx-calendar",
         "eps_blank_row_keys_sample": st.session_state.get("earn_eps_blank_row_keys", []),
     }
 

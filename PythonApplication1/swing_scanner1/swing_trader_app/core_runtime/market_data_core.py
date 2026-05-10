@@ -160,7 +160,7 @@ def get_sector_performance() -> pd.DataFrame:
     # This is NORMAL — suppress the "All sectors flat" warning in app_runtime
     # by adding a metadata column the app can check.
     all_flat = df["Today %"].abs().max() < 0.05
-    now_utc  = _dt.datetime.utcnow()
+    now_utc  = _dt.datetime.now(_dt.timezone.utc)
     # NYSE hours: Mon-Fri 13:30–20:00 UTC
     market_open = (now_utc.weekday() < 5 and
                    _dt.time(13, 30) <= now_utc.time() <= _dt.time(20, 0))
