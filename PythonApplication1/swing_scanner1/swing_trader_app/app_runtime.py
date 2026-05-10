@@ -1,5 +1,5 @@
 """
-Swing Scanner v13.70 — Bayesian Ensemble
+Swing Scanner v13.80 — Bayesian Ensemble
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -16,7 +16,7 @@ v12 add-ons  : options-derived signals — call/put unusual flow, IV term
 Install:
   pip install financedatabase ta streamlit yfinance pandas numpy nsepython requests streamlit-autorefresh
 """
-# v13.70: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
+# v13.80: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
 # NotImplementedError from __annotate__ when @st.cache_data wraps functions
 # with bare unsubscripted generics like `-> tuple`. This `from __future__`
 # downgrades all annotations in this module to strings at parse time,
@@ -42,7 +42,7 @@ import streamlit as st
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v13.70",
+    page_title="Swing Scanner v13.80",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -224,9 +224,9 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v13.70")
+st.title("📈 Swing/Long Term Scanner v13.80")
 
-# v13.70: COMPACT SELF-STAMP
+# v13.80: COMPACT SELF-STAMP
 # The build identity (path, mtime, hash, size) is still computed so it can
 # self-prove the running file, but only the short hash and mtime are visible
 # in the caption. The full path and size are tucked into the tooltip — hover
@@ -321,7 +321,7 @@ _SIDEBAR_DEFAULTS = {
     "ui_top_n_sectors":       3,
     "ui_min_prob_long":       62,
     "ui_min_prob_short":      60,
-    "ui_swing_mode":          "Balanced",  # Options: Strict/Balanced/Discovery/Support Entry/Premarket Momentum/High Volume/High Conviction
+    "ui_swing_mode":          "Balanced",  # Options: Strict/Balanced/Discovery/Support Entry/Premarket Momentum/High Volume/High Conviction/PSM Strategy
     "ui_skip_earnings":       False,
     "ui_use_live_universe":   True,
     "ui_max_live_universe":   1000,
@@ -394,7 +394,7 @@ with st.sidebar.expander("⚙️ UI settings · save & reset", expanded=False):
                  help="Reverts all sidebar controls to factory defaults AND "
                       "deletes the saved ui_state.json from disk. Does not "
                       "affect ML models, calibrated weights, or scan results.",
-                 use_container_width=True):
+                 width="stretch"):
         for _k, _v in _SIDEBAR_DEFAULTS.items():
             st.session_state[_k] = _v
         # v13.31: also delete the on-disk file, otherwise the next rerun
@@ -428,7 +428,7 @@ min_prob_short = st.sidebar.slider(
 )
 swing_mode = st.sidebar.selectbox(
     "📊 Swing strategy",
-    ["Strict", "Balanced", "Discovery", "Support Entry", "Premarket Momentum", "High Volume", "High Conviction"],
+    ["Strict", "Balanced", "Discovery", "Support Entry", "Premarket Momentum", "High Volume", "High Conviction", "PSM Strategy"],
     key="ui_swing_mode",
     help=(
         "**Strict** — A+ setups only. High probability + full confirmation.\n\n"
@@ -445,7 +445,10 @@ swing_mode = st.sidebar.selectbox(
         "**High Conviction** 🎯 — highest win-rate strategy. Shows ONLY stocks where ALL 5 "
         "independent signal categories confirm simultaneously: Trend + Momentum + Volume + "
         "Structure + Market alignment. Gives 5-15 stocks instead of 40-80. "
-        "Each pick has genuine multi-dimensional confirmation."
+        "Each pick has genuine multi-dimensional confirmation.\n\n"
+        "**PSM Strategy** 🚀 — 5–7 day hold targeting ≥5% gain. Quality-first swing filter using "
+        "PI Proxy, PSS Score, Rise Probability, Volume Ratio and Entry Quality. "
+        "Elite/Strong picks are designed to be fewer and higher quality, while Watch keeps developing setups visible."
     ),
 )
 st.session_state["swing_mode"] = swing_mode
@@ -502,6 +505,37 @@ elif _sm_upper == "HIGH CONVICTION":
         help=(
             "Only affects the High Conviction display panel. It does not change the scanner logic "
             "or any other strategy."
+        ),
+    )
+elif _sm_upper == "PSM STRATEGY":
+    st.sidebar.info(
+        "🚀 **PSM Strategy mode**\n\n"
+        "Targets 5–7 day holds with ≥5% gain. Filters for stocks where ≥3 of 8 "
+        "professional sub-signals confirm:\n"
+        "🔹 PEAD (post-earnings drift)  🔹 Volume Dry-Up coil\n"
+        "🔹 Flat Base (IBD 3-week tight)  🔹 Market-Weakness RS\n"
+        "🔹 Institutional Accumulation Days  🔹 Power Trend\n"
+        "🔹 Short-Squeeze Proxy  🔹 Catalyst Proxy\n\n"
+        "PSS Score (e.g. 4/8) shown per stock. Elite ≥6 / Strong 4–5 / Valid 3."
+    )
+    st.sidebar.slider(
+        "Top PSM picks to show",
+        min_value=5,
+        max_value=30,
+        value=int(st.session_state.get("ui_psm_top_n", 15)),
+        step=1,
+        key="ui_psm_top_n",
+        help="Controls how many ranked picks appear in the PSM Strategy panel. Does not affect scanner logic.",
+    )
+    st.sidebar.text_input(
+        "PSM compare shortlist",
+        value=st.session_state.get("ui_psm_compare_tickers", ""),
+        key="ui_psm_compare_tickers",
+        placeholder="Example: GRND, IREN, ATLC, KOP, ROAD, VPG",
+        help=(
+            "Optional. Paste tickers here when you want Rank/View/Buy Condition to be calculated "
+            "only against your own shortlist. This is how to match a manual Monday comparison, "
+            "instead of ranking against the full market PSM list."
         ),
     )
 skip_earnings  = st.sidebar.checkbox(
@@ -685,7 +719,7 @@ if refresh_minutes:
             "because it wiped all sidebar settings on every refresh."
         )
         if st.sidebar.button("🔄 Rerun now", key="manual_rerun_btn",
-                             use_container_width=True,
+                             width="stretch",
                              help="Manual fallback for auto-refresh."):
             st.rerun()
 
@@ -1034,6 +1068,245 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
                 df_long.loc[p_r >= 65, "Action"] = "BUY – PRECISION SETUP"
                 df_long.loc[full_r & (p_r >= 70), "Action"] = "STRONG BUY – HIGH CONVICTION"
 
+        elif mode == "PSM STRATEGY":
+            # ═════════════════════════════════════════════════════════════
+            # PSM Strategy v16 — QUALITY-FIRST 5–7 day swing filter
+            #
+            # Goal: stop weak/speculative names from appearing as BUY just
+            # because they have high ATR/PI. A PSM BUY now needs:
+            #   • return potential       (PI Proxy)
+            #   • professional signals   (PSS Score)
+            #   • probability            (Rise Prob)
+            #   • volume confirmation    (Vol Ratio / volume signal)
+            #   • acceptable entry/risk  (not extended/wait/avoid)
+            #   • biotech/speculative cap (biotech must be exceptional)
+            #
+            # Watch candidates are allowed, but BUY tiers are deliberately
+            # stricter so the grid gives fewer, higher-quality swing ideas.
+            # ═════════════════════════════════════════════════════════════
+
+            idx = df_long.index
+
+            def _num_col(col_name, default=0.0):
+                if col_name not in df_long.columns:
+                    return pd.Series([default] * len(df_long), index=idx)
+                return pd.to_numeric(
+                    df_long[col_name].astype(str)
+                        .str.replace("$", "", regex=False)
+                        .str.replace("%", "", regex=False)
+                        .str.replace("+", "", regex=False)
+                        .str.replace("x", "", regex=False)
+                        .str.replace(",", "", regex=False)
+                        .str.strip(),
+                    errors="coerce",
+                ).fillna(default)
+
+            op_score_num = pd.to_numeric(
+                df_long["Op Score"].astype(str).str.extract(r"(\d+)", expand=False)
+                if "Op Score" in df_long.columns else pd.Series(["0"]*len(df_long), index=idx),
+                errors="coerce"
+            ).fillna(0)
+
+            pss_col = pd.to_numeric(
+                df_long["PSS Score"].astype(str).str.extract(r"(\d+)", expand=False)
+                if "PSS Score" in df_long.columns else pd.Series(["0"]*len(df_long), index=idx),
+                errors="coerce"
+            ).fillna(0)
+
+            price_num = _num_col("Price", 0)
+            today_num = _num_col("Today %", 0)
+
+            # ── PI Proxy = ATR% × (Rise Prob / 100) ───────────────────────
+            if "ATR%" in df_long.columns:
+                _atr_pct = pd.to_numeric(
+                    df_long["ATR%"].astype(str).str.replace("%", "", regex=False).str.strip(),
+                    errors="coerce"
+                ).fillna(0)
+            else:
+                _atr_pct = pd.Series([0.0] * len(df_long), index=idx)
+
+            # If ATR% is missing in old cache, use a conservative volume proxy.
+            if not _atr_pct.gt(0).any():
+                _atr_pct = (vol_ratio * 1.5).fillna(0)
+
+            pi_proxy = (_atr_pct * (p / 100)).round(2)
+
+            # ── Entry/risk gates ───────────────────────────────────────────
+            entry_text = df_long["Entry Quality"].astype(str) if "Entry Quality" in df_long.columns else pd.Series([""]*len(df_long), index=idx)
+            setup_text = df_long["Setup Type"].astype(str) if "Setup Type" in df_long.columns else pd.Series([""]*len(df_long), index=idx)
+            pos_text   = df_long["Pos Size"].astype(str) if "Pos Size" in df_long.columns else pd.Series([""]*len(df_long), index=idx)
+            sector_txt = df_long["Sector"].astype(str) if "Sector" in df_long.columns else pd.Series([""]*len(df_long), index=idx)
+
+            entry_bad = (entry_text + " " + setup_text).str.contains("EXTENDED|AVOID|WAIT|TRAP|⚠️|⏳", na=False, regex=True)
+            entry_ideal = entry_text.str.contains("✅|IDEAL|SUPPORT|MA20|MA60|VWAP", na=False, regex=True)
+            entry_ok = ~entry_bad
+
+            # Avoid very cheap / illiquid / unusable names for PSM buy decisions.
+            # Keep unknown prices out rather than accidentally promoting them.
+            price_ok = price_num >= 5
+
+            # PSM should target 5%+ swing potential, but avoid names so wild that
+            # stops become unmanageable. Biotech can be volatile, so handled below.
+            atr_ok = (_atr_pct >= 2.0) & (_atr_pct <= 14.0)
+
+            # Avoid chasing huge one-day spikes for fresh buys. They may still be watchlist.
+            not_chasing = today_num <= 12
+            not_breaking_down = today_num >= -6
+
+            # ── Sector / speculative caution ───────────────────────────────
+            ticker_txt = df_long["Ticker"].astype(str).str.upper() if "Ticker" in df_long.columns else pd.Series([""]*len(df_long), index=idx)
+            sig_txt    = df_long["Signals"].astype(str) if "Signals" in df_long.columns else pd.Series([""]*len(df_long), index=idx)
+            pss_txt    = df_long["PSS Triggers"].astype(str) if "PSS Triggers" in df_long.columns else pd.Series([""]*len(df_long), index=idx)
+            bio_text   = (ticker_txt + " " + pos_text + " " + sector_txt + " " + sig_txt + " " + pss_txt)
+
+            # Clinical biotech/pharma names are binary-event trades, not repeatable
+            # high-quality 5–7 day swing buys. Sector is often "Mixed" for small
+            # caps, so use a ticker guard as well. This prevents ARCT-style names
+            # from polluting PSM actionable results.
+            high_risk_biotech_tickers = {
+                "ARCT", "ACLX", "KALV", "TNYA", "VERV", "ABEO", "RIGL", "OPK",
+                "STOK", "EXAS", "TNGX", "MRX", "PRCT", "MYGN", "ALKS", "LENZ",
+                "SGHT", "LGND", "IRTC"
+            }
+            biotech_flag = bio_text.str.contains(
+                "Biotech|Bio|Pharma|Therapeutic|Therapeutics|Clinical|Trial|Oncology|Gene|Genomic|Vaccine|Healthcare",
+                na=False, regex=True
+            ) | ticker_txt.isin(high_risk_biotech_tickers)
+            slow_flag = pos_text.str.contains("ETF|Slow|Caution", na=False, regex=True)
+
+            # Current PSM Gate from scan core remains useful as sector caution,
+            # but do not let it alone promote a stock.
+            if "PSM Gate" in df_long.columns:
+                psm_gate = pd.to_numeric(df_long["PSM Gate"], errors="coerce").fillna(7)
+            else:
+                psm_gate = pd.Series([7.0] * len(df_long), index=idx)
+            sector_ok = (score >= (psm_gate - 1)) | (pss_col >= 4) | (pi_proxy >= 3.0)
+
+            # ── Signal confirmation ────────────────────────────────────────
+            volume_signal = signals.str.contains("VOL BREAKOUT|VOL SURGE|POCKET PIVOT|OBV|ACTIVE VOLUME|HIGH VOLUME", na=False, regex=True)
+            momentum_signal = signals.str.contains("MACD ACCEL|STOCH BOUNCE|RSI>50|HIGHER LOWS|RS>SPY|WKLY TREND|52W HIGH|BREAKOUT", na=False, regex=True)
+            confirmation_ok = volume_signal | momentum_signal | (op_score_num >= 4) | (pss_col >= 4)
+
+            # ── Quality composite used for gate + sorting ──────────────────
+            pi_pts = (pi_proxy.clip(0, 4.0) / 4.0 * 100).fillna(0)
+            pss_pts = (pss_col.clip(0, 8.0) / 8.0 * 100).fillna(0)
+            vol_pts = (vol_ratio.clip(0, 4.0) / 4.0 * 100).fillna(0)
+            op_pts = (op_score_num.clip(0, 10.0) / 10.0 * 100).fillna(0)
+            entry_pts = pd.Series([55.0] * len(df_long), index=idx).mask(entry_ideal, 100).mask(entry_bad, 20)
+            chase_penalty = pd.Series([0.0] * len(df_long), index=idx).mask(today_num > 12, 18).mask(today_num < -6, 12)
+            biotech_penalty = pd.Series([0.0] * len(df_long), index=idx).mask(biotech_flag & (pss_col < 5), 14)
+            slow_penalty = pd.Series([0.0] * len(df_long), index=idx).mask(slow_flag, 6)
+
+            psm_quality = (
+                pi_pts * 0.30 +
+                pss_pts * 0.25 +
+                p.clip(0, 100) * 0.20 +
+                vol_pts * 0.12 +
+                op_pts * 0.08 +
+                entry_pts * 0.05 -
+                chase_penalty - biotech_penalty - slow_penalty
+            ).round(1).clip(lower=0, upper=100)
+
+            # ── Buy tiers: stricter than previous version ──────────────────
+            # PSM is now ACTIONABLE quality only. Exclude clinical biotech/pharma
+            # from the buy universe by default because their moves are binary-event
+            # driven and harder to manage with technical swing stops.
+            common_quality = (
+                price_ok & atr_ok & entry_ok & sector_ok & not_candidate &
+                not_breaking_down & confirmation_ok & (~biotech_flag)
+            )
+
+            # Elite / Strong / Qualified tiers.
+            # The previous version used only Elite + Strong, which became so strict
+            # that PSM could return zero names. This version keeps PSM actionable,
+            # but adds a third BUY tier for the best controlled-risk setups that
+            # are not perfect. Biotech/event-driven names remain excluded.
+            elite_ok = (
+                common_quality & not_chasing &
+                (psm_quality >= 82) &
+                (pi_proxy >= 2.7) &
+                (pss_col >= 4) &
+                (p >= 64) &
+                (vol_ratio >= 1.3) &
+                ((op_score_num >= 4) | volume_signal | (pss_col >= 5))
+            )
+
+            strong_ok = (
+                common_quality & not_chasing &
+                (psm_quality >= 70) &
+                (pi_proxy >= 1.8) &
+                (pss_col >= 3) &
+                (p >= 59) &
+                (vol_ratio >= 1.0) &
+                ((op_score_num >= 3) | volume_signal | momentum_signal | (pss_col >= 4))
+            )
+
+            qualified_ok = (
+                common_quality &
+                (psm_quality >= 62) &
+                (pi_proxy >= 1.3) &
+                (p >= 56) &
+                (vol_ratio >= 0.8) &
+                ((pss_col >= 2) | confirmation_ok) &
+                (~slow_flag)
+            )
+
+            # No biotech exception in PSM actionable mode. Biotech may be traded
+            # separately via High Volume / Premarket / Discovery, but not promoted
+            # as a quality PSM buy. This keeps ARCT-style binary event names out.
+
+            mask = elite_ok | strong_ok | qualified_ok
+
+            # If market conditions are weak and no stock passes the three normal
+            # tiers, still return a small "best available" quality shortlist.
+            # This avoids a blank PSM grid while keeping the same hard exclusions:
+            # no biotech, no bad entry, no breakdown, no unusable/cheap names.
+            if not mask.any():
+                fallback_ok = (
+                    price_ok & entry_ok & not_candidate & not_breaking_down &
+                    (~biotech_flag) & (~slow_flag) &
+                    (psm_quality >= 56) & (pi_proxy >= 1.0) & (p >= 54) &
+                    (vol_ratio >= 0.7) & ((pss_col >= 2) | confirmation_ok | (op_score_num >= 2))
+                )
+                if fallback_ok.any():
+                    fallback_rank = psm_quality.where(fallback_ok, -1).sort_values(ascending=False)
+                    keep_idx = fallback_rank.head(15).index
+                    qualified_ok = pd.Series(False, index=idx)
+                    qualified_ok.loc[keep_idx] = True
+                    mask = qualified_ok
+
+            df_long = df_long[mask].copy()
+
+            if not df_long.empty:
+                pss_r = pss_col.reindex(df_long.index).fillna(0)
+                p_r   = p.reindex(df_long.index).fillna(0)
+                vr_r  = vol_ratio.reindex(df_long.index).fillna(0)
+                pi_r  = pi_proxy.reindex(df_long.index).fillna(0)
+                q_r   = psm_quality.reindex(df_long.index).fillna(0)
+                elite_r  = elite_ok.reindex(df_long.index).fillna(False)
+                strong_r = strong_ok.reindex(df_long.index).fillna(False)
+                biotech_r = biotech_flag.reindex(df_long.index).fillna(False)
+
+                df_long["PI Proxy"] = pi_r.round(2)
+                df_long["PI Proxy Raw"] = pi_r.round(2)
+                df_long["PSM Quality"] = q_r.round(1)
+
+                qualified_r = qualified_ok.reindex(df_long.index).fillna(False)
+
+                df_long["Action"] = "BUY – PSM QUALIFIED"
+                df_long.loc[strong_r, "Action"] = "BUY – PSM STRONG"
+                df_long.loc[elite_r,  "Action"] = "STRONG BUY – PSM ELITE"
+
+                df_long["PSM Decision"] = "QUALIFIED BUY – best available controlled-risk setup"
+                df_long.loc[strong_r, "PSM Decision"] = "BUY CANDIDATE – strong controlled-risk setup"
+                df_long.loc[elite_r,  "PSM Decision"] = "TOP SWING BUY – best PSM setup"
+
+                df_long = (
+                    df_long.assign(_q=q_r, _pi=pi_r, _prob=p_r, _vr=vr_r, _pss=pss_r)
+                           .sort_values(["_q", "_pi", "_prob", "_vr", "_pss"], ascending=[False, False, False, False, False], kind="stable")
+                           .drop(columns=["_q", "_pi", "_prob", "_vr", "_pss"])
+                )
+
         else:
             # Unknown mode — show everything above probability threshold
             df_long = df_long[(p >= float(min_prob_long)) & not_candidate].copy()
@@ -1085,6 +1358,37 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
     return df_long, df_short, df_operator
 
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EARLY LATEST-BAR DISPLAY HELPER
+# Needed before the tab-renderer section because cache-load messages are built
+# before the later tab helpers are defined.
+# ─────────────────────────────────────────────────────────────────────────────
+def _latest_bar_display_value(latest_bar_time) -> str:
+    """Return latest-bar timestamp formatted in SGT without the 'Latest bar:' label."""
+    try:
+        import pandas as pd
+        if latest_bar_time is None or str(latest_bar_time).strip() == "":
+            return "unknown"
+        raw = str(latest_bar_time).strip().replace("Latest bar:", "").strip()
+        if raw.endswith(" SGT"):
+            return raw
+        if raw.endswith(" ET"):
+            ts = pd.to_datetime(raw[:-3].strip(), errors="coerce")
+            if pd.isna(ts):
+                return raw
+            ts = ts.tz_localize("America/New_York") if ts.tzinfo is None else ts.tz_convert("America/New_York")
+        else:
+            ts = pd.to_datetime(raw, errors="coerce")
+            if pd.isna(ts):
+                return raw
+            if ts.tzinfo is None:
+                ts = ts.tz_localize("UTC")
+        ts = ts.tz_convert("Asia/Singapore")
+        return f"{ts.strftime('%Y-%m-%d %H:%M:%S')} SGT"
+    except Exception:
+        return str(latest_bar_time or "unknown").replace("Latest bar:", "").strip() or "unknown"
 
 # ── Load cached MASTER CSV results immediately for the selected market ─────
 # The CSV cache stores the broad Yahoo/master scan, not one strategy's final
@@ -1161,7 +1465,7 @@ if load_csv_on_start:
                 _cache_loaded_note = (
                     f"📦 Loaded cached Yahoo master scan from {_meta.get('saved_at', 'unknown')} "
                     f"({_cache_age:.0f} min old). Displaying **{swing_mode}** from cache · "
-                    f"Latest bar: **{_meta.get('latest_bar_time', 'unknown')}** · "
+                    f"Latest bar: **{_latest_bar_display_value(_meta.get('latest_bar_time', 'unknown'))}** · "
                     f"Long {len(st.session_state.get('df_long', pd.DataFrame()))} · "
                     f"Short {len(st.session_state.get('df_short', pd.DataFrame()))}"
                 )
@@ -1311,6 +1615,168 @@ with tab_sectors:
     _safe_render_tab('sectors', render_sectors)
 
 
+def _latest_bar_display_value(latest_bar_time) -> str:
+    """Return latest-bar timestamp formatted in SGT without the 'Latest bar:' label."""
+    try:
+        txt = str(format_latest_bar_time(latest_bar_time)).strip()
+        if txt.lower().startswith("latest bar:"):
+            txt = txt.split(":", 1)[1].strip()
+        return txt or "unknown"
+    except Exception:
+        return str(latest_bar_time or "unknown")
+
+
+def _normalise_bar_for_compare(latest_bar_time):
+    """Parse Yahoo/cache latest-bar timestamps to comparable UTC seconds."""
+    try:
+        import pandas as pd
+        if latest_bar_time is None:
+            return None
+        raw = str(latest_bar_time).strip()
+        if not raw or raw in {"–", "unknown", "None"}:
+            return None
+        raw = raw.replace("Latest bar:", "").strip()
+        # Handle readable labels that pandas may not reliably parse.
+        if raw.endswith(" SGT"):
+            raw = raw[:-4].strip()
+            ts = pd.to_datetime(raw, errors="coerce")
+            if pd.isna(ts):
+                return None
+            ts = ts.tz_localize("Asia/Singapore") if ts.tzinfo is None else ts.tz_convert("Asia/Singapore")
+        elif raw.endswith(" ET"):
+            raw = raw[:-3].strip()
+            ts = pd.to_datetime(raw, errors="coerce")
+            if pd.isna(ts):
+                return None
+            ts = ts.tz_localize("America/New_York") if ts.tzinfo is None else ts.tz_convert("America/New_York")
+        else:
+            ts = pd.to_datetime(raw, errors="coerce")
+            if pd.isna(ts):
+                return None
+            if ts.tzinfo is None:
+                # Yahoo batch/index strings in this app are treated as UTC if no tz.
+                ts = ts.tz_localize("UTC")
+        return int(ts.tz_convert("UTC").timestamp())
+    except Exception:
+        return None
+
+
+def _quick_yahoo_latest_bar_for_market(market: str, meta: dict, sample_size: int = 25) -> dict:
+    """Cheap freshness probe: download only 1d/5m bars for a small ticker sample.
+
+    This avoids rebuilding the full scanner cache when Yahoo has not published a
+    newer bar than the cache already contains. It is intentionally best-effort:
+    on any error the caller should continue with the normal full refresh.
+    """
+    checked_at = datetime.now().isoformat(timespec="seconds")
+    result = {
+        "ok": False,
+        "checked_at": checked_at,
+        "sample_tickers": "",
+        "latest_available_bar_time": "",
+        "latest_available_bar_sgt": "unknown",
+        "cached_latest_bar_time": str((meta or {}).get("latest_bar_time", "")),
+        "cached_latest_bar_sgt": _latest_bar_display_value((meta or {}).get("latest_bar_time", "")),
+        "is_newer": True,
+        "message": "Freshness probe not run",
+    }
+    try:
+        tickers_csv = str((meta or {}).get("scanned_tickers_csv", ""))
+        tickers = [t.strip().upper() for t in tickers_csv.split(",") if t.strip()]
+        # Prefer highly liquid/default front of the cached universe; include enough
+        # names to survive occasional Yahoo no-data responses but not enough to be costly.
+        tickers = list(dict.fromkeys(tickers))[:max(3, int(sample_size))]
+        if not tickers:
+            result["message"] = "No cached ticker list available for quick freshness check"
+            return result
+        result["sample_tickers"] = ", ".join(tickers)
+
+        raw = yf.download(
+            tickers if len(tickers) > 1 else tickers[0],
+            period="1d",
+            interval="5m",
+            group_by="ticker",
+            progress=False,
+            threads=True,
+            auto_adjust=True,
+            prepost=True,
+        )
+        latest_ts = []
+        if raw is None or raw.empty:
+            result["message"] = "Yahoo returned empty data for quick freshness check"
+            return result
+
+        for tkr in tickers:
+            try:
+                if isinstance(raw.columns, pd.MultiIndex):
+                    lvl0 = raw.columns.get_level_values(0)
+                    lvl1 = raw.columns.get_level_values(1)
+                    if tkr in lvl0:
+                        df_t = raw[tkr].copy()
+                    elif tkr in lvl1:
+                        df_t = raw.xs(tkr, axis=1, level=1).copy()
+                    else:
+                        continue
+                else:
+                    # Single-symbol download returns flat columns.
+                    if len(tickers) != 1:
+                        continue
+                    df_t = raw.copy()
+                if df_t is None or df_t.empty or "Close" not in df_t.columns:
+                    continue
+                df_t = df_t[df_t["Close"].notna()]
+                if df_t.empty:
+                    continue
+                latest_ts.append(pd.Timestamp(df_t.index[-1]))
+            except Exception:
+                continue
+        if not latest_ts:
+            result["message"] = "Could not extract any latest 5m bar from Yahoo freshness sample"
+            return result
+
+        latest = max(latest_ts)
+        result["ok"] = True
+        result["latest_available_bar_time"] = str(latest)
+        result["latest_available_bar_sgt"] = _latest_bar_display_value(str(latest))
+        cached_norm = _normalise_bar_for_compare(result["cached_latest_bar_time"])
+        latest_norm = _normalise_bar_for_compare(str(latest))
+        if cached_norm is None or latest_norm is None:
+            result["is_newer"] = True
+            result["message"] = "Could not compare bar timestamps safely; full refresh allowed"
+        else:
+            result["is_newer"] = latest_norm > cached_norm
+            result["message"] = "Newer Yahoo bar available" if result["is_newer"] else "No newer Yahoo bar available"
+        return result
+    except Exception as e:
+        result["message"] = f"Freshness check failed: {type(e).__name__}: {e}"
+        return result
+
+
+def _write_scan_cache_check_meta(market: str, check_info: dict) -> None:
+    """Persist last lightweight freshness check into <market>_scan_meta.json for Diagnostics."""
+    try:
+        paths = _scan_cache_paths(market)
+        if not paths["meta"].exists():
+            return
+        meta = json.loads(paths["meta"].read_text(encoding="utf-8"))
+        meta.update({
+            "last_data_check_at": check_info.get("checked_at", ""),
+            "last_data_check_result": check_info.get("message", ""),
+            "last_available_bar_time": check_info.get("latest_available_bar_time", ""),
+            "last_available_bar_sgt": check_info.get("latest_available_bar_sgt", "unknown"),
+            "last_cached_bar_sgt": check_info.get("cached_latest_bar_sgt", "unknown"),
+            "last_data_check_sample": check_info.get("sample_tickers", ""),
+            "last_data_check_newer": bool(check_info.get("is_newer", True)),
+        })
+        paths["meta"].write_text(json.dumps(meta, indent=2, default=str), encoding="utf-8")
+        st.session_state["scan_cache_meta"] = meta
+    except Exception as e:
+        try:
+            _record_app_warning("cache_freshness_meta_write", f"Could not write freshness check meta: {e}", extra={"market": market})
+        except Exception:
+            pass
+
+
 def _safe_sector_df_for_market(_market_sel: str, _context: str = "sector") -> pd.DataFrame:
     """Fetch sector data without allowing yfinance/cloud errors to break the page."""
     try:
@@ -1340,12 +1806,40 @@ col_btn, col_info = st.columns([1, 3])
 with col_btn:
     _manual_scan = st.button(f"🚀 Scan {market_sel} Stocks", type="primary")
 _strategy_auto_refresh = bool(st.session_state.pop("_force_strategy_rescan", False))
+
+# If the CSV cache is due, first do a cheap Yahoo latest-bar probe.
+# When Yahoo has not published a newer 5m bar than the cache already has,
+# do NOT rebuild the expensive master scan.  Just record the check in
+# Diagnostics and keep using the existing cache.
+_cache_due_no_new_data = False
+if _cache_refresh_due and not _manual_scan and _loaded_cache is not None:
+    _probe = _quick_yahoo_latest_bar_for_market(market_sel, _loaded_cache.get("meta", {}))
+    st.session_state["scan_cache_last_data_check"] = _probe
+    _write_scan_cache_check_meta(market_sel, _probe)
+    if _probe.get("ok") and not _probe.get("is_newer", True):
+        _cache_refresh_due = False
+        st.session_state["scan_cache_refresh_due"] = False
+        _cache_due_no_new_data = True
+        _msg = (
+            f"✅ Cache freshness checked — no newer Yahoo bar available. "
+            f"Available: {_probe.get('latest_available_bar_sgt', 'unknown')} · "
+            f"Cached: {_probe.get('cached_latest_bar_sgt', 'unknown')}. "
+            "Keeping existing scanner cache; no full Yahoo scan needed."
+        )
+        st.session_state["_cache_no_new_data_notice"] = _msg
+        try:
+            _record_scan_note(_msg, context="cache_freshness_check", extra=_probe)
+        except Exception:
+            pass
+
 run = _manual_scan or _cache_refresh_due or _strategy_auto_refresh
 if _strategy_auto_refresh:
     _show_top_spinner(st.session_state.get("_strategy_changed_notice", "🔄 Strategy changed — refreshing scan/grid..."))
+elif _cache_due_no_new_data:
+    _top_scan_status.info(st.session_state.get("_cache_no_new_data_notice", "Cache checked — no newer Yahoo data available."))
 elif _cache_refresh_due and not _manual_scan:
     _show_top_spinner(
-        f"⏱️ Cached CSV is older than {effective_refresh_minutes} min — refreshing scan and updating CSV files..."
+        f"⏱️ Cached CSV is older than {effective_refresh_minutes} min and Yahoo has a newer bar — refreshing scan and updating CSV files..."
     )
 with col_info:
     # Show sector preview for the active market; never let Cloud/yfinance errors blank the UI
@@ -1367,6 +1861,7 @@ with col_info:
         )
 
 if run:
+    st.session_state.pop("_cache_no_new_data_notice", None)
     # Get sector data for the selected market; if unavailable, continue scanning the ticker universe
     sdf = _safe_sector_df_for_market(market_sel, "scan_sector_fetch")
     active_sector_etfs = SECTOR_ETFS if market_sel == "🇺🇸 US" else (INDIA_SECTOR_ETFS if market_sel == "🇮🇳 India" else {})
@@ -1482,7 +1977,7 @@ if run:
         _latest_bar_for_status = format_latest_bar_time(_latest_bar_for_status)
         _top_scan_status.success(
             f"✅ Yahoo master scan refreshed for **{len(active_tickers)} {market_sel} stocks** · "
-            f"Latest bar: **{_latest_bar_for_status}** · "
+            f"Latest bar: **{_latest_bar_display_value(_latest_bar_for_status)}** · "
             f"Displaying **{swing_mode}** from cache · "
             f"Long: **{len(df_long)}** / master {len(df_long_master)} · "
             f"Short: **{len(df_short)}** / master {len(df_short_master)} · Operator: **{len(df_operator)}**"

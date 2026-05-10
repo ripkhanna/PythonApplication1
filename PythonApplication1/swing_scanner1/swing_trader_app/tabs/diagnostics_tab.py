@@ -47,6 +47,35 @@ def render_diagnostics(ctx: dict) -> None:
         f"Next expected refresh/check time: **{_diag_timing.get('next_refresh_at', 'Auto refresh off')}** · "
         f"Cache folder: `{SCAN_CACHE_DIR}`"
     )
+
+    # Lightweight freshness-check status. When the cache TTL is due, the app
+    # first checks Yahoo's latest 5m bar for a small ticker sample. If that bar
+    # matches the cached latest bar, the expensive full master scan is skipped
+    # and only this diagnostics status is updated.
+    _fresh_check = st.session_state.get("scan_cache_last_data_check", {}) or {}
+    if not _fresh_check and _diag_meta:
+        _fresh_check = {
+            "checked_at": _diag_meta.get("last_data_check_at", ""),
+            "message": _diag_meta.get("last_data_check_result", ""),
+            "latest_available_bar_sgt": _diag_meta.get("last_available_bar_sgt", ""),
+            "cached_latest_bar_sgt": _diag_meta.get("last_cached_bar_sgt", ""),
+            "sample_tickers": _diag_meta.get("last_data_check_sample", ""),
+            "is_newer": _diag_meta.get("last_data_check_newer", None),
+        }
+    if _fresh_check and _fresh_check.get("checked_at"):
+        fc1, fc2, fc3 = st.columns(3)
+        fc1.metric("Last data checked", _fresh_check.get("checked_at", "–"))
+        fc2.metric("Available latest bar", _fresh_check.get("latest_available_bar_sgt", "unknown") or "unknown")
+        fc3.metric("Cached latest bar", _fresh_check.get("cached_latest_bar_sgt", "unknown") or "unknown")
+        _newer = _fresh_check.get("is_newer")
+        if _newer is False:
+            st.success("No newer Yahoo bar available — existing scanner cache was kept; no full Yahoo scan was run.")
+        elif _newer is True:
+            st.info("A newer Yahoo bar was available on the last check, so the scanner cache should refresh on the next scan/auto-refresh.")
+        else:
+            st.info(_fresh_check.get("message", "Freshness check status unavailable."))
+        with st.expander("Freshness check sample tickers", expanded=False):
+            st.write(_fresh_check.get("sample_tickers", "No sample tickers recorded."))
     if _diag_timing.get("is_due"):
         st.warning("Cache is due for refresh. With auto refresh ON, the next page reload will run a fresh scan and write new CSV files.")
     elif refresh_minutes:
@@ -398,7 +427,7 @@ def render_diagnostics(ctx: dict) -> None:
         diag_logs.append(f"Auto refresh interval: {_lt.get('refresh_interval', 'Off')}")
         diag_logs.append(f"Next refresh/check: {_lt.get('next_refresh_in', 'Auto refresh off')} at {_lt.get('next_refresh_at', 'Auto refresh off')}")
         diag_logs.append(f"Bucket-cap Bayesian: {'ON' if st.session_state.get('use_bucket_cap', True) else 'OFF'}")
-        diag_logs.append("Trade Journal: removed from Trade Desk in v13.46; current build v13.70")
+        diag_logs.append("Trade Journal: removed from Trade Desk in v13.46; current build v13.80")
     except Exception as e:
         diag_logs.append(f"Diagnostics log build error: {e}")
     st.text_area(

@@ -432,7 +432,7 @@ def _display_mover_table(df: pd.DataFrame, title: str, sort_col: str, ascending:
             view[col] = pd.to_numeric(view[col], errors="coerce").map(lambda x: f"{x:.2f}x" if pd.notna(x) and np.isfinite(x) else "–")
     if "Today Volume" in view.columns:
         view["Today Volume"] = pd.to_numeric(view["Today Volume"], errors="coerce").map(lambda x: f"{x:,.0f}" if pd.notna(x) else "–")
-    st.dataframe(view, use_container_width=True, hide_index=True)
+    st.dataframe(view, width="stretch", hide_index=True)
 
 
 def render_top_movers(g: dict) -> None:

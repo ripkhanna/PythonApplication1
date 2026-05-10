@@ -511,6 +511,11 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             "cal_days": None, "float_shares": None,
             "short_pct": None, "pe": None,
             "pm_chg": 0.0, "pm_price": 0.0, "pm_ok": False,
+            "cash_ratio":    None,
+            "analyst_rec":   None,
+            "industry":      "",
+            "sector_detail": "",
+            "quote_type":    "",   # "ETF" | "EQUITY" | ""
         }
         for _attempt in range(2):   # retry once on 401
             try:
@@ -537,6 +542,17 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                         result["float_shares"] = _inf.get("floatShares")
                         result["short_pct"]    = _inf.get("shortPercentOfFloat")
                         result["pe"]           = _inf.get("trailingPE")
+                        # v14.1: fundamental floor + analyst consensus
+                        _cash  = _inf.get("totalCash") or _inf.get("cash")
+                        _mcap  = _inf.get("marketCap")
+                        if _cash and _mcap and float(_mcap) > 0:
+                            result["cash_ratio"] = round(float(_cash) / float(_mcap), 3)
+                        _rec = _inf.get("recommendationMean")
+                        if _rec is not None:
+                            result["analyst_rec"] = round(float(_rec), 2)
+                        result["industry"]      = str(_inf.get("industry", "") or "")
+                        result["sector_detail"] = str(_inf.get("sector",   "") or "")
+                        result["quote_type"]    = str(_inf.get("quoteType", "") or "")
                     except Exception:
                         pass
                     try:
@@ -771,13 +787,94 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             float_shares = _m.get("float_shares")
             short_pct    = _m.get("short_pct")
             pe           = _m.get("pe")
+            # v14.1: new fundamental fields
+            cash_ratio   = _m.get("cash_ratio")     # totalCash/marketCap
+            analyst_rec  = _m.get("analyst_rec")    # 1=Strong Buy … 5=Sell
+            industry     = _m.get("industry", "")
+            sector_detail= _m.get("sector_detail", "")
 
             float_str = f"{float_shares/1e6:.0f}M" if float_shares else "–"
-            short_str = f"{short_pct*100:.1f}%" if short_pct else "–"
+            short_str = f"{short_pct*100:.1f}%"    if short_pct    else "–"
             # Short squeeze flag: high short interest + bullish signals
             squeeze_flag = (short_pct or 0) > 0.15
 
-            # ── Signal combination quality multiplier ─────────────────────────
+            # ── Cash floor string (Pro Swing fundamental context) ─────────────
+            cash_floor_str = f"{cash_ratio:.0%}" if cash_ratio is not None else "–"
+            # Flag: cash > 40% of market cap = meaningful downside buffer
+            cash_floor_flag = (cash_ratio or 0) >= 0.40
+
+            # ── Analyst consensus label ───────────────────────────────────────
+            if analyst_rec is not None:
+                if   analyst_rec <= 1.5: analyst_label = "💚 Strong Buy"
+                elif analyst_rec <= 2.2: analyst_label = "🟢 Buy"
+                elif analyst_rec <= 3.0: analyst_label = "🟡 Hold"
+                elif analyst_rec <= 3.8: analyst_label = "🟠 Underperform"
+                else:                    analyst_label = "🔴 Sell"
+            else:
+                analyst_label = "–"
+
+            # ── Biotech / high-risk sector flag ──────────────────────────────
+            _high_risk_industries = {
+                "Biotechnology", "Drug Manufacturers—Specialty & Generic",
+                "Drug Manufacturers—General", "Pharmaceutical Retailers",
+                "Medical Devices", "Diagnostics & Research",
+                "Health Information Services",
+            }
+            # PSM caution sectors — signals work but moves are small or event-driven
+            _caution_industries = {
+                "Gambling", "Casinos & Gaming",
+                "Entertainment", "Entertainment—Diversified",
+                "Publishing", "Broadcasting",
+                "Leisure", "Amusement Parks", "Hotels & Motels",
+                "Restaurants", "Apparel Retail",
+            }
+            # Low-momentum sectors — directionally ok but rarely hit 5% in 7 days
+            _low_momentum_industries = {
+                "Utilities—Regulated Electric", "Utilities—Regulated Gas",
+                "Utilities—Regulated Water", "Utilities—Diversified",
+                "REIT—Retail", "REIT—Residential", "REIT—Office",
+                "REIT—Industrial", "REIT—Diversified",
+                "Insurance—Life", "Insurance—Property & Casualty",
+                "Banks—Regional", "Banks—Diversified",
+                "Grocery Stores", "Discount Stores",
+            }
+            is_biotech   = (industry in _high_risk_industries or
+                            "biotech" in industry.lower() or
+                            "pharma"  in industry.lower())
+            is_caution   = industry in _caution_industries
+            is_slow      = industry in _low_momentum_industries
+
+            # ETF detection via yfinance quoteType (already in info dict)
+            is_etf = str(_m.get("quote_type", "")).upper() == "ETF"
+
+            # PSM score gate — how many signals required for this sector
+            if is_biotech:
+                psm_min_score = 9     # very high bar: must have exceptional tech setup
+                pos_size_note = "⚠️ Half — Biotech"
+            elif is_etf:
+                psm_min_score = 9     # ETFs rarely produce 5%+ moves in 7 days
+                pos_size_note = "⚠️ Skip — ETF (low individual alpha)"
+            elif is_caution:
+                psm_min_score = 8     # event-driven sector, needs stronger confirmation
+                pos_size_note = "⚠️ Caution — Event Sector"
+            elif is_slow:
+                psm_min_score = 8     # defensive/slow sectors
+                pos_size_note = "⚠️ Caution — Low Momentum Sector"
+            else:
+                psm_min_score = 7     # standard PSM bar
+                pos_size_note = "Normal"
+
+            # ── v15: Pre-Earnings Run ─────────────────────────────────────────
+            cal_days = _m.get("cal_days")
+            pre_earnings_run = bool(
+                cal_days is not None and
+                3 <= int(cal_days) <= 7 and
+                raw.get("weekly_trend", False) and
+                raw.get("above_ma60",   False) and
+                float(raw.get("rsi0", 50)) < 72
+            )
+            # Inject v15 signals into long_sig for Bayesian scoring
+            long_sig["pre_earnings_run"] = pre_earnings_run
             # Specific combos proven to be more accurate than raw score alone
             combo_bonus = 0.0
             # Combo A: compression → explosion (BB squeeze + vol breakout + stoch)
@@ -859,12 +956,34 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 (long_sig.get("macd_accel", False) or long_sig.get("momentum_3d", False) or long_sig.get("rs_momentum", False))
             )
 
+            # v14.1: Stabilization — post-gap-down base forming
+            stabilization_setup = (
+                raw.get("pss_breakdown", {}).get("PEAD-Stab", False) or
+                raw.get("pss_breakdown", {}).get("Absorption", False)
+            ) and not pullback_setup and not breakout_setup
+
+            # v15: new pattern-based setup types
+            nr7_active   = raw.get("nr7_setup",        False)
+            id_active    = raw.get("inside_day",       False)
+            fbd_active   = raw.get("failed_breakdown", False)
+            flag_active  = raw.get("tight_flag",       False)
+            cup_active   = raw.get("cup_handle",       False)
+            per_active   = pre_earnings_run
+
             setup_type_long = (
-                "Pullback" if pullback_setup else
-                "Breakout" if breakout_setup else
-                "Continuation" if continuation_setup else
+                "Pullback"              if pullback_setup else
+                "Breakout"              if breakout_setup else
+                "Cup & Handle"          if cup_active else
+                "Failed Breakdown"      if fbd_active else
+                "Tight Flag"            if flag_active else
+                "NR7 Coil"              if nr7_active else
+                "Inside Day"            if id_active else
+                "Pre-Earnings Run"      if per_active else
+                "Stabilization"         if stabilization_setup else
+                "Continuation"          if continuation_setup else
                 "Operator Accumulation" if operator_score >= 4 else
-                "Early Trend" if core_long_trend else
+                "Pro Swing"             if long_sig.get("pro_swing_setup", False) else
+                "Early Trend"           if core_long_trend else
                 "Mixed"
             )
 
@@ -1251,19 +1370,51 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                         l_action = None
 
             if l_action:
-                # ── Strategy stop: MA60 or swing low (whichever is higher = tighter) ──
-                l_atr_stop   = round(p - 1.5 * atrv, 2)
-                l_swing_stop = round(raw["last_swing_low"] * 0.995, 2)
-                l_ma60_stop  = round(raw["ma60"] * 0.995, 2)   # MA60 hard stop
-                l_stop       = max(l_atr_stop, l_swing_stop, l_ma60_stop)
-                l_risk       = max(p - l_stop, p * 0.001)       # prevent zero division
+                # ── v15.2: ATR% flag surfaced in scan row ─────────────────────
+                atr_pct_val = raw.get("atr_pct", 0.0)
+                has_vol     = raw.get("has_enough_volatility", True)
+                high_vol    = raw.get("high_volatility", False)
 
-                # ── Strategy profit targets: 10% (short-term), 15%, 20% (swing) ────
-                l_pt_short   = round(p * 1.10, 2)   # +10%  short-term take-profit (batch 1)
-                l_pt_swing1  = round(p * 1.15, 2)   # +15%  swing take-profit (batch 2)
-                l_pt_swing2  = round(p * 1.20, 2)   # +20%  swing full target (batch 3)
-                l_trail      = round(p + l_risk * 0.5, 2)
-                l_time_stop  = "Day 4 if < +5%"
+                # ── Fix 3: Tighter stop = ATR×1.5 max (was effectively wider) ──
+                # Research: stops wider than 1.5×ATR on swing trades reduce EV.
+                # ARCT had avg loss of -4.19% — tighter stop limits the damage.
+                l_atr_stop   = round(p - 1.5 * atrv, 2)          # hard: 1.5×ATR
+                l_swing_stop = round(raw["last_swing_low"] * 0.995, 2)
+                l_ma60_stop  = round(raw["ma60"] * 0.995, 2)
+                l_stop       = max(l_atr_stop, l_swing_stop, l_ma60_stop)
+                # Absolute floor: never risk more than 6% on any single trade
+                l_stop       = max(l_stop, round(p * 0.94, 2))
+                l_risk       = max(p - l_stop, p * 0.001)
+
+                # ── Fix 2: ATR-scaled targets (BOTZ issue — targets too far) ──
+                # High-vol stocks (ATR% ≥ 4%): keep 10/15/20% targets
+                # Med-vol stocks (2.5-4%): use 7/12/17% targets
+                # Low-vol (<2.5%): flag — unlikely to hit 5% in 7 days
+                if high_vol:          # ATR% >= 4% — IREN/BB type
+                    tp1_mult, tp2_mult, tp3_mult = 1.10, 1.15, 1.20
+                    l_time_stop = "Day 5 if < +4%"
+                elif has_vol:         # ATR% 2.5-4% — GRND/DKNG type
+                    tp1_mult, tp2_mult, tp3_mult = 1.07, 1.12, 1.17
+                    l_time_stop = "Day 4 if < +3%"
+                else:                 # ATR% < 2.5% — BOTZ/ARKG type
+                    tp1_mult, tp2_mult, tp3_mult = 1.05, 1.08, 1.12
+                    l_time_stop = "⚠️ Low vol — skip or Day 3 if < +2%"
+
+                l_pt_short  = round(p * tp1_mult, 2)
+                l_pt_swing1 = round(p * tp2_mult, 2)
+                l_pt_swing2 = round(p * tp3_mult, 2)
+
+                # ── Fix 4: Trailing stop — lock in profits after +4% ──────────
+                # Problem: LYFT +4.91x RR but avg 2.35% means exits too late/early.
+                # Solution: once trade hits +4%, trail at breakeven+1% (protect capital).
+                # Once hits +7%, trail at +4% (lock in meaningful gain).
+                # Show the Trail Stop as price level where we'd start trailing.
+                trail_trigger_pct = 0.04    # start trailing after +4%
+                l_trail = round(p * (1 + trail_trigger_pct - 0.01), 2)  # trail = entry+3%
+
+                # ── ATR% label for display ────────────────────────────────────
+                atr_pct_str = f"{atr_pct_val:.1f}%"
+                atr_vol_tag = "🔥 High" if high_vol else ("✅ OK" if has_vol else "⚠️ Low")
 
                 # ── Strategy filter tags ──────────────────────────────────────────
                 strat_tags = []
@@ -1319,7 +1470,14 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 if combo_bonus > 0:             l_tags.append(f"COMBO+{combo_bonus:.0%}")
                 if high_accuracy_long:          l_tags.append("🎯HIGH-ACCURACY")
                 elif l_prob >= 0.82:            l_tags.append("⚠️PROB-NO-GATE")
-                l_tags.extend(strat_tags)       # append strategy tags
+                l_tags.extend(strat_tags)
+                # ── v15: High win-rate pattern tags ───────────────────────────
+                if raw.get("nr7_setup"):        l_tags.append("📐NR7")
+                if raw.get("inside_day"):       l_tags.append("🔲INSIDE DAY")
+                if raw.get("failed_breakdown"): l_tags.append("🪤FAILED BRKDN")
+                if raw.get("tight_flag"):       l_tags.append("🚩TIGHT FLAG")
+                if raw.get("cup_handle"):       l_tags.append("🏆CUP+HANDLE")
+                if pre_earnings_run:            l_tags.append(f"📅PRE-EARN({cal_days}d)")
 
                 # ── v12: Options tags + smart targets + entry-tier downgrades ─
                 opt_tags = []
@@ -1397,6 +1555,18 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "Vol Ratio":      round(vr, 2),
                     "Last Bar":       last_bar_ts,
                     "BB Squeeze":     "YES" if long_sig["bb_bull_squeeze"] else "–",
+                    # ── v14: Pro Swing Setup columns ──────────────────────────
+                    "PSS Score":      f"{raw.get('pss_score', 0)}/8",
+                    "PSS Label":      raw.get("pss_label", "–"),
+                    "PSS Triggers":   " · ".join(raw.get("pss_active", [])) or "–",
+                    # ── v14.1: Fundamental context ────────────────────────────
+                    "Cash/MCap":      cash_floor_str,
+                    "Analyst":        analyst_label,
+                    "Pos Size":       pos_size_note,
+                    "PSM Gate":       str(psm_min_score),
+                    # ── v15.2: ATR% volatility quality ────────────────────────
+                    "ATR%":           atr_pct_str,
+                    "Vol Quality":    atr_vol_tag,
                 })
 
             # ── SHORT ─────────────────────────────────────────────────────────

@@ -112,16 +112,36 @@ def render_accuracy_lab(ctx: dict) -> None:
                     short_wins += int(fwd_ret < 0)
                     short_rets.append(-fwd_ret)
 
+            long_win_pct  = (long_wins  / long_trades  * 100) if long_trades  else 0.0
+            short_win_pct = (short_wins / short_trades * 100) if short_trades else 0.0
+            long_avg      = np.mean(long_rets)  if long_rets  else 0.0
+            short_avg     = np.mean(short_rets) if short_rets else 0.0
+
+            # ── Profitability Index (PI) = Win% × Avg% ────────────────────
+            # Combines win rate + gain magnitude into one number.
+            # PI ≥ 3.0 = 🔥 High Return (IREN/BB type)
+            # PI ≥ 1.5 = ✅ Trade
+            # PI ≥ 0.5 = 👀 Watch
+            # PI < 0.5 = ❌ Skip
+            long_pi = (long_win_pct / 100) * long_avg if long_rets else 0.0
+
+            def _pi_grade(pi_val):
+                if pi_val >= 3.0: return f"🔥 {pi_val:.2f}"
+                if pi_val >= 1.5: return f"✅ {pi_val:.2f}"
+                if pi_val >= 0.5: return f"👀 {pi_val:.2f}"
+                return f"❌ {pi_val:.2f}"
+
             return {
-                "Ticker": ticker,
-                "Samples": int(long_trades + short_trades),
-                "Long Trades": int(long_trades),
-                "Long Win %": f"{(long_wins / long_trades * 100):.1f}%" if long_trades else "–",
-                "Long Avg %": f"{np.mean(long_rets):.2f}%" if long_rets else "–",
-                "Short Trades": int(short_trades),
-                "Short Win %": f"{(short_wins / short_trades * 100):.1f}%" if short_trades else "–",
-                "Short Avg %": f"{np.mean(short_rets):.2f}%" if short_rets else "–",
-                "Note": "OK" if (long_trades + short_trades) else "No signal samples"
+                "Ticker":        ticker,
+                "Samples":       int(long_trades + short_trades),
+                "Long Trades":   int(long_trades),
+                "Long Win %":    f"{long_win_pct:.1f}%"  if long_trades  else "–",
+                "Long Avg %":    f"{long_avg:.2f}%"      if long_rets    else "–",
+                "Long PI":       _pi_grade(long_pi)      if long_rets    else "–",
+                "Short Trades":  int(short_trades),
+                "Short Win %":   f"{short_win_pct:.1f}%" if short_trades else "–",
+                "Short Avg %":   f"{short_avg:.2f}%"     if short_rets   else "–",
+                "Note":          "OK" if (long_trades + short_trades) else "No signal samples"
             }
         except Exception as e:
             return {"Ticker": ticker, "Samples": 0, "Long Win %": "–", "Short Win %": "–", "Note": str(e)[:80]}
@@ -139,26 +159,62 @@ def render_accuracy_lab(ctx: dict) -> None:
         prog.empty(); msg.empty()
 
         df_bt = pd.DataFrame(rows)
+
+        # ── PI filter: show only trade-worthy tickers ─────────────────────
+        pi_filter = st.selectbox(
+            "Filter by PI grade",
+            ["All results", "🔥 High Return only (PI ≥ 3.0)", "✅ Trade-worthy (PI ≥ 1.5)", "❌ Skip only (PI < 0.5)"],
+            key="bt_pi_filter",
+            help="Profitability Index = Win% × Avg%. IREN=7.40, BB=3.33. Only trade PI ≥ 1.5.",
+        )
+        if pi_filter != "All results" and "Long PI" in df_bt.columns:
+            def _pi_num(s):
+                import re
+                m = re.search(r'([-\d.]+)$', str(s))
+                return float(m.group(1)) if m else 0.0
+            pi_nums = df_bt["Long PI"].apply(_pi_num)
+            if "≥ 3.0" in pi_filter:
+                df_bt = df_bt[pi_nums >= 3.0]
+            elif "≥ 1.5" in pi_filter:
+                df_bt = df_bt[pi_nums >= 1.5]
+            elif "< 0.5" in pi_filter:
+                df_bt = df_bt[pi_nums < 0.5]
+
         st.dataframe(
             df_bt,
             width="stretch",
             hide_index=True,
             column_config={
-                "Ticker": st.column_config.TextColumn("Ticker", width=80),
-                "Samples": st.column_config.NumberColumn("Samples", width=70),
-                "Long Trades": st.column_config.NumberColumn("Long", width=60),
-                "Long Win %": st.column_config.TextColumn("Long Win", width=80),
-                "Long Avg %": st.column_config.TextColumn("Long Avg", width=80),
-                "Short Trades": st.column_config.NumberColumn("Short", width=60),
-                "Short Win %": st.column_config.TextColumn("Short Win", width=80),
-                "Short Avg %": st.column_config.TextColumn("Short Avg", width=80),
-                "Note": st.column_config.TextColumn("Note", width=180),
+                "Ticker":       st.column_config.TextColumn("Ticker",     width=80),
+                "Samples":      st.column_config.NumberColumn("Samples",  width=70),
+                "Long Trades":  st.column_config.NumberColumn("Long",     width=60),
+                "Long Win %":   st.column_config.TextColumn("Win %",      width=70),
+                "Long Avg %":   st.column_config.TextColumn("Avg %",      width=70),
+                "Long PI":      st.column_config.TextColumn("PI Score",   width=110,
+                    help="Profitability Index = Win% × Avg%. 🔥≥3.0 IREN/BB type | ✅≥1.5 trade | 👀≥0.5 watch | ❌ skip"),
+                "Short Trades": st.column_config.NumberColumn("Short",    width=60),
+                "Short Win %":  st.column_config.TextColumn("Short Win",  width=80),
+                "Short Avg %":  st.column_config.TextColumn("Short Avg",  width=80),
+                "Note":         st.column_config.TextColumn("Note",       width=180),
             }
         )
-        st.caption(
-            "Read this with sample count. A 90% win rate on 5 samples is weaker evidence than "
-            "65–70% on 50+ samples. Past performance is not a guarantee."
-        )
+
+        # ── PI summary ────────────────────────────────────────────────────
+        if "Long PI" in df_bt.columns and not df_bt.empty:
+            import re
+            def _pi_n(s):
+                m = re.search(r'([-\d.]+)$', str(s))
+                return float(m.group(1)) if m else 0.0
+            all_pi = df_bt["Long PI"].apply(_pi_n)
+            fire  = (all_pi >= 3.0).sum()
+            check = ((all_pi >= 1.5) & (all_pi < 3.0)).sum()
+            skip  = (all_pi < 0.5).sum()
+            st.caption(
+                f"PI summary: 🔥 {fire} high-return ({'>='if fire else ''}3.0)  "
+                f"✅ {check} tradeable (1.5–3.0)  "
+                f"❌ {skip} skip (<0.5)  — "
+                "Only trade stocks with 🔥 or ✅. Run fresh scan first, then backtest PSM picks."
+            )
 
 
     st.info(

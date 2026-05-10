@@ -14,6 +14,9 @@ def render_help(ctx: dict) -> None:
     with st.expander("🆕 What changed recently", expanded=True):
         st.markdown("""
 ### Latest build
+- **Cache freshness check added** — when scanner TTL is due, the app first checks Yahoo's latest available bar before rebuilding the expensive full scan.
+- **No-new-bar optimization** — if Yahoo's latest bar is the same as the cached latest bar, the app keeps the existing cache and writes a Diagnostics note instead of re-downloading all stocks.
+- **Latest bar display cleanup** — fixed duplicate label like `Latest bar: Latest bar: ...`; times are shown cleanly in SGT where the latest-bar formatter is used.
 - **🇭🇰 Hong Kong market added** as a full market radio option.
 - **HK expanded universe**: 137 curated liquid/high-beta `.HK` stocks, including your original 30 core names.
 - **🚀 Movers/Losers tab added** — Top Gainers, Top Losers, and Volume Leaders for US/SGX/India/HK.
@@ -276,16 +279,39 @@ Look for:
 "strategy_mode": "MASTER"
 ```
 
-### Freshness rule
-- During market hours: shorter refresh interval for minimum delay.
+### Freshness rule and no-new-bar check
+- During market hours: shorter refresh interval is used for minimum delay.
 - Outside market hours: longer cache is used.
-- Changing Strategy should show a grid refresh message and should not force a Yahoo download unless cache expired or you manually refresh.
+- When cache TTL is due, the app first performs a lightweight latest-bar check using a small Yahoo sample.
+- If Yahoo's **available latest bar** is newer than the cached latest bar, the full master scan is refreshed.
+- If Yahoo's available latest bar is the same as the cached latest bar, the app **keeps the existing scanner cache** and records this in Diagnostics instead of doing the costly full Yahoo download.
+- Changing Strategy should re-filter the master cache. It only triggers a full refresh when the cache is due **and** Yahoo has a newer bar, or when you manually click Scan/Refresh.
+
+Typical message:
+```
+No newer Yahoo bar available — existing scanner cache was kept.
+Last checked: 2026-05-08 16:05:00 SGT
+Cached latest bar: 2026-05-08 16:00:00 SGT
+Available latest bar: 2026-05-08 16:00:00 SGT
+```
         """)
 
     # ── Diagnostics ───────────────────────────────────────────────────────────
     with st.expander("🔍 Diagnostics — debugging no-data issues"):
         st.markdown("""
 Open **🔍 Diagnostics** when scan completes but shows no stocks.
+
+### Cache freshness diagnostics
+When cache TTL is due, Diagnostics can show whether a full Yahoo refresh was actually needed:
+
+| Field | Meaning |
+|---|---|
+| **Last checked** | When the lightweight Yahoo latest-bar check ran |
+| **Cached latest bar** | Latest bar currently stored in scanner cache |
+| **Available latest bar** | Latest bar Yahoo currently has from the sample check |
+| **Decision** | Full refresh performed, or no newer Yahoo bar available so existing cache was kept |
+
+This avoids rebuilding the expensive master scan when Yahoo has not published a newer bar yet.
 
 ### Scan debug summary
 Shows exactly why stocks were dropped:
@@ -376,7 +402,10 @@ Caused by too many parallel Yahoo requests invalidating the auth token. Fixed by
         st.markdown("""
 | Column | Meaning |
 |---|---|
+| **Rank** | Display-only rank inside the shown grid; lower number = stronger candidate in that section |
 | **Action** | Strategy-specific label (STRONG BUY / BUY – MA60 SUPPORT / BUY – PM MOMENTUM etc.) |
+| **View** | Plain-English decision: Best swing buy / Buy on confirmation / Watchlist / Wait / Avoid |
+| **Buy Condition** | Practical entry rule such as buy only if support holds, breakout confirms, plus stop/target when available |
 | **Setup Type** | Pullback / Breakout / Support zone / PM% / Volume tier |
 | **Entry Quality** | ✅ BUY · 👀 WATCH · ⏳ WAIT · 🚫 AVOID |
 | **Rise Prob / Fall Prob** | Bucket-capped Bayesian probability |
@@ -395,7 +424,7 @@ Caused by too many parallel Yahoo requests invalidating the auth token. Fixed by
 | **Float / Short %** | Float size and short interest (US only) |
 | **Signals** | Raw signal tags — HC[T+M+V+S+X](5/5) for High Conviction |
 | **Opt Flow** | Options-derived signals: CALL FLOW / CALL SKEW / P/C↓ etc. |
-| **Last Bar** | Timestamp of the latest OHLCV bar used |
+| **Last Bar** | Timestamp of the latest OHLCV bar used; latest-bar display is cleaned to avoid duplicate `Latest bar:` text |
         """)
 
     # ── Risk ──────────────────────────────────────────────────────────────────

@@ -414,21 +414,403 @@ def fetch_hk_market_universe(max_symbols: int = 160) -> list:
     except Exception:
         return []
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v14 UNIVERSE UPGRADES
+# Six new stock-sourcing methods that surface higher-quality swing candidates:
+#
+#   1. fetch_52w_high_breakouts   — stocks making new 52w highs on heavy volume
+#   2. fetch_earnings_universe    — upcoming earnings + recent-beat candidates
+#   3. fetch_finviz_screen        — pre-filtered by technical criteria (optional dep)
+#   4. get_top_sector_etfs        — sector rotation: scan only top-N sectors
+#   5. fetch_unusual_options_univ — stocks with unusual call volume (US only)
+#   6. fetch_premarket_gappers    — pre-market gap ≥3% (run before 09:30 ET)
+#
+# All functions are @st.cache_data with appropriate TTLs and fail silently
+# so the scanner degrades gracefully if any source is unavailable.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=60 * 60, show_spinner=False)
+def fetch_52w_high_breakouts(universe: list, min_vol_ratio: float = 1.5) -> list:
+    """
+    Find tickers making new 52-week highs today on above-average volume.
+
+    Why this matters: stocks at new 52w highs on volume are entering price
+    discovery — there is no overhead resistance and institutions are chasing.
+    These often run an additional 10–30% in following weeks.
+
+    Returns list of tickers (subset of universe).
+    """
+    breakouts = []
+    if not universe:
+        return breakouts
+    try:
+        batch = yf.download(
+            universe, period="1y", interval="1d",
+            progress=False, group_by="ticker",
+            threads=True, auto_adjust=True,
+        )
+        for sym in universe:
+            try:
+                c = _extract_closes(batch, sym, len(universe))
+                if len(c) < 50:
+                    continue
+                # High series
+                if isinstance(batch.columns, pd.MultiIndex):
+                    h_s = batch.xs(sym, axis=1, level=1)["High"].ffill().dropna() \
+                          if sym in batch.columns.get_level_values(1) else None
+                    v_s = batch.xs(sym, axis=1, level=1)["Volume"].ffill().dropna() \
+                          if sym in batch.columns.get_level_values(1) else None
+                else:
+                    h_s = batch["High"].squeeze().ffill().dropna()
+                    v_s = batch["Volume"].squeeze().ffill().dropna()
+                if h_s is None or v_s is None or len(h_s) < 50:
+                    continue
+                today_close = float(c.iloc[-1])
+                year_high   = float(h_s.iloc[:-1].max())      # prior 252d high
+                vol_20_avg  = float(v_s.tail(21).iloc[:-1].mean()) or 1.0
+                vol_today   = float(v_s.iloc[-1])
+                vol_ratio   = vol_today / vol_20_avg
+                # Breakout: today's close at or above prior 52w high on heavy vol
+                if today_close >= year_high * 0.995 and vol_ratio >= min_vol_ratio:
+                    breakouts.append(sym)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return breakouts
+
+
+@st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
+def fetch_earnings_universe(universe: list, window_ahead: int = 7) -> dict:
+    """
+    Identify stocks with upcoming earnings (PEAD pre-loading) and recent beats.
+
+    Returns:
+        {
+          "upcoming": [tickers reporting earnings in next window_ahead days],
+          "recent_beat": [tickers that beat/gapped up 0–3 days ago],
+        }
+
+    Both lists can be merged into the scan universe so PEAD signals fire.
+    Caps at 300 tickers to stay within free-tier rate limits.
+    """
+    from datetime import datetime, timedelta
+    upcoming, recent_beat = [], []
+    today = datetime.now().date()
+
+    for sym in list(universe)[:300]:
+        try:
+            tkr = yf.Ticker(sym)
+            cal = tkr.calendar
+            if cal is None or (hasattr(cal, "empty") and cal.empty):
+                continue
+            # Support both DataFrame (old yfinance) and dict (new yfinance) formats
+            if isinstance(cal, dict):
+                earn_raw = cal.get("Earnings Date", [])
+                earn_dates = [pd.Timestamp(d).date() for d in (earn_raw if isinstance(earn_raw, list) else [earn_raw]) if d]
+            else:
+                earn_dates = []
+                for col in ["Earnings Date", "earnings_date"]:
+                    if col in cal.columns:
+                        earn_dates = [pd.Timestamp(d).date() for d in cal[col].dropna()]
+                        break
+            for ed in earn_dates:
+                delta = (ed - today).days
+                if 0 <= delta <= window_ahead:
+                    upcoming.append(sym)
+                elif -3 <= delta < 0:
+                    # Check if it gapped ≥4% (beat signature)
+                    hist = tkr.history(period="5d", auto_adjust=True)
+                    if not hist.empty and len(hist) >= 2:
+                        gap = (float(hist["Close"].iloc[-1]) - float(hist["Close"].iloc[0])) \
+                              / max(float(hist["Close"].iloc[0]), 0.01)
+                        if gap >= 0.04:
+                            recent_beat.append(sym)
+        except Exception:
+            continue
+
+    return {
+        "upcoming":    list(dict.fromkeys(upcoming)),
+        "recent_beat": list(dict.fromkeys(recent_beat)),
+    }
+
+
+@st.cache_data(ttl=4 * 60 * 60, show_spinner=False)
+def get_top_sector_etfs(n: int = 3) -> list:
+    """
+    Rank the 11 US sector ETFs by 1-month price return and return the top N.
+
+    Use this to bias the scan toward only the strongest sectors — trading
+    sector leaders vs laggards is one of the highest-edge filters in
+    professional swing trading.
+
+    Returns list of ETF tickers (e.g. ["XLK", "XLY", "XLC"]).
+    """
+    SECTOR_ETF_UNIVERSE = [
+        "XLK", "XLV", "XLF", "XLE", "XLI",
+        "XLB", "XLP", "XLU", "XLY", "XLRE", "XLC",
+    ]
+    try:
+        data = yf.download(
+            SECTOR_ETF_UNIVERSE, period="2mo", interval="1d",
+            progress=False, auto_adjust=True,
+        )
+        closes = data["Close"] if "Close" in data.columns else data
+        returns = {}
+        for etf in SECTOR_ETF_UNIVERSE:
+            col = etf if etf in closes.columns else None
+            if col is None:
+                continue
+            s = closes[col].dropna()
+            if len(s) >= 21:
+                ret_1m = (float(s.iloc[-1]) - float(s.iloc[-21])) / max(float(s.iloc[-21]), 0.01)
+                returns[etf] = ret_1m
+        ranked = sorted(returns.items(), key=lambda x: -x[1])
+        return [etf for etf, _ in ranked[:n]]
+    except Exception:
+        return SECTOR_ETF_UNIVERSE[:n]
+
+
+@st.cache_data(ttl=2 * 60 * 60, show_spinner=False)
+def fetch_finviz_screen(preset: str = "swing_breakout") -> list:
+    """
+    Use finvizfinance to return technically pre-screened US tickers.
+
+    No API key required. Requires: pip install finvizfinance
+
+    Presets:
+      "swing_breakout" — above SMA20/50, near 52w high, volume spike
+      "swing_pullback" — above SMA50, pulled back to SMA20, RSI 35–55
+      "swing_squeeze"  — high short interest + positive momentum
+
+    Falls back to [] silently if finvizfinance is not installed.
+    """
+    PRESETS = {
+        "swing_breakout": {
+            "Price":                          "Over $5",
+            "Average Volume":                 "Over 500K",
+            "20-Day Simple Moving Average":   "Price above SMA20",
+            "50-Day Simple Moving Average":   "Price above SMA50",
+            "Change":                         "Up",
+            "Volume":                         "Over 1M",
+            "RSI (14)":                       "Not Overbought (>70)",
+            "New High":                       "New 52-Week High",
+        },
+        "swing_pullback": {
+            "Price":                          "Over $5",
+            "Average Volume":                 "Over 300K",
+            "50-Day Simple Moving Average":   "Price above SMA50",
+            "20-Day Simple Moving Average":   "Price near SMA20 (±2%)",
+            "RSI (14)":                       "Oversold (30-40)",
+        },
+        "swing_squeeze": {
+            "Price":                          "Over $5",
+            "Average Volume":                 "Over 500K",
+            "Short Float":                    "Over 15%",
+            "Change":                         "Up",
+            "Volume":                         "Over 1M",
+        },
+    }
+    try:
+        from finvizfinance.screener.overview import Overview
+        screen = Overview()
+        filters = PRESETS.get(preset, PRESETS["swing_breakout"])
+        screen.set_filter(filters_dict=filters)
+        df = screen.screener_view()
+        if df is None or df.empty:
+            return []
+        col = next((c for c in ["Ticker", "ticker", "Symbol"] if c in df.columns), None)
+        return [_clean_symbol(str(t)) for t in df[col].dropna().tolist()] if col else []
+    except ImportError:
+        return []     # finvizfinance not installed — silent skip
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=30 * 60, show_spinner=False)
+def fetch_unusual_options_universe(
+    universe: list,
+    min_oi_ratio: float = 3.0,
+    max_scan: int = 150,
+) -> list:
+    """
+    Return US tickers with unusual near-money CALL volume (volume/OI ≥ min_oi_ratio).
+
+    Options unusual activity is a leading indicator — it often precedes price
+    moves by 1–3 days as informed traders position ahead of catalysts.
+    Only meaningful for US-listed equities with liquid option chains.
+
+    Caps at max_scan tickers to avoid rate-limit issues on free Yahoo data.
+    """
+    unusual = []
+    for sym in list(universe)[:max_scan]:
+        if "." in sym:          # skip SGX / NSE / HK — no liquid US options chain
+            continue
+        try:
+            tkr = yf.Ticker(sym)
+            exp_dates = tkr.options
+            if not exp_dates:
+                continue
+            chain  = tkr.option_chain(exp_dates[0])
+            calls  = chain.calls
+            if calls.empty:
+                continue
+            price  = float(tkr.info.get("regularMarketPrice") or
+                           tkr.info.get("currentPrice") or 0)
+            if price <= 0:
+                continue
+            # ATM calls: strikes within ±10% of current price
+            atm = calls[
+                (calls["strike"] >= price * 0.90) &
+                (calls["strike"] <= price * 1.10)
+            ]
+            if atm.empty:
+                continue
+            total_vol = float(atm["volume"].fillna(0).sum())
+            total_oi  = float(atm["openInterest"].fillna(0).sum())
+            if total_oi > 0 and total_vol / total_oi >= min_oi_ratio and total_vol >= 100:
+                unusual.append(sym)
+        except Exception:
+            continue
+    return unusual
+
+
+@st.cache_data(ttl=15 * 60, show_spinner=False)
+def fetch_premarket_gappers(
+    universe: list,
+    min_gap_pct: float = 3.0,
+    min_price: float = 5.0,
+    max_scan: int = 300,
+) -> list:
+    """
+    Identify stocks with significant pre-market gaps (≥ min_gap_pct).
+
+    Run this before 09:30 ET. Returns tickers sorted by |gap%| descending.
+    Pre-market gappers driven by news/earnings are your highest-probability
+    same-day catalyst plays and PEAD setups.
+
+    Uses yfinance Ticker.info which returns preMarketPrice when available.
+    Falls back gracefully when pre-market data is absent (weekend, post-close).
+    """
+    gappers = []
+    for sym in list(universe)[:max_scan]:
+        try:
+            info       = yf.Ticker(sym).info
+            pm_price   = info.get("preMarketPrice")
+            prev_close = info.get("previousClose") or info.get("regularMarketPreviousClose")
+            if pm_price and prev_close and float(prev_close) >= min_price:
+                gap_pct = (float(pm_price) - float(prev_close)) / float(prev_close) * 100.0
+                if abs(gap_pct) >= min_gap_pct:
+                    gappers.append(sym)
+        except Exception:
+            continue
+    # Sort by absolute gap size so callers get the biggest movers first
+    try:
+        gappers.sort(
+            key=lambda s: abs(
+                (yf.Ticker(s).info.get("preMarketPrice", 0) or 0) /
+                max(yf.Ticker(s).info.get("previousClose", 1) or 1, 0.01) - 1
+            ),
+            reverse=True,
+        )
+    except Exception:
+        pass
+    return gappers
+
 @st.cache_data(ttl=30 * 60, show_spinner=False)
 def fetch_live_market_universe(market_name: str, max_symbols: int = 350) -> tuple:
     """
     Build the LIVE/Yahoo side of the scan universe.
 
-    Important: this function returns only the live-market tickers, capped by
-    max_symbols. The scan step later merges these with the full existing
+    v14 upgrade (US market):
+      • 52-week high breakouts are prepended (highest priority)
+      • Finviz swing_breakout screen pre-filters for technical quality
+      • Top-3 sector ETF holdings are prioritised over random movers
+      • Earnings universe (upcoming + recent beats) is merged in
+      • Unusual options activity tickers are included
+      • Pre-market gappers (when available) are prepended
+
+    The final scan step later merges these live tickers with the full existing
     curated ticker list, so names like UUUU and APP are not lost simply because
     they are not in today's Yahoo movers/index response.
     """
     if market_name == "🇺🇸 US":
-        movers = fetch_yahoo_market_movers(100)
-        index_names = fetch_us_index_universe(max_symbols=max_symbols)
-        tickers = _unique_keep_order(movers + index_names)
-        source = "Yahoo expanded live screeners + current US index constituents"
+        movers       = fetch_yahoo_market_movers(100)
+        index_names  = fetch_us_index_universe(max_symbols=max_symbols)
+        base_pool    = _unique_keep_order(movers + index_names)
+
+        # ── v14 enhancements ──────────────────────────────────────────────────
+        # 1. 52-week high breakouts (prepend — highest quality momentum candidates)
+        try:
+            _52w = fetch_52w_high_breakouts(base_pool[:300], min_vol_ratio=1.5)
+        except Exception:
+            _52w = []
+
+        # 2. Finviz pre-screened breakout candidates (optional dep)
+        try:
+            _fviz = fetch_finviz_screen("swing_breakout")
+        except Exception:
+            _fviz = []
+
+        # 3. Top-3 sector ETF stocks (sector rotation filter)
+        try:
+            _top_sectors = get_top_sector_etfs(n=3)
+            _sector_stocks = []
+            for _etf in _top_sectors:
+                _t = yf.Ticker(_etf)
+                for _attr in ("portfolio_holdings", "equity_holdings", "top_holdings"):
+                    try:
+                        _df_h = getattr(_t.funds_data, _attr)
+                        if _df_h is None or _df_h.empty:
+                            continue
+                        _sym_col = next(
+                            (c for c in ["Symbol", "symbol", "Ticker", "ticker"] if c in _df_h.columns),
+                            None,
+                        )
+                        _raw = _df_h[_sym_col].dropna().astype(str).tolist() if _sym_col else [str(x) for x in _df_h.index.tolist()]
+                        _sector_stocks += [_clean_symbol(s) for s in _raw if _clean_symbol(s)]
+                        break
+                    except Exception:
+                        continue
+        except Exception:
+            _sector_stocks = []
+
+        # 4. Earnings universe (upcoming + recent beats)
+        try:
+            _earn = fetch_earnings_universe(base_pool[:300], window_ahead=7)
+            _earn_tickers = _earn.get("upcoming", []) + _earn.get("recent_beat", [])
+        except Exception:
+            _earn_tickers = []
+
+        # 5. Unusual options activity (US only)
+        try:
+            _opt_unusual = fetch_unusual_options_universe(base_pool[:200], min_oi_ratio=3.0)
+        except Exception:
+            _opt_unusual = []
+
+        # 6. Pre-market gappers (best-effort; data present only during pre-market hours)
+        try:
+            _pm_gappers = fetch_premarket_gappers(base_pool[:300], min_gap_pct=3.0)
+        except Exception:
+            _pm_gappers = []
+
+        # Combine: high-signal sources first (52w highs, pm gappers, finviz),
+        # then earnings, unusual options, sector leaders, broad pool.
+        tickers = _unique_keep_order(
+            _52w +
+            _pm_gappers +
+            _fviz +
+            _earn_tickers +
+            _opt_unusual +
+            _sector_stocks +
+            base_pool
+        )
+        source = (
+            "v14: 52w breakouts + PreMkt gappers + Finviz screen + "
+            "Earnings calendar + Unusual options + Top sectors + Yahoo expanded"
+        )
+
     elif market_name == "🇸🇬 SGX":
         tickers = fetch_sgx_market_universe(max_symbols=max_symbols)
         source = "SGX securities feed + STI/current curated SGX fallback"

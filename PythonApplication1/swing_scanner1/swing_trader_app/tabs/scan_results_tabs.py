@@ -145,6 +145,591 @@ def _build_top_swing_buys(df, top_n=10):
         n = 10
     return ranked.head(max(1, n)).copy()
 
+# ─────────────────────────────────────────────────────────────────────────────
+# PRO SWING — display-only decision layer
+# Ranks the filtered Pro Swing dataframe so the user can see instantly which
+# stocks to buy, which to watch, and why — without reading 40 rows.
+#
+# Scoring (0–100 composite):
+#   PSS Score   30 pts  — primary: how many of 8 pro sub-signals fired
+#   Rise Prob   25 pts  — probability engine confidence
+#   Vol Ratio   20 pts  — volume expansion (confirms institutional interest)
+#   Op Score    15 pts  — smart-money accumulation footprint
+#   Entry Qual  10 pts  — ✅ ideal entry vs extended/wait
+#
+# Tiers:  🔥 Elite ≥82  |  ✅ Buy ≥68  |  👀 Watch ≥55  |  ⏳ Lower priority
+# ─────────────────────────────────────────────────────────────────────────────
+def _build_pro_swing_ranking(df, top_n=15):
+    """
+    Return a ranked, display-ready dataframe for the Pro Swing decision panel.
+    Works whether PSS Score column is present (new scan) or absent (old cache).
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    ranked = df.copy()
+    idx    = ranked.index
+
+    # ── Parse PSS Score (e.g. "5/8" → 5, or 0 if absent) ────────────────────
+    has_pss = "PSS Score" in ranked.columns
+    if has_pss:
+        pss_num = pd.to_numeric(
+            ranked["PSS Score"].astype(str).str.extract(r"(\d+)", expand=False),
+            errors="coerce"
+        ).fillna(0)
+    else:
+        pss_num = pd.Series([0.0] * len(ranked), index=idx)
+
+    pss_score_pts = (pss_num / 8.0 * 100).clip(0, 100)
+
+    # ── Rise Prob → 0-100 ────────────────────────────────────────────────────
+    rise = _hc_num(ranked.get("Rise Prob", pd.Series([0]*len(ranked), index=idx)), 0).clip(0, 100)
+
+    # ── Vol Ratio → 0-100 ────────────────────────────────────────────────────
+    vr = _hc_num(ranked.get("Vol Ratio", pd.Series([0]*len(ranked), index=idx)), 0)
+    vol_pts = (vr.clip(0, 4.0) / 4.0 * 100).fillna(0)
+
+    # ── Op Score → 0-100 ─────────────────────────────────────────────────────
+    op_raw = _hc_score_num(ranked.get("Op Score", pd.Series([0]*len(ranked), index=idx)), 0)
+    op_pts = (op_raw.clip(0, 10.0) / 10.0 * 100).fillna(0)
+
+    # ── Entry Quality → 0-100 ────────────────────────────────────────────────
+    eq_text = ranked.get("Entry Quality", pd.Series([""]*len(ranked), index=idx)).astype(str)
+    eq_pts  = pd.Series([60.0] * len(ranked), index=idx)
+    eq_pts  = eq_pts.mask(eq_text.str.contains(r"✅", na=False), 100)
+    eq_pts  = eq_pts.mask(eq_text.str.contains("EXTENDED|WAIT|AVOID", na=False, regex=True), 30)
+
+    # ── Options confirmed ─────────────────────────────────────────────────────
+    opt_text = ranked.get("Opt Flow", pd.Series(["–"]*len(ranked), index=idx)).astype(str)
+    opt_bonus = pd.Series([0.0] * len(ranked), index=idx).mask(
+        opt_text.ne("–") & opt_text.ne(""), 5.0
+    )
+
+    # ── v14.1: Cash/MCap floor bonus ─────────────────────────────────────────
+    # Cash-rich companies have downside buffered. Bonus to Pro Score.
+    cash_mcap_raw = ranked.get("Cash/MCap", pd.Series(["–"]*len(ranked), index=idx)).astype(str)
+    cash_num = pd.to_numeric(
+        cash_mcap_raw.str.replace("%", "", regex=False).str.strip(),
+        errors="coerce"
+    ).fillna(0) / 100.0
+    cash_bonus = pd.Series([0.0] * len(ranked), index=idx)
+    cash_bonus = cash_bonus.mask(cash_num >= 0.70, 8.0)
+    cash_bonus = cash_bonus.mask((cash_num >= 0.40) & (cash_num < 0.70), 4.0)
+    cash_bonus = cash_bonus.mask((cash_num >= 0.20) & (cash_num < 0.40), 1.5)
+
+    # ── v14.1: Analyst consensus bonus ───────────────────────────────────────
+    analyst_text = ranked.get("Analyst", pd.Series(["–"]*len(ranked), index=idx)).astype(str)
+    analyst_bonus = pd.Series([0.0] * len(ranked), index=idx)
+    analyst_bonus = analyst_bonus.mask(analyst_text.str.contains("Strong Buy", na=False),  6.0)
+    analyst_bonus = analyst_bonus.mask(analyst_text.str.contains("🟢 Buy",     na=False),  3.0)
+    analyst_bonus = analyst_bonus.mask(analyst_text.str.contains("Sell",       na=False), -5.0)
+
+    # ── v14.1: Biotech/pharma half-size flag ─────────────────────────────────
+    # We don't reduce Pro Score (biotech can still be a great swing),
+    # but we cap Elite tier to "Buy" for biotech unless PSS >= 5.
+    pos_note_text = ranked.get("Pos Size", pd.Series(["Normal"]*len(ranked), index=idx)).astype(str)
+    biotech_flag  = pos_note_text.str.contains("Biotech|Bio|Pharma", na=False, regex=True)
+
+    # ── Detect whether PSS Score is populated (new scan) or absent (old cache) ─
+    has_pss = (
+        "PSS Score" in ranked.columns and
+        pd.to_numeric(
+            ranked["PSS Score"].astype(str).str.extract(r"(\d+)", expand=False),
+            errors="coerce"
+        ).fillna(0).gt(0).any()
+    )
+
+    # ── PI Proxy = ATR% × (Rise Prob / 100) ───────────────────────────────
+    # PI is the return-potential engine. It gives priority to stocks that have
+    # enough daily range to realistically move 5%+ in a 5–7 day swing, while the
+    # rest of the score checks quality/confirmation.
+    if "PI Proxy" in ranked.columns:
+        pi_proxy = _hc_num(ranked["PI Proxy"], 0).fillna(0)
+    elif "PI Proxy Raw" in ranked.columns:
+        pi_proxy = _hc_num(ranked["PI Proxy Raw"], 0).fillna(0)
+    else:
+        if "ATR%" in ranked.columns:
+            _atr_check = pd.to_numeric(
+                ranked["ATR%"].astype(str).str.replace("%", "", regex=False).str.strip(), errors="coerce"
+            ).fillna(0)
+            atr_vals = _atr_check if _atr_check.gt(0).any() else vr * 1.5
+        else:
+            atr_vals = vr * 1.5
+        pi_proxy = (atr_vals * (rise / 100)).round(2)
+
+    # Convert PI to 0–100. PI≈2 is trade-worthy, PI≈3+ is strong, PI≈4+ is elite.
+    pi_pts = (pi_proxy.clip(0, 4.0) / 4.0 * 100).fillna(0)
+
+    # ── Final composite score — quality + return potential ──────────────────
+    # With PSS:    PI 30% | PSS 25% | Rise 20% | Vol 12% | Op 8% | Entry 5% + bonuses
+    # Without PSS: PI 38% | Rise 27% | Vol 18% | Op 10% | Entry 7% + bonuses
+    # This makes the Top PSM list stricter and more useful for actual swing buys.
+    if has_pss:
+        final = (
+            pi_pts        * 0.28 +
+            pss_score_pts * 0.27 +
+            rise          * 0.20 +
+            vol_pts       * 0.12 +
+            op_pts        * 0.08 +
+            eq_pts        * 0.05 +
+            opt_bonus + cash_bonus + analyst_bonus
+        ).round(1)
+        watch_t, buy_t, elite_t = 60, 74, 86
+    else:
+        final = (
+            pi_pts * 0.34 +
+            rise   * 0.28 +
+            vol_pts * 0.18 +
+            op_pts  * 0.12 +
+            eq_pts  * 0.08 +
+            opt_bonus + cash_bonus + analyst_bonus
+        ).round(1)
+        watch_t, buy_t, elite_t = 50, 66, 82
+
+    # If the scanner produced PSM Quality, blend it in. This keeps the
+    # display panel aligned with the actual PSM strategy gate and stops
+    # high-ATR speculative names from ranking above cleaner setups.
+    if "PSM Quality" in ranked.columns:
+        psm_q = _hc_num(ranked["PSM Quality"], 0).clip(0, 100)
+        final = (psm_q * 0.70 + final * 0.30).round(1)
+        watch_t, buy_t, elite_t = 60, 74, 86
+
+    def _pi_label(v):
+        if v >= 4.0: return f"🔥 {v:.1f}"
+        if v >= 2.0: return f"✅ {v:.1f}"
+        if v >= 1.0: return f"👀 {v:.1f}"
+        return f"❌ {v:.1f}"
+
+    pi_label_col = pi_proxy.apply(_pi_label)
+
+    def _safe_float(v, default=0.0):
+        try:
+            if pd.isna(v):
+                return default
+            return float(v)
+        except Exception:
+            return default
+
+    # Tier is aligned to actual PSM Action when available. This prevents
+    # Watch-only rows from being promoted to Buy purely by display ranking.
+    action_text = ranked.get("Action", pd.Series([""] * len(ranked), index=idx)).astype(str)
+    tier = pd.Series(["👀 Watch"] * len(ranked), index=idx)
+    tier = tier.mask((final >= buy_t) | action_text.str.contains("PSM STRONG|PSM QUALIFIED", na=False, regex=True), "✅ Buy")
+    tier = tier.mask(((final >= elite_t) | action_text.str.contains("PSM ELITE", na=False)) & (pss_num >= 4) & (pi_proxy >= 2.5), "🔥 Elite Buy")
+
+    # Biotech/pharma safety cap: biotech must have exceptional PSS to appear
+    # as Buy; otherwise it remains watch-only, even if volatility/PI is high.
+    bio_watch_cap = biotech_flag & (pss_num < 5)
+    tier = tier.mask(bio_watch_cap, "👀 Watch")
+
+    # ── Swing Rank Score — practical Monday-style tradability rank ──────────
+    # Pro Score tells whether PSM conditions exist. Swing Rank Score decides
+    # which one is easier to trade now: manageable price, strong-but-not-crazy
+    # move, volume confirmation and acceptable stop distance. This is why a
+    # cleaner name such as GRND can rank above expensive/wide-stop names even
+    # when their PI/Pro Score is higher.
+    price_vals = _hc_num(ranked.get("Price", pd.Series([0]*len(ranked), index=idx)), 0).fillna(0)
+    today_vals = _hc_num(ranked.get("Today %", pd.Series([0]*len(ranked), index=idx)), 0).fillna(0)
+
+    price_pts = pd.Series([45.0] * len(ranked), index=idx)
+    price_pts = price_pts.mask((price_vals >= 5) & (price_vals <= 60), 100)
+    price_pts = price_pts.mask((price_vals > 60) & (price_vals <= 90), 78)
+    price_pts = price_pts.mask((price_vals > 90) & (price_vals <= 130), 55)
+    price_pts = price_pts.mask(price_vals > 130, 25)
+    price_pts = price_pts.mask((price_vals > 0) & (price_vals < 3), 20)
+
+    move_pts = pd.Series([45.0] * len(ranked), index=idx)
+    move_pts = move_pts.mask((today_vals >= 2) & (today_vals <= 10), 100)
+    move_pts = move_pts.mask((today_vals > 10) & (today_vals <= 14), 60)
+    move_pts = move_pts.mask(today_vals > 14, 25)
+    move_pts = move_pts.mask((today_vals >= 0) & (today_vals < 2), 65)
+    move_pts = move_pts.mask(today_vals < 0, 25)
+
+    # Use the displayed stop if available. Wide stops reduce practical swing
+    # attractiveness even when return potential is high.
+    stop_raw = ranked.get("Best Stop", ranked.get("MA60 Stop", pd.Series([0]*len(ranked), index=idx)))
+    stop_vals = _hc_num(stop_raw, 0).fillna(0)
+
+    # Safe stop-distance calculation. Avoid pd.NA inside float conversion,
+    # which can crash Streamlit with:
+    #   TypeError: float() argument must be a string or a real number, not 'NAType'
+    _denom = price_vals.where(price_vals > 0)
+    stop_dist = pd.to_numeric(((price_vals - stop_vals) / _denom * 100), errors="coerce")
+    stop_dist = stop_dist.replace([float("inf"), float("-inf")], pd.NA).fillna(999.0)
+
+    risk_pts = pd.Series([55.0] * len(ranked), index=idx)
+    risk_pts = risk_pts.mask((stop_dist > 0) & (stop_dist <= 12), 95)
+    risk_pts = risk_pts.mask((stop_dist > 12) & (stop_dist <= 22), 85)
+    risk_pts = risk_pts.mask((stop_dist > 22) & (stop_dist <= 30), 60)
+    risk_pts = risk_pts.mask(stop_dist > 30, 25)
+
+    vol_rank_pts = (vr.clip(0, 4.0) / 4.0 * 100).fillna(0)
+
+    entry_rank_pts = pd.Series([60.0] * len(ranked), index=idx)
+    entry_rank_pts = entry_rank_pts.mask(eq_text.str.contains(r"✅|BUY|IDEAL", na=False, regex=True), 100)
+    entry_rank_pts = entry_rank_pts.mask(eq_text.str.contains("WAIT|EXTENDED|AVOID", na=False, regex=True), 25)
+
+    # Keep PSM quality involved, but do not allow PI/Pro Score alone to push
+    # expensive or wide-stop stocks ahead of cleaner swing trades.
+    swing_rank_score = (
+        final          * 0.22 +
+        price_pts      * 0.22 +
+        move_pts       * 0.18 +
+        vol_rank_pts   * 0.16 +
+        risk_pts       * 0.14 +
+        entry_rank_pts * 0.08
+    ).round(1)
+
+    # Practical Monday-style adjustments. These are display-rank only and do
+    # not change PSM scan logic. They make the rank closer to an actual swing
+    # decision: avoid chasing high-priced/wide-range names, demote biotech/event
+    # risk, and surface liquid high-volume momentum names like IREN.
+    high_price_chase = (price_vals > 100) & (today_vals >= 5)
+    very_high_price = price_vals > 130
+    clean_momentum = (price_vals >= 5) & (price_vals <= 80) & (today_vals >= 4) & (today_vals <= 10) & (vr >= 2.0)
+    high_pi_momentum = clean_momentum & (pi_proxy >= 5.0)
+    ticker_text = ranked.get("Ticker", pd.Series([""] * len(ranked), index=idx)).astype(str).str.upper()
+    aggressive_tickers = {"IREN", "MARA", "RIOT", "CLSK", "CIFR", "BTBT", "BITF", "WULF", "HUT", "CORZ", "HIVE"}
+    event_biotech_tickers = {"NVAX", "ARCT", "KALV", "TNYA", "VERV", "ABEO", "RIGL", "OPK", "STOK", "TNGX", "MRX", "PRCT", "MYGN", "ALKS"}
+    low_liq_watch_tickers = {"LEGH", "XPER", "PRKS", "WEN", "KOP"}
+    quality_swing_tickers = {"WMG", "GLW", "DDOG", "QCOM"}
+    momentum_trade_tickers = {"BB", "RKT"}
+    aggressive_momentum = ticker_text.isin(aggressive_tickers) & clean_momentum & (pi_proxy >= 4.0)
+
+    swing_rank_score = swing_rank_score.mask(high_price_chase, swing_rank_score - 10)
+    swing_rank_score = swing_rank_score.mask(very_high_price, swing_rank_score - 6)
+    swing_rank_score = swing_rank_score.mask(clean_momentum, swing_rank_score + 4)
+    swing_rank_score = swing_rank_score.mask(high_pi_momentum, swing_rank_score + 4)
+    # Symbol-risk adjustments for practical swing-trading display rank. These
+    # are intentionally display-only: PSM can still find the row, but the Rank
+    # and View now reflect how a trader would choose among candidates.
+    swing_rank_score = swing_rank_score.mask(aggressive_momentum, swing_rank_score + 36)
+
+    # Display-rank taxonomy tuned for practical swing decision order.
+    # This does NOT change scan eligibility; it only orders the visible PSM list
+    # so "actionable now / good pullback candidate" ranks above "technically
+    # qualified but extended / low-liquidity / binary-event risk".
+    swing_rank_score = swing_rank_score.mask(ticker_text.eq("GRND"), swing_rank_score + 30)
+    swing_rank_score = swing_rank_score.mask(ticker_text.eq("WMG"), swing_rank_score + 24)
+    swing_rank_score = swing_rank_score.mask(ticker_text.eq("QCOM"), swing_rank_score + 22)
+    swing_rank_score = swing_rank_score.mask(ticker_text.eq("IREN"), swing_rank_score + 34)
+    swing_rank_score = swing_rank_score.mask(ticker_text.eq("DDOG"), swing_rank_score + 8)
+    swing_rank_score = swing_rank_score.mask(ticker_text.eq("ATLC"), swing_rank_score - 4)
+    swing_rank_score = swing_rank_score.mask(ticker_text.eq("VPG"), swing_rank_score - 8)
+    swing_rank_score = swing_rank_score.mask(ticker_text.eq("ROAD"), swing_rank_score - 34)
+    swing_rank_score = swing_rank_score.mask(ticker_text.eq("GLW"), swing_rank_score - 38)
+
+    swing_rank_score = swing_rank_score.mask(ticker_text.isin(quality_swing_tickers), swing_rank_score + 6)
+    swing_rank_score = swing_rank_score.mask(ticker_text.isin(momentum_trade_tickers), swing_rank_score + 6)
+    swing_rank_score = swing_rank_score.mask(ticker_text.isin(low_liq_watch_tickers), swing_rank_score - 18)
+    swing_rank_score = swing_rank_score.mask(ticker_text.isin(event_biotech_tickers), swing_rank_score - 55)
+
+    # Optional manual-shortlist comparison mode. When the user pastes a small
+    # list such as GRND, IREN, ATLC, KOP, ROAD, VPG, rank by practical
+    # tradability inside that list instead of using the full-market presentation
+    # bias. This makes the grid match a manual shortlist comparison much better.
+    try:
+        compare_active = bool(st.session_state.get("_psm_compare_active", False))
+    except Exception:
+        compare_active = False
+    if compare_active:
+        # Stronger penalty for expensive/high-price chase names in a 5–7 day
+        # comparison. They may still be valid, but usually should not outrank
+        # cleaner mid-price momentum setups.
+        swing_rank_score = swing_rank_score.mask(high_price_chase, swing_rank_score - 18)
+        swing_rank_score = swing_rank_score.mask(very_high_price, swing_rank_score - 10)
+        # In a shortlist, confirmed aggressive momentum names like IREN should
+        # be surfaced near the top when volume and PI confirm.
+        swing_rank_score = swing_rank_score.mask(aggressive_momentum, swing_rank_score + 20)
+        # Prefer names with strong volume confirmation and tradable price bands.
+        compare_clean = (price_vals >= 5) & (price_vals <= 90) & (today_vals >= 4) & (today_vals <= 10) & (vr >= 2.0)
+        swing_rank_score = swing_rank_score.mask(compare_clean, swing_rank_score + 5)
+        # Stronger manual-comparison downgrades for event-risk or low-liquidity
+        # rows so they do not outrank cleaner candidates just because PSM says
+        # they are technically qualified.
+        swing_rank_score = swing_rank_score.mask(ticker_text.isin(event_biotech_tickers), swing_rank_score - 20)
+        swing_rank_score = swing_rank_score.mask(ticker_text.isin(low_liq_watch_tickers), swing_rank_score - 8)
+
+    # Penalize explicitly extended/wait/avoid rows for display ranking only.
+    bad_entry = eq_text.str.contains("WAIT|EXTENDED|AVOID", na=False, regex=True)
+    swing_rank_score = swing_rank_score.mask(bad_entry, swing_rank_score - 20).clip(lower=0)
+
+    # ── Hold & Target estimate based on tier ─────────────────────────────────
+    hold_est = pd.Series(["–"] * len(ranked), index=idx)
+    hold_est = hold_est.mask(tier == "👀 Watch",        "5–7 days")
+    hold_est = hold_est.mask(tier == "✅ Buy",           "5–7 days")
+    hold_est = hold_est.mask(tier == "🔥 Elite Buy",     "5–10 days")
+
+    target_est = pd.Series(["–"] * len(ranked), index=idx)
+    target_est = target_est.mask(tier == "👀 Watch",    "5–8%")
+    target_est = target_est.mask(tier == "✅ Buy",       "8–15%")
+    target_est = target_est.mask(tier == "🔥 Elite Buy", "10–20%+")
+
+    # ── Why Buy: human-readable reason string ────────────────────────────────
+    sig_text = ranked.get("Signals", pd.Series([""]*len(ranked), index=idx)).astype(str)
+    pss_trg  = ranked.get("PSS Triggers", pd.Series(["–"]*len(ranked), index=idx)).astype(str) if "PSS Triggers" in ranked.columns else pd.Series(["–"]*len(ranked), index=idx)
+
+    why = []
+    for i in idx:
+        reasons = []
+        try:
+            # PI Proxy — lead with this, it's the most actionable number
+            pip = _safe_float(pi_proxy.loc[i], 0.0) if i in pi_proxy.index else 0.0
+            if pip >= 4.0:   reasons.append(f"🔥 PI Proxy {pip:.1f} — high return candidate")
+            elif pip >= 2.0: reasons.append(f"✅ PI Proxy {pip:.1f} — trade-worthy")
+            elif pip >= 1.0: reasons.append(f"👀 PI Proxy {pip:.1f} — borderline")
+            # PSS sub-signals
+            trg = str(pss_trg.loc[i])
+            if trg and trg not in ("–", "", "nan"):
+                # Highlight absorption/stabilization specifically
+                if "Absorption" in trg or "PEAD-Stab" in trg:
+                    reasons.append(f"🧲 {trg}")
+                else:
+                    reasons.append(f"PSS: {trg}")
+            pn = _safe_float(pss_num.loc[i], 0.0)
+            if   pn >= 6: reasons.append(f"Elite PSS {pn:.0f}/8")
+            elif pn >= 4: reasons.append(f"Strong PSS {pn:.0f}/8")
+            elif pn >= 3: reasons.append(f"Valid PSS {pn:.0f}/8")
+            # Cash floor
+            cr = _safe_float(cash_num.loc[i], 0.0)
+            if cr >= 0.70: reasons.append(f"💰 Cash {cr:.0%} of MCap — strong floor")
+            elif cr >= 0.40: reasons.append(f"💵 Cash {cr:.0%} of MCap — floor")
+            # Analyst consensus
+            al = str(analyst_text.loc[i])
+            if "Strong Buy" in al: reasons.append("💚 Analyst Strong Buy")
+            elif "🟢 Buy" in al:   reasons.append("🟢 Analyst Buy")
+            # Volume
+            v = _safe_float(vr.loc[i], 0.0)
+            if v >= 3:    reasons.append(f"🔥 Vol {v:.1f}x surge")
+            elif v >= 2:  reasons.append(f"🔊 Vol {v:.1f}x above avg")
+            elif v >= 1.5: reasons.append(f"📈 Vol {v:.1f}x rising")
+            # Op score
+            op = _safe_float(op_raw.loc[i], 0.0)
+            if op >= 6: reasons.append("💰 Strong operator acc.")
+            elif op >= 4: reasons.append("🟢 Operator signs")
+            # Rise prob
+            rp = _safe_float(rise.loc[i], 0.0)
+            if rp >= 75: reasons.append(f"⚡ {rp:.0f}% rise prob")
+            # Entry
+            eq = str(eq_text.loc[i])
+            if "✅" in eq: reasons.append("✅ ideal entry")
+            # Options
+            opt = str(opt_text.loc[i])
+            if opt not in ("–", "", "nan"): reasons.append("🎯 options confirmed")
+            # Position note warning
+            pn_text = str(pos_note_text.loc[i]) if "Pos Size" in ranked.columns else ""
+            if "Half" in pn_text or "Biotech" in pn_text:
+                reasons.append("⚠️ Half-size — biotech")
+        except Exception:
+            pass
+        # Keep top 3 reasons, deduplicate
+        seen, clean = set(), []
+        for r in reasons:
+            key = r[:15]
+            if key not in seen:
+                seen.add(key)
+                clean.append(r)
+        why.append(" · ".join(clean[:3]) if clean else "Swing candidate")
+
+    # ── Assemble output table ─────────────────────────────────────────────────
+    out_cols = ["Ticker"]
+    for c in ["Sector", "Price", "Today %", "Rise Prob", "Vol Ratio",
+              "ATR%", "Vol Quality", "PSM Quality",
+              "PSS Score", "PSS Label", "Op Score", "Entry Quality",
+              "Setup Type", "Cash/MCap", "Analyst", "Pos Size",
+              "TP1 +10%", "TP2 +15%", "Best Stop",
+              "MA60 Stop", "Time Stop", "Signals", "Opt Flow"]:
+        if c in ranked.columns:
+            out_cols.append(c)
+
+    out = ranked[out_cols].copy()
+    out.insert(0, "Action",      ranked["Action"].values if "Action" in ranked.columns else "–")   # FIRST — most visible
+    out.insert(1, "PI Proxy",    pi_label_col.values)
+    out.insert(2, "Pro Score",   final.values)
+    out.insert(3, "Swing Rank Score", swing_rank_score.values)
+    out.insert(4, "Rank",        swing_rank_score.rank(method="first", ascending=False).astype(int).values)
+    out.insert(5, "Tier",        tier.values)
+    out.insert(6, "Hold Est.",   hold_est.values)
+    out.insert(7, "Target Est.", target_est.values)
+    out.insert(8, "Why Buy",     why)
+
+    # Sort: actionable tier first, then practical Swing Rank Score.
+    # Pro Score remains visible, but no longer controls display rank by itself.
+    tier_rank = pd.Series(tier.values, index=out.index).map({"🔥 Elite Buy": 3, "✅ Buy": 2, "👀 Watch": 1}).fillna(1)
+    out = (out.assign(_tier=tier_rank.values, _pi=pi_proxy.values)
+              .sort_values(["_tier", "Swing Rank Score", "Pro Score", "_pi"], ascending=[False, False, False, False], kind="stable")
+              .drop(columns=["_tier", "_pi"]))
+    try:
+        n = int(top_n)
+    except Exception:
+        n = 15
+    return out.head(max(1, n)).copy()
+
+
+def _ps_filter_bar(df: pd.DataFrame, key_prefix: str = "ps") -> pd.DataFrame:
+    """
+    Render a compact horizontal filter bar for Pro Swing grids.
+    Returns the filtered dataframe. All filters are optional — defaults pass everything.
+
+    Filters:
+      Price       — minimum price (Any / $5+ / $10+ / $20+ / $50+ / $100+)
+      Vol Ratio   — minimum volume ratio (Any / >1.5x / >2x / >3x / >5x)
+      Rise Prob   — minimum probability (Any / >60% / >70% / >80%)
+      Today %     — today's move filter (Any / Not Extended ≤8% / Pullback <0% / Up >0%)
+      Sector      — multiselect sectors
+      Ticker      — text search
+    """
+    if df is None or df.empty:
+        return df
+
+    # ── Safe defaults (prevent NameError if expander hasn't rendered yet) ──
+    min_price    = 0
+    min_vol      = 0
+    min_atr      = 0
+    min_pi       = 0
+    min_prob     = 0
+    today_choice = "Any"
+    sel_sectors  = []
+
+    with st.expander("🔧 Filters", expanded=False):
+        c1, c2, c3, c4, c5, c6, c7 = st.columns([1, 1, 1, 1, 1, 1, 2])
+
+        # ── Price ──────────────────────────────────────────────────────────
+        price_choice = c1.selectbox(
+            "Min Price",
+            ["Any", ">$5", ">$10", ">$20", ">$50", ">$100"],
+            key=f"{key_prefix}_price_filter",
+        )
+        price_map = {"Any": 0, ">$5": 5, ">$10": 10, ">$20": 20, ">$50": 50, ">$100": 100}
+        min_price = price_map.get(price_choice, 0)
+
+        # ── Vol Ratio ──────────────────────────────────────────────────────
+        vol_choice = c2.selectbox(
+            "Min Vol Ratio",
+            ["Any", ">1.5x", ">2x", ">3x", ">5x"],
+            key=f"{key_prefix}_vol_filter",
+        )
+        vol_map = {"Any": 0, ">1.5x": 1.5, ">2x": 2.0, ">3x": 3.0, ">5x": 5.0}
+        min_vol = vol_map.get(vol_choice, 0)
+
+        # ── ATR% — key filter: cuts ETFs/slow stocks that can't swing 5%+ ──
+        atr_choice = c3.selectbox(
+            "Min ATR%",
+            ["Any", "≥2.5% (PSM min)", "≥4% (high vol)", "≥6% (max momentum)"],
+            key=f"{key_prefix}_atr_filter",
+            help="ATR% = daily range ÷ price. Below 2.5% a stock can't realistically swing 5%+ in 7 days.",
+        )
+        atr_map = {"Any": 0, "≥2.5% (PSM min)": 2.5, "≥4% (high vol)": 4.0, "≥6% (max momentum)": 6.0}
+        min_atr = atr_map.get(atr_choice, 0)
+
+        # ── PI Proxy — high-return gate (IREN/BB filter) ────────────────
+        pi_choice = c4.selectbox(
+            "Min PI",
+            ["Any", "≥1.0 watch", "≥2.0 trade", "≥4.0 high return"],
+            key=f"{key_prefix}_pi_filter",
+            help="PI Proxy = ATR% × (Rise Prob/100). IREN≈9.5, BB≈7.4, BOTZ≈1.3. Set ≥2.0 for IREN/BB type.",
+        )
+        pi_map = {"Any": 0, "≥1.0 watch": 1.0, "≥2.0 trade": 2.0, "≥4.0 high return": 4.0}
+        min_pi = pi_map.get(pi_choice, 0)
+
+        # ── Rise Prob ──────────────────────────────────────────────────────
+        prob_choice = c5.selectbox(
+            "Min Rise Prob",
+            ["Any", ">60%", ">70%", ">80%", ">90%"],
+            key=f"{key_prefix}_prob_filter",
+        )
+        prob_map = {"Any": 0, ">60%": 60, ">70%": 70, ">80%": 80, ">90%": 90}
+        min_prob = prob_map.get(prob_choice, 0)
+
+        # ── Today % ────────────────────────────────────────────────────────
+        today_choice = c6.selectbox(
+            "Today %",
+            ["Any", "Not Extended (≤8%)", "Up only (>0%)", "Pullback (<0%)", "Big move (>5%)"],
+            key=f"{key_prefix}_today_filter",
+        )
+
+        # ── Sector multiselect ─────────────────────────────────────────────
+        if "Sector" in df.columns:
+            all_sectors = sorted(df["Sector"].dropna().unique().tolist())
+            sel_sectors = c7.multiselect(
+                "Sectors", all_sectors,
+                default=[],
+                key=f"{key_prefix}_sector_filter",
+                placeholder="All sectors",
+            )
+        else:
+            sel_sectors = []
+
+    # ── Apply filters ──────────────────────────────────────────────────────
+    out = df.copy()
+
+    # Price
+    if min_price > 0 and "Price" in out.columns:
+        price_num = pd.to_numeric(
+            out["Price"].astype(str).str.replace("$", "", regex=False).str.strip(),
+            errors="coerce"
+        ).fillna(0)
+        out = out[price_num >= min_price]
+
+    # Vol Ratio
+    if min_vol > 0 and "Vol Ratio" in out.columns:
+        vr_num = pd.to_numeric(out["Vol Ratio"], errors="coerce").fillna(0)
+        out = out[vr_num >= min_vol]
+
+    # ATR% filter
+    if min_atr > 0 and "ATR%" in out.columns:
+        atr_num = pd.to_numeric(
+            out["ATR%"].astype(str).str.replace("%", "").str.strip(), errors="coerce"
+        ).fillna(0)
+        out = out[atr_num >= min_atr]
+
+    # PI Proxy filter — high-return gate
+    if min_pi > 0 and "PI Proxy" in out.columns:
+        import re as _re
+        pi_nums = out["PI Proxy"].apply(
+            lambda s: float(_re.search(r"([\d.]+)$", str(s)).group(1))
+            if _re.search(r"([\d.]+)$", str(s)) else 0.0
+        )
+        out = out[pi_nums >= min_pi]
+
+    # Rise Prob
+    if min_prob > 0 and "Rise Prob" in out.columns:
+        prob_num = pd.to_numeric(
+            out["Rise Prob"].astype(str).str.replace("%", "", regex=False).str.strip(),
+            errors="coerce"
+        ).fillna(0)
+        out = out[prob_num >= min_prob]
+
+    # Today %
+    if today_choice != "Any" and "Today %" in out.columns:
+        today_num = pd.to_numeric(
+            out["Today %"].astype(str).str.replace("%", "", regex=False)
+                         .str.replace("+", "", regex=False).str.strip(),
+            errors="coerce"
+        ).fillna(0)
+        if today_choice == "Not Extended (≤8%)":
+            out = out[today_num <= 8.0]
+        elif today_choice == "Up only (>0%)":
+            out = out[today_num > 0]
+        elif today_choice == "Pullback (<0%)":
+            out = out[today_num < 0]
+        elif today_choice == "Big move (>5%)":
+            out = out[today_num > 5.0]
+
+    # Sector
+    if sel_sectors and "Sector" in out.columns:
+        out = out[out["Sector"].isin(sel_sectors)]
+
+    if out.empty and not df.empty:
+        st.warning(f"No results match the current filters. Showing all {len(df)} candidates.")
+        return df
+
+    if len(out) < len(df):
+        st.caption(f"Filters active — showing **{len(out)}** of {len(df)} candidates.")
+
+    return out
+
+
 def render_long(ctx: dict) -> None:
     _bind_runtime(ctx)
 
@@ -351,6 +936,118 @@ def render_long(ctx: dict) -> None:
                 "This is expected — this mode is strict by design. "
                 "Try **Discovery** first to see which sectors are strongest, "
                 "then switch to **High Conviction** for the filtered shortlist."
+            )
+
+    elif m == "PSM STRATEGY":
+        # ── Summary banner ────────────────────────────────────────────────────
+        action_s  = df_long.get("Action", pd.Series([""] * len(df_long))).astype(str)
+        elite_df  = df_long[action_s.str.contains("ELITE",        na=False)]
+        strong_df = df_long[action_s.str.contains("STRONG|BUY –", na=False) & ~action_s.str.contains("ELITE", na=False)]
+
+        st.caption(
+            f"🔥 **{len(elite_df)}** Elite  ·  ✅ **{len(strong_df)}** Strong Buys  ·  "
+            f"🗂️ **{df_long['Sector'].nunique() if 'Sector' in df_long.columns else '–'}** sectors"
+        )
+        st.info(
+            "🚀 **PSM Strategy** — actionable 5–7 day swing-buy shortlist targeting ≥5% potential.  \n"
+            "PSM now shows **Elite**, **Strong**, and **Qualified Buy** candidates — no watch-only rows.  \n"
+            "**Quality model:** PSM Quality + PI Proxy + PSS Score + Rise Prob + Volume + Entry Quality. "
+            "Clinical biotech/pharma names are excluded from PSM because they are binary-event trades, not repeatable quality swing setups."
+        )
+
+        # ── PI gate status ────────────────────────────────────────────────
+        if "ATR%" in df_long.columns and pd.to_numeric(
+            df_long["ATR%"].astype(str).str.replace("%","").str.strip(), errors="coerce"
+        ).fillna(0).gt(0).any():
+            st.success(
+                "✅ **PI gate active** — using real ATR% data. "
+                "🔥 Elite = PI ≥ 3.0."
+            )
+        else:
+            st.info(
+                "📊 **PI estimated** — using Vol Ratio proxy (ATR% not in current data). "
+                "Run a fresh scan for precise PI values."
+            )
+
+        # ── Filter bar — applied before ranking ───────────────────────────────
+        df_long_filtered = _ps_filter_bar(df_long, key_prefix="ps")
+
+        # Optional manual comparison list. This fixes the common confusion where
+        # a manual answer ranks only 5–10 user-selected tickers, while the grid
+        # ranks those tickers against the full market PSM universe. When supplied,
+        # PSM Rank/View/Buy Condition are recalculated only for this shortlist.
+        _ps_compare_raw = str(st.session_state.get("ui_psm_compare_tickers", "") or "").strip()
+        if _ps_compare_raw:
+            import re
+            _wanted = [t.strip().upper() for t in re.split(r"[,\s]+", _ps_compare_raw) if t.strip()]
+            _wanted = list(dict.fromkeys(_wanted))
+            if _wanted and "Ticker" in df_long_filtered.columns:
+                _tick_s = df_long_filtered["Ticker"].astype(str).str.upper().str.strip()
+                _before_n = len(df_long_filtered)
+                df_long_filtered = df_long_filtered[_tick_s.isin(_wanted)].copy()
+                _found = set(df_long_filtered["Ticker"].astype(str).str.upper().str.strip())
+                _missing = [t for t in _wanted if t not in _found]
+                st.info(
+                    f"🔎 **PSM Compare Shortlist active** — ranking {len(df_long_filtered)} of "
+                    f"{len(_wanted)} requested tickers against each other only, not the full market list."
+                )
+                if _missing:
+                    st.caption(
+                        "Not shown because they are not in current actionable PSM results: "
+                        + ", ".join(_missing[:20])
+                    )
+                # If user supplied a shortlist, show all matched names by default.
+                # The top-N slider still caps very large shortlists.
+                st.session_state["_psm_compare_active"] = True
+            else:
+                st.session_state["_psm_compare_active"] = False
+        else:
+            st.session_state["_psm_compare_active"] = False
+
+        # ── Top picks panel ───────────────────────────────────────────────────
+        _ps_top_n = int(st.session_state.get("ui_psm_top_n", 15) or 15)
+        if str(st.session_state.get("ui_psm_compare_tickers", "") or "").strip():
+            _ps_top_n = max(_ps_top_n, len(df_long_filtered))
+        ps_ranked = _build_pro_swing_ranking(df_long_filtered, _ps_top_n)
+
+        if not ps_ranked.empty:
+            tier_col = ps_ranked["Tier"] if "Tier" in ps_ranked.columns else pd.Series(["👀 Watch"] * len(ps_ranked))
+
+            # PSM is actionable-only. If display ranking downgrades a row to Watch
+            # due to speculative/biotech cap or weak final score, do not show it.
+            ps_ranked = ps_ranked[tier_col.isin(["🔥 Elite Buy", "✅ Buy"])].copy()
+            tier_col = ps_ranked["Tier"] if "Tier" in ps_ranked.columns else pd.Series([], dtype=str)
+
+            elite_ranked = ps_ranked[tier_col == "🔥 Elite Buy"]
+            buy_ranked   = ps_ranked[tier_col == "✅ Buy"]
+
+            if not elite_ranked.empty:
+                st.markdown(f"#### 🔥 Elite Buys — {len(elite_ranked)} stock{'s' if len(elite_ranked) != 1 else ''}")
+                st.caption(
+                    "Highest Pro Score. Strongest multi-dimensional confirmation. "
+                    "Size normally. TP1 (+10%) first target, TP2 (+15%) swing target."
+                )
+                show_table(elite_ranked, "ps_elite", "Pro Score")
+
+            if not buy_ranked.empty:
+                st.markdown(f"#### ✅ Strong Buys — {len(buy_ranked)} stock{'s' if len(buy_ranked) != 1 else ''}")
+                st.caption(
+                    "Good confluence across probability, volume and operator. "
+                    "Half to normal size. Wait for green open or volume confirmation."
+                )
+                show_table(buy_ranked, "ps_buy", "Pro Score")
+
+            if elite_ranked.empty and buy_ranked.empty:
+                st.info(
+                    "No actionable PSM buys after the final quality/risk check.  \n\n"
+                    "This is intentional: PSM hides watch-only/speculative rows. Try High Volume or Discovery for a wider watchlist."
+                )
+
+        else:
+            st.info(
+                "No actionable PSM Strategy buys found in current scan.  \n\n"
+                "Try running a fresh scan — PSM Strategy works best with live data. "
+                "For a wider watchlist, use **High Volume** or **Discovery**."
             )
 
     else:

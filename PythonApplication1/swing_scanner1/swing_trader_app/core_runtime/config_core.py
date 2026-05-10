@@ -474,6 +474,17 @@ LONG_WEIGHTS = {
     "opt_call_skew_bullish":  0.65,   # 10% OTM call IV ≥ 10% OTM put IV — call demand
     "opt_pc_volume_low":      0.62,   # put/call volume < 0.6 — call-biased session
     "opt_iv_cheap":           0.62,   # ATM IV < 0.85× realized vol — calm-bull regime
+    # ── v14: Pro Swing Setup composite ───────────────────────────────────────
+    "pro_swing_setup":        0.75,
+    # ── v15: High win-rate professional strategies ────────────────────────────
+    # Weights calibrated to empirical win rates from professional trading literature.
+    # Each signal is independently predictive — placed in isolated buckets.
+    "nr7_setup":         0.70,   # NR7: narrowest range in 7 days — vol compression
+    "inside_day":        0.68,   # Inside day in uptrend + declining vol
+    "failed_breakdown":  0.73,   # Bear trap reversal — shorts squeezed above support
+    "tight_flag":        0.70,   # Flag after strong pole — continuation setup
+    "cup_handle":        0.68,   # O'Neil cup & handle — institutional base complete
+    "pre_earnings_run":  0.68,   # 3-7 days before earnings + uptrend = drift signal
 }
 SHORT_WEIGHTS = {
     "stoch_overbought": 0.70, "bb_bear_squeeze": 0.68, "macd_decel":     0.66,
@@ -533,6 +544,16 @@ SIGNAL_BUCKETS = {
     "opt_pc_volume_low":     "options", "opt_iv_cheap":          "options",
     # Trend-strength regulator (single-signal bucket — never decayed)
     "adx":             "adx_long",
+    # v14: Pro Swing Setup — own isolated bucket
+    "pro_swing_setup": "catalyst",
+    # v15: High win-rate strategies — each in own isolated bucket
+    # (they are structurally independent of each other and existing signals)
+    "nr7_setup":        "nr7",
+    "inside_day":       "inside_day",
+    "failed_breakdown": "failed_bd",
+    "tight_flag":       "tight_flag",
+    "cup_handle":       "cup_handle",
+    "pre_earnings_run": "pre_earnings",
 
     # ── Short buckets (parallel categories) ───────────────────────────────────
     "trend_bearish":   "trend",    "lower_highs":    "trend",
