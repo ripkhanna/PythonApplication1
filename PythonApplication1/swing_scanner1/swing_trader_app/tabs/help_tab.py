@@ -6,7 +6,7 @@ def render_help(ctx: dict) -> None:
 
     st.markdown("## ❓ Swing Scanner — Complete Guide")
     st.caption(
-        "Covers all 7 strategies · Pre-market & Support Entry · High Conviction · "
+        "Covers all 8 strategies · Pre-market & Support Entry · PSM · High Conviction · "
         "Speed fixes · Always-include tickers · Diagnostics · Stock Analysis sync"
     )
 
@@ -14,6 +14,8 @@ def render_help(ctx: dict) -> None:
     with st.expander("🆕 What changed recently", expanded=True):
         st.markdown("""
 ### Latest build
+- **PSM Help updated** — PSM Strategy, Rank/View/Buy Condition, PI Proxy, PSS Score, and compare-shortlist behavior are now documented.
+- **PSM filter-bar reliability note** — PSM filters such as Min ATR/Min PI/Min probability should default safely during Streamlit reruns.
 - **Cache freshness check added** — when scanner TTL is due, the app first checks Yahoo's latest available bar before rebuilding the expensive full scan.
 - **No-new-bar optimization** — if Yahoo's latest bar is the same as the cached latest bar, the app keeps the existing cache and writes a Diagnostics note instead of re-downloading all stocks.
 - **Latest bar display cleanup** — fixed duplicate label like `Latest bar: Latest bar: ...`; times are shown cleanly in SGT where the latest-bar formatter is used.
@@ -22,7 +24,7 @@ def render_help(ctx: dict) -> None:
 - **🚀 Movers/Losers tab added** — Top Gainers, Top Losers, and Volume Leaders for US/SGX/India/HK.
 - **Master Yahoo cache architecture** — Yahoo data is downloaded once, then strategy changes only re-filter cached data.
 - **Latest bar time formatting** — latest bar display can be converted to Singapore time for clearer diagnostics.
-- **7 Swing Strategies** in the sidebar dropdown (was 3).
+- **8 Swing Strategies** in the sidebar dropdown (was 3) including **PSM Strategy** for 5–7 day swing candidates.
 - **Speed**: parallel pre-fetch cuts scan time from ~15 min → ~2 min for 410 tickers.
 - **Always include tickers** is the single place to add custom tickers (duplicate "Custom tickers" field removed).
 - **Stock Analysis** operator label now matches the scanner exactly.
@@ -57,13 +59,13 @@ Movers/Losers → Sector Heatmap → Long Setups → Swing Picks → Trade Desk 
 |---|---|
 | 30 min before open | **Premarket Momentum** — catch gap-up names |
 | First 30 min after open | **Support Entry** — buy dips that have pulled to MA |
-| Mid-day / end of day | **Balanced** or **High Conviction** |
+| Mid-day / end of day | **Balanced**, **High Conviction**, or **PSM Strategy** |
 | Quiet/choppy markets | **Discovery** for watchlist building |
-| Want fewer but stronger | **High Conviction** |
+| Want fewer but stronger | **High Conviction** or **PSM Strategy** |
         """)
 
-    # ── 7 strategies ─────────────────────────────────────────────────────────
-    with st.expander("🎯 All 7 strategies — when to use each"):
+    # ── 8 strategies ─────────────────────────────────────────────────────────
+    with st.expander("🎯 All 8 strategies — when to use each"):
         st.markdown("""
 | Strategy | Best for | How it works | Expected results |
 |---|---|---|---|
@@ -74,6 +76,46 @@ Movers/Losers → Sector Heatmap → Long Setups → Swing Picks → Trade Desk 
 | **Premarket Momentum 🚀** | 30 min before open | +1–8% PM gain + intact technical trend | 5–15 stocks |
 | **High Volume 📊** | Finding active names right now | Unusual volume / breakout / pocket pivot | 10–30 stocks |
 | **High Conviction 🎯** | Highest win-rate shortlist | ALL 5 signal categories must confirm simultaneously | 5–15 stocks |
+| **PSM Strategy 🏆** | 5–7 day swing candidates with practical return potential | Combines PI Proxy, PSS Score, rise probability, volume, entry quality, and practical swing ranking | 5–25 stocks |
+
+### PSM Strategy — practical swing ranking
+PSM is designed to answer: **which stocks are actually worth considering for a 5–7 day swing trade?**
+
+It is more decision-focused than a broad scanner. It combines:
+
+| Component | Meaning |
+|---|---|
+| **PI Proxy** | Return-potential proxy; higher means stronger potential move |
+| **PSS Score** | Professional Swing Signal score; counts stronger institutional/technical confirmations |
+| **Rise Probability** | Bayesian rise probability from the scanner engine |
+| **Volume Ratio** | Confirmation that the move has real activity behind it |
+| **Entry Quality** | Whether the entry is buyable now, confirmation-only, extended, or avoid |
+| **Practical Swing Rank** | Display ranking that penalizes extended/high-risk names and rewards tradable setups |
+
+### PSM tiers
+| Tier | Meaning |
+|---|---|
+| **STRONG BUY – PSM ELITE** | Highest-quality PSM setup; strongest confirmation and practical entry |
+| **BUY – PSM STRONG** | Strong swing setup; good probability, volume, and entry quality |
+| **BUY – PSM QUALIFIED** | Actionable but lower tier; buy only if the stated condition confirms |
+
+### PSM display columns
+| Column | Meaning |
+|---|---|
+| **Rank** | Practical swing rank in the visible PSM grid |
+| **View** | Plain-English decision such as Best balanced swing, Best aggressive momentum, Good quality swing, Watch only, or Strong but extended — wait |
+| **Buy Condition** | Practical trigger, e.g. hold support zone or break above trigger with volume; includes stop and TP1 where available |
+| **PI Proxy** | Return-potential proxy used by PSM ranking |
+| **Why Selected** | Short explanation of why the stock passed PSM, including PI/PSS/volume signals |
+
+### PSM compare shortlist
+Use this when you want the scanner to rank **only a custom list** such as:
+
+```text
+GRND, IREN, WMG, QCOM, DDOG
+```
+
+When active, PSM recalculates Rank/View/Buy Condition only for that shortlist instead of the full market universe. This is the correct way to compare a small set of stocks against each other.
 
 ### Support Entry — tiers explained
 | Tier | Signal | Meaning |
@@ -145,6 +187,13 @@ Look for `HC[T+M+V+S+X](5/5)` in the Signals column to see which fired.
 | WATCH – HIGH QUALITY | Actionable setup, one confirmation short of STRONG BUY |
 | WATCH – DEVELOPING | Setup forming, not yet fully confirmed |
 | WATCH – TRAP RISK | Looks good but has false breakout / gap chase warning |
+
+### Long setup action labels (PSM Strategy)
+| Label | Meaning |
+|---|---|
+| STRONG BUY – PSM ELITE | Highest-quality 5–7 day swing candidate |
+| BUY – PSM STRONG | Strong PSM setup with good confirmation |
+| BUY – PSM QUALIFIED | Actionable but condition-based; follow the Buy Condition column |
 
 ### Long setup action labels (Support Entry mode)
 | Label | Meaning |
@@ -422,6 +471,9 @@ Caused by too many parallel Yahoo requests invalidating the auth token. Fixed by
 | **Smart TP** | Options-implied target when available |
 | **Implied Move 2W** | Options market's expected ±% over 2 weeks |
 | **Float / Short %** | Float size and short interest (US only) |
+| **PI Proxy** | PSM return-potential proxy; higher values indicate stronger potential move |
+| **PSS Score** | PSM professional swing signal score; higher = more confirmations |
+| **Why Selected** | PSM/High Conviction explanation showing key reasons for selection |
 | **Signals** | Raw signal tags — HC[T+M+V+S+X](5/5) for High Conviction |
 | **Opt Flow** | Options-derived signals: CALL FLOW / CALL SKEW / P/C↓ etc. |
 | **Last Bar** | Timestamp of the latest OHLCV bar used; latest-bar display is cleaned to avoid duplicate `Latest bar:` text |
@@ -485,7 +537,7 @@ Key packages: `streamlit` · `yfinance` · `pandas` · `numpy` · `ta` ·
 
     st.markdown("---")
     st.caption(
-        "Swing Scanner · 7 strategies · US + SGX + India + HK · "
+        "Swing Scanner · 8 strategies · US + SGX + India + HK · "
         "Bayesian engine + operator layer + options signals · "
         "Not financial advice"
     )
