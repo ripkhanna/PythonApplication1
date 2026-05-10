@@ -14,7 +14,7 @@ def render_help(ctx: dict) -> None:
     with st.expander("🆕 What changed recently", expanded=True):
         st.markdown("""
 ### Latest build
-- **PSM Help updated** — PSM Strategy, Rank/View/Buy Condition, PI Proxy, PSS Score, and compare-shortlist behavior are now documented.
+- **Full-universe scan speed improved** — the scanner now keeps the full merged universe but speeds Yahoo access using chunked OHLCV downloads, fewer UI refreshes, and no full-universe `.info` metadata prefetch.
 - **PSM filter-bar reliability note** — PSM filters such as Min ATR/Min PI/Min probability should default safely during Streamlit reruns.
 - **Cache freshness check added** — when scanner TTL is due, the app first checks Yahoo's latest available bar before rebuilding the expensive full scan.
 - **No-new-bar optimization** — if Yahoo's latest bar is the same as the cached latest bar, the app keeps the existing cache and writes a Diagnostics note instead of re-downloading all stocks.
@@ -22,10 +22,10 @@ def render_help(ctx: dict) -> None:
 - **🇭🇰 Hong Kong market added** as a full market radio option.
 - **HK expanded universe**: 137 curated liquid/high-beta `.HK` stocks, including your original 30 core names.
 - **🚀 Movers/Losers tab added** — Top Gainers, Top Losers, and Volume Leaders for US/SGX/India/HK.
-- **Master Yahoo cache architecture** — Yahoo data is downloaded once, then strategy changes only re-filter cached data.
+- **Master Yahoo cache architecture** — Yahoo data is downloaded once, then strategy changes only re-filter cached data. Full-universe scans are faster because expensive metadata is fetched only for final candidates.
 - **Latest bar time formatting** — latest bar display can be converted to Singapore time for clearer diagnostics.
 - **8 Swing Strategies** in the sidebar dropdown (was 3) including **PSM Strategy** for 5–7 day swing candidates.
-- **Speed**: parallel pre-fetch cuts scan time from ~15 min → ~2 min for 410 tickers.
+- **Speed**: chunked Yahoo OHLCV downloads + final-candidate metadata enrichment reduce scan time without dropping tickers.
 - **Always include tickers** is the single place to add custom tickers (duplicate "Custom tickers" field removed).
 - **Stock Analysis** operator label now matches the scanner exactly.
 - **Diagnostics** shows always-include status, ticker search box, and per-ticker fetch log.
@@ -327,6 +327,23 @@ Look for:
 "cache_type": "master_scan_v1",
 "strategy_mode": "MASTER"
 ```
+
+### Scan size and speed
+The app can scan the full merged universe from live/Yahoo sources plus your curated watchlist. The speed improvement is **not** mainly from dropping tickers. It comes from:
+
+1. **Chunked Yahoo downloads** — daily and intraday OHLCV are downloaded in stable batches instead of one huge request.
+2. **No full-universe metadata prefetch** — slow `Ticker.info`, `calendar`, and `fast_info` calls are not run for every ticker.
+3. **Final-candidate enrichment only** — Float, Short %, Cash/MCap, Analyst and similar expensive fields are fetched only for top candidate rows.
+4. **Reduced UI updates** — progress text/bar updates are throttled so Streamlit rerenders less during large scans.
+
+Recommended settings:
+
+| Mode | Max live stocks | Max total stocks | Use when |
+|---|---:|---:|---|
+| Normal full scan | 1000 | 1500 | Keeps the full merged universe, e.g. 1200+ tickers |
+| Faster smaller scan | 250–500 | 400–800 | Only if you intentionally want a smaller universe |
+
+`Always include tickers` are still prioritized before live/curated tickers.
 
 ### Freshness rule and no-new-bar check
 - During market hours: shorter refresh interval is used for minimum delay.

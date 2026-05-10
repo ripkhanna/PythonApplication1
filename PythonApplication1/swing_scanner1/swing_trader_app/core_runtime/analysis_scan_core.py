@@ -332,6 +332,56 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             return pd.DataFrame()
         return pd.DataFrame()
 
+
+    def _yf_download_in_chunks(tickers, *, period, interval, group_by="ticker",
+                               threads=True, auto_adjust=True, prepost=False,
+                               chunk_size=250, label="Yahoo"):
+        """Download Yahoo data in stable chunks instead of one huge 1000+ symbol call.
+
+        This keeps full-universe coverage but avoids one giant yfinance request
+        timing out or becoming the slowest part of the scan.  Returned data is a
+        dict[ticker] -> cleaned OHLCV dataframe, so the signal loop can read it
+        directly without repeatedly slicing a huge MultiIndex frame.
+        """
+        out = {}
+        tickers = _unique_keep_order(list(tickers or [])) if '_unique_keep_order' in globals() else list(dict.fromkeys(tickers or []))
+        if not tickers:
+            return out
+        try:
+            chunk_size = int(chunk_size or 250)
+        except Exception:
+            chunk_size = 250
+        chunk_size = max(50, min(chunk_size, 350))
+        chunks = [tickers[i:i + chunk_size] for i in range(0, len(tickers), chunk_size)]
+        for ci, chunk in enumerate(chunks, start=1):
+            try:
+                status_text.text(f"📥 {label}: chunk {ci}/{len(chunks)} · {len(chunk)} tickers...")
+            except Exception:
+                pass
+            try:
+                raw = yf.download(
+                    chunk, period=period, interval=interval,
+                    progress=False, group_by=group_by, threads=threads,
+                    auto_adjust=auto_adjust, prepost=prepost,
+                )
+            except Exception as e:
+                try:
+                    _record_app_warning("yfinance_chunk_download", f"{label} chunk {ci} failed: {type(e).__name__}: {e}", extra={"chunk": ci, "tickers": len(chunk)})
+                except Exception:
+                    pass
+                continue
+            for tkr in chunk:
+                try:
+                    df_t = _extract_from_yf_batch(raw, tkr, len(chunk))
+                    if df_t is None or getattr(df_t, "empty", True):
+                        continue
+                    df_t = _clean_scan_ohlcv(df_t).dropna(how="all")
+                    if not df_t.empty and "Close" in df_t.columns and df_t["Close"].notna().any():
+                        out[tkr] = df_t
+                except Exception:
+                    continue
+        return out
+
     def _overlay_intraday_daily(daily_df, intra_df):
         try:
             if daily_df is None or daily_df.empty or intra_df is None or intra_df.empty:
@@ -386,21 +436,17 @@ def fetch_analysis(green_sectors, red_sectors, regime,
     if _market_is_open:
         status_text.text(f"📥 Fetching latest 5-minute bars for {total} stocks...")
         try:
-            raw_intraday = yf.download(
+            intraday_cache = _yf_download_in_chunks(
                 all_tickers, period="1d", interval="5m",
-                progress=False, group_by="ticker", threads=True, auto_adjust=True,
-                prepost=True,
+                threads=True, auto_adjust=True, prepost=True,
+                chunk_size=250, label="5m intraday"
             )
             latest_bars = []
-            for tkr in all_tickers:
+            for _idf in intraday_cache.values():
                 try:
-                    idf = _extract_from_yf_batch(raw_intraday, tkr, len(all_tickers))
-                    idf = _clean_scan_ohlcv(idf).dropna(how="all") if not idf.empty else pd.DataFrame()
-                    if len(idf) >= 1 and "Close" in idf.columns and idf["Close"].notna().any():
-                        intraday_cache[tkr] = idf
-                        latest_bars.append(str(pd.Timestamp(idf.index[-1])))
+                    latest_bars.append(str(pd.Timestamp(_idf.index[-1])))
                 except Exception:
-                    continue
+                    pass
             scan_debug["intraday_loaded"] = int(len(intraday_cache))
             scan_debug["latest_intraday_bar"] = max(latest_bars) if latest_bars else ""
         except Exception as e:
@@ -421,23 +467,16 @@ def fetch_analysis(green_sectors, red_sectors, regime,
     status_text.text(f"📥 Batch downloading {total} stocks...")
     batch_cache = {}
     try:
-        raw_batch = yf.download(
-            all_tickers, period="3mo", interval="1d",  # 3mo is enough for 60d MA + all signals
-            progress=False, group_by="ticker", threads=True, auto_adjust=True
+        # Full-universe coverage is kept.  We only changed the downloader to
+        # chunked batches so 1000+ tickers do not become one huge slow/fragile
+        # Yahoo request.
+        _daily_raw_cache = _yf_download_in_chunks(
+            all_tickers, period="3mo", interval="1d",
+            threads=True, auto_adjust=True, prepost=False,
+            chunk_size=275, label="daily OHLCV"
         )
-        for tkr in all_tickers:
+        for tkr, df_t in _daily_raw_cache.items():
             try:
-                if isinstance(raw_batch.columns, pd.MultiIndex):
-                    lvl1 = raw_batch.columns.get_level_values(1)
-                    lvl0 = raw_batch.columns.get_level_values(0)
-                    if tkr in lvl1:    df_t = raw_batch.xs(tkr, axis=1, level=1).copy()
-                    elif tkr in lvl0:  df_t = raw_batch[tkr].copy()
-                    else:              continue
-                elif len(all_tickers) == 1:
-                    df_t = raw_batch.copy()
-                else:
-                    continue
-                df_t = _clean_scan_ohlcv(df_t)
                 if tkr in intraday_cache:
                     df_t = _overlay_intraday_daily(df_t, intraday_cache[tkr])
                 if len(df_t) >= 60:
@@ -533,6 +572,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
     _WORKERS    = 5           # keep low — Yahoo crumb invalidates under heavy parallelism
 
     def _fetch_one_meta(t):
+        nonlocal _shared_session
         result = {
             "cal_days": None, "float_shares": None,
             "short_pct": None, "pe": None,
@@ -611,31 +651,20 @@ def fetch_analysis(green_sectors, red_sectors, regime,
 
         return t, result
 
-    status_text.text(
-        f"⚡ Pre-fetching meta for {len(all_tickers)} tickers "
-        f"({_WORKERS} parallel workers)…"
-    )
-    try:
-        with ThreadPoolExecutor(max_workers=_WORKERS) as _pool:
-            _futs = {_pool.submit(_fetch_one_meta, t): t for t in all_tickers}
-            _done = 0
-            for _fut in _as_completed(_futs):
-                _done += 1
-                if _done % 50 == 0:
-                    status_text.text(
-                        f"⚡ Pre-fetching meta {_done}/{len(all_tickers)}…"
-                    )
-                try:
-                    _t, _res = _fut.result(timeout=15)
-                    with _meta_lock:
-                        _meta_cache[_t] = _res
-                except Exception:
-                    pass
-    except Exception:
-        # ThreadPool failed entirely — _meta_cache stays empty.
-        # The main loop will still run; it just won't have float/short/PE/PM data.
-        pass
-    status_text.text("✅ Meta ready — computing signals…")
+    # ─────────────────────────────────────────────────────────────────────
+    # SPEED FIX v16: do NOT pre-fetch .info/.calendar/.fast_info for every
+    # ticker.  For a 1000+ US universe this was the main slowdown and also
+    # caused Yahoo crumb/401 noise.  The scanner now computes all technical
+    # signals from the batch OHLCV first.  Metadata/options are fetched only
+    # when a ticker becomes technically interesting (options block below) or
+    # for a small final-candidate enrichment pass.
+    #
+    # Result: full universe is still scanned, but expensive per-ticker Yahoo
+    # metadata calls are no longer run on all symbols.
+    # ─────────────────────────────────────────────────────────────────────
+    status_text.text("✅ Price/volume data ready — computing signals without full-universe metadata prefetch…")
+    scan_debug["meta_prefetch_mode"] = "skipped_full_universe_prefetch"
+    scan_debug["meta_prefetch_count"] = 0
 
     # timing checkpoint: meta prefetch
     _t_now = _time_mod.perf_counter()
@@ -644,14 +673,16 @@ def fetch_analysis(green_sectors, red_sectors, regime,
 
     for i, ticker in enumerate(all_tickers):
         try:
-            status_text.text(f"Scanning {ticker} ({i+1}/{total})...")
+            if i == 0 or (i + 1) % 50 == 0 or (i + 1) == total:
+                status_text.text(f"Scanning {ticker} ({i+1}/{total})...")
 
             # ── Earnings guard — pre-fetched calendar cache ──────────────
             if skip_earnings:
                 _cal_days = _meta_cache.get(ticker, {}).get("cal_days")
                 if _cal_days is not None and 0 <= _cal_days <= 7:
                     scan_debug["skipped_earnings"] += 1
-                    progress_bar.progress((i + 1) / total)
+                    if i == 0 or (i + 1) % 25 == 0 or (i + 1) == total:
+                        progress_bar.progress((i + 1) / total)
                     continue
 
 
@@ -663,7 +694,8 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                                       progress=False, auto_adjust=True)
                 if raw_ind.empty or len(raw_ind) < 60:
                     scan_debug["skipped_history"] += 1
-                    progress_bar.progress((i + 1) / total)
+                    if i == 0 or (i + 1) % 25 == 0 or (i + 1) == total:
+                        progress_bar.progress((i + 1) / total)
                     continue
                 if isinstance(raw_ind.columns, pd.MultiIndex):
                     raw_ind.columns = raw_ind.columns.get_level_values(0)
@@ -675,7 +707,8 @@ def fetch_analysis(green_sectors, red_sectors, regime,
 
             if len(df) < 60:
                 scan_debug["skipped_history"] += 1
-                progress_bar.progress((i + 1) / total)
+                if i == 0 or (i + 1) % 25 == 0 or (i + 1) == total:
+                        progress_bar.progress((i + 1) / total)
                 continue
 
             close = df["Close"].squeeze().ffill()
@@ -718,19 +751,22 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 # Only skip rows with unusable price/volume data.
                 if _p_chk <= 0 or _vol_avg_s <= 0:
                     scan_debug["skipped_liquidity"] += 1
-                    progress_bar.progress((i + 1) / total)
+                    if i == 0 or (i + 1) % 25 == 0 or (i + 1) == total:
+                        progress_bar.progress((i + 1) / total)
                     continue
             elif swing_mode in ("SUPPORT ENTRY", "PREMARKET MOMENTUM"):
                 _strategy_min_turnover = max(_min_turnover * 0.25, 50_000)
                 _strategy_min_atr_pct = max(_min_atr_pct * 0.35, 0.15)
                 if _p_chk * _vol_avg_s < _strategy_min_turnover or _atr_pct < _strategy_min_atr_pct:
                     scan_debug["skipped_liquidity"] += 1
-                    progress_bar.progress((i + 1) / total)
+                    if i == 0 or (i + 1) % 25 == 0 or (i + 1) == total:
+                        progress_bar.progress((i + 1) / total)
                     continue
             else:
                 if _p_chk * _vol_avg_s < _min_turnover or _atr_pct < _min_atr_pct:
                     scan_debug["skipped_liquidity"] += 1
-                    progress_bar.progress((i + 1) / total)
+                    if i == 0 or (i + 1) % 25 == 0 or (i + 1) == total:
+                        progress_bar.progress((i + 1) / total)
                     continue
 
             # Get sector ETF close for this ticker
@@ -1760,17 +1796,71 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 _record_app_error("scan_ticker", e, ticker=ticker, extra={"index": i + 1, "total": total})
             except Exception:
                 pass
-        progress_bar.progress((i + 1) / total)
+        if i == 0 or (i + 1) % 25 == 0 or (i + 1) == total:
+                        progress_bar.progress((i + 1) / total)
 
     status_text.empty()
     progress_bar.empty()
+
+    def _enrich_final_candidates(df_out, max_rows=80):
+        """Fetch expensive Yahoo metadata only for the final visible candidates.
+
+        This preserves useful columns (Float, Short %, Cash/MCap, Analyst) while
+        avoiding .info calls for the full universe.
+        """
+        try:
+            if df_out is None or df_out.empty or "Ticker" not in df_out.columns:
+                return df_out
+            tickers = [str(x).strip().upper() for x in df_out["Ticker"].head(int(max_rows)).tolist() if str(x).strip()]
+            if not tickers:
+                return df_out
+            # Keep this small and conservative; it is an enrichment pass, not a scan gate.
+            with ThreadPoolExecutor(max_workers=4) as _pool:
+                _futs = {_pool.submit(_fetch_one_meta, t): t for t in tickers}
+                for _fut in _as_completed(_futs):
+                    try:
+                        _t, _res = _fut.result(timeout=10)
+                        if _res:
+                            _meta_cache[_t] = _res
+                    except Exception:
+                        pass
+            out = df_out.copy()
+            for idx, row in out.iterrows():
+                t = str(row.get("Ticker", "")).strip().upper()
+                m = _meta_cache.get(t, {})
+                if not m:
+                    continue
+                fs = m.get("float_shares")
+                sp = m.get("short_pct")
+                cr = m.get("cash_ratio")
+                ar = m.get("analyst_rec")
+                if fs and "Float" in out.columns:
+                    out.at[idx, "Float"] = f"{float(fs)/1e6:.0f}M"
+                if sp and "Short %" in out.columns:
+                    out.at[idx, "Short %"] = f"{float(sp)*100:.1f}%"
+                if cr is not None and "Cash/MCap" in out.columns:
+                    out.at[idx, "Cash/MCap"] = f"{float(cr):.0%}"
+                if ar is not None and "Analyst" in out.columns:
+                    ar = float(ar)
+                    out.at[idx, "Analyst"] = (
+                        "💚 Strong Buy" if ar <= 1.5 else
+                        "🟢 Buy" if ar <= 2.2 else
+                        "🟡 Hold" if ar <= 3.0 else
+                        "🟠 Underperform" if ar <= 3.8 else
+                        "🔴 Sell"
+                    )
+            scan_debug["meta_prefetch_count"] = int(len(_meta_cache))
+            return out
+        except Exception:
+            return df_out
 
     def make_df(rows, prob_col):
         if not rows:
             return pd.DataFrame()
         df_out = pd.DataFrame(rows)
         df_out["_s"] = df_out[prob_col].astype(str).str.rstrip("%").astype(float)
-        return df_out.sort_values("_s", ascending=False).drop(columns="_s")
+        df_out = df_out.sort_values("_s", ascending=False).drop(columns="_s")
+        return _enrich_final_candidates(df_out, max_rows=80)
 
     def make_op_df(rows):
         if not rows:
