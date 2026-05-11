@@ -348,6 +348,82 @@ def _download_market_movers_feed_cached(market_key: str, count_per_bucket: int) 
 
 
 @st.cache_data(ttl=180, show_spinner=False)
+def _download_nonUS_movers_cached(tickers_tuple: tuple, market_key: str, max_tickers: int) -> tuple[pd.DataFrame, dict]:
+    """Fetch movers for SGX / HK / India using yf.Ticker.fast_info.
+
+    Why not the intraday download path for non-US?
+    1. Yahoo predefined screeners (day_gainers etc.) are US-only — always empty for SG/HK/IN.
+    2. yf.download with period='5d' interval='5m' returns empty for most .SI / .HK / .NS tickers.
+    3. fast_info is a lightweight single-ticker call that reliably returns last_price,
+       previous_close, last_volume, year_high for non-US exchange tickers.
+    Parallelised with ThreadPoolExecutor for speed.
+    """
+    import concurrent.futures as _fut
+    import contextlib as _cl
+    import io as _io
+
+    tickers = list(tickers_tuple)[:int(max_tickers)]
+    rows: list[dict] = []
+    errors: list[str] = []
+
+    def _fetch_one(sym: str):
+        try:
+            with _cl.redirect_stderr(_io.StringIO()), _cl.redirect_stdout(_io.StringIO()):
+                fi = yf.Ticker(sym).fast_info
+            price = float(getattr(fi, "last_price",     None) or 0)
+            prev  = float(getattr(fi, "previous_close", None) or 0)
+            vol   = float(getattr(fi, "last_volume",    None) or 0)
+            avg3m = float(getattr(fi, "three_month_average_volume", None) or 0)
+            hi52  = float(getattr(fi, "year_high",  None) or 0)
+            lo52  = float(getattr(fi, "year_low",   None) or 0)
+            mktts = getattr(fi, "regular_market_time", None) or getattr(fi, "regularMarketTime", None)
+
+            if price <= 0 or prev <= 0:
+                return None
+            chg_pct  = (price - prev) / prev * 100.0
+            vol_ratio = vol / avg3m if avg3m > 0 else float("nan")
+            return {
+                "Ticker":            sym,
+                "Price":             round(price, 3),
+                "Prev Close":        round(prev,  3),
+                "Chg %":             round(chg_pct, 2),
+                "Today Volume":      vol,
+                "Vol Ratio":         round(vol_ratio, 2) if np.isfinite(vol_ratio) else float("nan"),
+                "Last Bar Vol Ratio":float("nan"),
+                "Day High":          round(hi52, 3),   # best available; intraday not in fast_info
+                "Day Low":           round(lo52, 3),
+                "Latest Bar SGT":    _epoch_to_sgt(int(mktts)) if mktts else "unknown",
+                "Mover Source":      market_key,
+            }
+        except Exception as e:
+            errors.append(f"{sym}: {e}")
+            return None
+
+    workers = min(20, max(1, len(tickers)))
+    with _fut.ThreadPoolExecutor(max_workers=workers) as ex:
+        for result in ex.map(_fetch_one, tickers):
+            if result:
+                rows.append(result)
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["Chg %"] = pd.to_numeric(df["Chg %"], errors="coerce")
+        df = df.dropna(subset=["Chg %"]).sort_values("Chg %", ascending=False).reset_index(drop=True)
+
+    latest_vals = [v for v in df["Latest Bar SGT"].astype(str).tolist() if v and v != "unknown"] if not df.empty else []
+    meta = {
+        "market":          market_key,
+        "source":          "fast_info parallel scan",
+        "tickers_requested": len(tickers),
+        "rows":            int(len(df)),
+        "latest_bar_sgt":  max(latest_vals) if latest_vals else "unknown",
+        "refreshed_at_sgt":datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "errors":          errors[:8],
+    }
+    return df, meta
+
+
+@st.cache_data(ttl=180, show_spinner=False)
 def _download_top_movers_cached(tickers_tuple: tuple[str, ...], market_key: str, period: str, interval: str, prepost: bool, max_tickers: int) -> tuple[pd.DataFrame, dict]:
     """Download intraday Yahoo data and calculate top movers/losers.
 
@@ -458,10 +534,10 @@ def render_top_movers(g: dict) -> None:
         interval = st.selectbox("Fallback interval", ["5m", "15m", "1d"], index=0, key="top_movers_interval")
 
     use_market_feed = st.checkbox(
-        "Use Yahoo market movers feed, not scanner universe",
-        value=True,
+        "Use Yahoo market movers feed (US only), not scanner universe",
+        value=(market_key == "US"),   # ← default True only for US; False for SGX/HK/India
         key="top_movers_use_feed",
-        help="When enabled, this tab asks Yahoo for day gainers, day losers and most active symbols. It does not depend on the app's US/SGX/India/HK universe lists.",
+        help="US: asks Yahoo for day gainers/losers/most active. SGX/HK/India: always uses fast_info universe scan (Yahoo screeners are US-only).",
     )
 
     period = "5d" if interval in ("5m", "15m") else "1mo"
@@ -473,21 +549,44 @@ def render_top_movers(g: dict) -> None:
         if st.button("🔄 Refresh movers", key="refresh_top_movers"):
             _download_market_movers_feed_cached.clear()
             _download_top_movers_cached.clear()
+            _download_nonUS_movers_cached.clear()
             st.rerun()
     with b2:
-        if use_market_feed:
+        if market_key != "US":
+            st.caption(f"Market: **{market_key}** · source: **fast_info parallel scan** ({len(tickers)} tickers) · cache TTL **3 min**")
+        elif use_market_feed:
             st.caption(f"Market: **{market_key}** · source: **Yahoo day gainers / losers / most active** · cache TTL **3 min**")
         else:
             st.caption(f"Fallback universe mode: **{market_key}** · requested up to **{min(len(tickers), mover_count)}** tickers · cache TTL **3 min**")
 
-    if use_market_feed:
+    # ── Data fetch: route by market ────────────────────────────────────────────
+    # Non-US markets (SGX/HK/India): Yahoo predefined screeners are US-only and
+    # always return empty for other regions. Use fast_info parallel scan instead.
+    if market_key != "US":
+        if not tickers:
+            st.warning(f"No ticker universe found for {market_key}. Add tickers in the scanner sidebar.")
+            return
+        with st.spinner(f"Loading {market_key} movers via fast_info scan ({len(tickers)} tickers)…"):
+            df, meta = _download_nonUS_movers_cached(tuple(tickers), market_key, int(mover_count))
+        if df.empty:
+            st.warning(
+                f"No movers data returned for **{market_key}**. "
+                "This usually means the market is closed or Yahoo has no recent prices for these tickers. "
+                "Check that tickers are correct (e.g. `D05.SI`, `0700.HK`, `RELIANCE.NS`)."
+            )
+            if meta.get("errors"):
+                with st.expander("Errors"):
+                    st.write(meta["errors"])
+            return
+
+    elif use_market_feed:
         with st.spinner(f"Loading {market_key} movers directly from Yahoo market movers feed..."):
             df, meta = _download_market_movers_feed_cached(market_key, int(mover_count))
         if df.empty:
             st.warning("Yahoo market movers feed returned no rows. Falling back to scanner-universe intraday scan.")
             use_market_feed = False
 
-    if not use_market_feed:
+    if market_key == "US" and not use_market_feed:
         if not tickers:
             st.warning(f"No ticker universe found for {market_key}.")
             return
