@@ -408,31 +408,17 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         pass
 
     if _market_is_open:
-        # v15.9 speed: intraday 5-min download was fetching ALL tickers (e.g. 350)
-        # which took ~30s but most results were discarded in the signal loop anyway.
-        # Strategy: pre-filter to the top N by recent 20-day average volume before
-        # the intraday download. This requires a quick volume check from the daily
-        # batch cache (if already populated) or from fast_info.
-        # Result: reduces intraday download from ~350 tickers to ~100 → saves ~20s.
-        _intraday_tickers = all_tickers   # default — all tickers
-        _max_intraday = 100               # cap: top 100 by volume or first 100
-
-        # batch_cache is not yet populated here (it's downloaded after intraday).
-        # Fall back to first _max_intraday tickers — these are already ordered by
-        # the universe builder with high-signal sources (52w breakouts, gappers) first.
-        _intraday_tickers = all_tickers[:_max_intraday]
-
-        status_text.text(f"📥 Fetching 5-min bars for top {len(_intraday_tickers)} tickers by volume…")
+        status_text.text(f"📥 Fetching latest 5-minute bars for {total} stocks...")
         try:
             raw_intraday = yf.download(
-                _intraday_tickers, period="1d", interval="5m",
+                all_tickers, period="1d", interval="5m",
                 progress=False, group_by="ticker", threads=True, auto_adjust=True,
                 prepost=True,
             )
             latest_bars = []
-            for tkr in _intraday_tickers:
+            for tkr in all_tickers:
                 try:
-                    idf = _extract_from_yf_batch(raw_intraday, tkr, len(_intraday_tickers))
+                    idf = _extract_from_yf_batch(raw_intraday, tkr, len(all_tickers))
                     idf = _clean_scan_ohlcv(idf).dropna(how="all") if not idf.empty else pd.DataFrame()
                     if len(idf) >= 1 and "Close" in idf.columns and idf["Close"].notna().any():
                         intraday_cache[tkr] = idf
@@ -456,77 +442,17 @@ def fetch_analysis(green_sectors, red_sectors, regime,
     _t_phase = _t_now
 
     # ── Batch OHLCV pre-fetch ─────────────────────────────────────────────────
-    # v15.9: Wrap the download in a cached function so repeated scans within
-    # 20 minutes (e.g. strategy switch, filter change) reuse the data instantly.
-    # The cache key is the sorted ticker tuple — changes only when universe changes.
-    @st.cache_data(ttl=20 * 60, show_spinner=False)
-    def _fetch_ohlcv_batch_cached(tickers_key: tuple) -> dict:
-        """Download 60-day daily bars for all tickers, return dict[ticker→DataFrame]."""
-        out = {}
-        try:
-            raw = yf.download(
-                list(tickers_key),
-                period="60d", interval="1d",
-                progress=False, group_by="ticker",
-                threads=False, auto_adjust=True,
-            )
-            if raw is None or (hasattr(raw, "empty") and raw.empty):
-                return out
-            for tkr in tickers_key:
-                try:
-                    if isinstance(raw.columns, pd.MultiIndex):
-                        lvl1 = raw.columns.get_level_values(1)
-                        lvl0 = raw.columns.get_level_values(0)
-                        if tkr in lvl1:
-                            df_t = raw.xs(tkr, axis=1, level=1).copy()
-                        elif tkr in lvl0:
-                            df_t = raw[tkr].copy()
-                        else:
-                            continue
-                    elif len(tickers_key) == 1:
-                        df_t = raw.copy()
-                    else:
-                        continue
-                    df_t = _clean_scan_ohlcv(df_t)
-                    if len(df_t) >= 40:   # 60d → ~42 bars; require at least 40
-                        out[tkr] = df_t
-                except Exception:
-                    continue
-        except Exception:
-            pass
-        return out
-
-    _tickers_cache_key = tuple(sorted(all_tickers))
-    status_text.text(f"📥 Batch downloading {total} stocks (60-day daily)...")
+    status_text.text(f"📥 Batch downloading {total} stocks...")
     batch_cache = {}
 
-    # ── Primary path: cached single-batch download ────────────────────────────
-    # For ≤600 tickers: one request is faster than parallel chunks on Cloud
-    # because Yahoo throttles concurrent requests from the same IP.
-    # The @st.cache_data(ttl=20min) means repeat scans (strategy switch, filter
-    # change) within 20 minutes return instantly from cache.
-    if total <= 600:
-        try:
-            _cached_result = _fetch_ohlcv_batch_cached(_tickers_cache_key)
-            batch_cache.update(_cached_result)
-            # Overlay intraday bars where available
-            for _tkr, _df_t in batch_cache.items():
-                if _tkr in intraday_cache:
-                    try:
-                        batch_cache[_tkr] = _overlay_intraday_daily(_df_t, intraday_cache[_tkr])
-                    except Exception:
-                        pass
-            scan_debug["batch_loaded"] = int(len(batch_cache))
-            status_text.text(f"✅ {len(batch_cache)}/{total} stocks loaded")
-        except Exception as e:
-            scan_debug["batch_error"] = f"{type(e).__name__}: {e}"
-            status_text.text(f"Batch failed ({e}), fetching individually...")
-
-    # ── Fallback / large universe: chunked parallel download ─────────────────
-    if not batch_cache:
-        def _chunks(seq, n):
-            for _i in range(0, len(seq), n):
-                yield list(seq[_i:_i + n])
+    # v15.9 speed: one giant yf.download(all 1200+) can randomly take 70s+ or
+    # stall behind a few bad symbols.  Download fixed-size chunks concurrently;
+    # each chunk is parsed independently so one slow/failed chunk does not block
+    # the whole universe.  This still scans the full universe — it only changes
+    # the transport layer.
+    def _chunks(seq, n):
+        for _i in range(0, len(seq), n):
+            yield list(seq[_i:_i + n])
 
     def _download_daily_chunk(chunk, chunk_no=0):
         out = {}
@@ -534,8 +460,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         try:
             raw = yf.download(
                 chunk if len(chunk) > 1 else chunk[0],
-                period="60d", interval="1d",   # 60d = ~42 bars (was 3mo=63) — saves ~33% download+parse time
-                                                # All signals work at 42 bars: ATR14, RSI14, BB20, MACD, MA60 approx
+                period="3mo", interval="1d",  # 3mo is enough for 60d MA + all signals
                 progress=False, group_by="ticker", threads=True, auto_adjust=True,
             )
             if raw is None or getattr(raw, "empty", True):
@@ -567,15 +492,12 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         return out, err
 
     try:
-        # Cloud note: parallel chunk workers cause Yahoo to throttle concurrent
-        # requests from the same IP — 2 workers at 125 tickers each took 45s vs
-        # 1 worker at 350 tickers taking 29s. Single-worker is faster on Cloud.
-        # Parallelism only helps when each download is independent (different IPs).
-        # Keep chunks small so a single stalled symbol doesn't block the batch.
-        if total >= 600:
-            _chunk_size, _dl_workers = 300, 2   # large universe: 2 workers still justified
-        elif total >= 200:
-            _chunk_size, _dl_workers = max(total, 1), 1   # 1 worker, 1 chunk — fastest on Cloud
+        # Tune for Yahoo reliability: enough parallelism to avoid a 70s single
+        # batch, but not so many connections that Yahoo starts throttling.
+        if total >= 900:
+            _chunk_size, _dl_workers = 225, 4
+        elif total >= 400:
+            _chunk_size, _dl_workers = 225, 3
         else:
             _chunk_size, _dl_workers = max(total, 1), 1
 
@@ -818,53 +740,16 @@ def fetch_analysis(green_sectors, red_sectors, regime,
     scan_debug["timing"]["meta_prefetch_s"] = round(_t_now - _t_phase, 1)
     _t_phase = _t_now
 
-    # v15.9 speed: fast vectorised pre-filter before the signal loop.
-    # Eliminates tickers that cannot pass ANY strategy gate before running TA.
-    # Thresholds tightened for Cloud: more aggressive filtering = shorter signal loop.
-    _prefiltered_tickers = []
-    _prefiltered_skip    = 0
-    for _pf_ticker in all_tickers:
-        _pf_df = batch_cache.get(_pf_ticker)
-        if _pf_df is None:
-            # No data — skip silently (not a real candidate)
-            _prefiltered_skip += 1
-            continue
-        try:
-            _pf_close  = float(_pf_df["Close"].ffill().iloc[-1])
-            _pf_vol20  = float(_pf_df["Volume"].ffill().tail(20).mean())
-            _pf_vol1   = float(_pf_df["Volume"].ffill().iloc[-1])
-            _pf_vr     = _pf_vol1 / _pf_vol20 if _pf_vol20 > 0 else 0
-            # Stricter thresholds vs before: price<$2, vol<200k, VR<0.4
-            # These CANNOT produce a signal: too illiquid for any strategy
-            if _pf_close < 2.0 or _pf_vol20 < 200_000 or _pf_vr < 0.4:
-                _prefiltered_skip += 1
-                continue
-            # ATR% early exit for PSM: if ATR% < 1.5% skip (too slow to swing)
-            # This removes large-caps, ETFs, utility stocks early
-            try:
-                _pf_high = _pf_df["High"].ffill()
-                _pf_low  = _pf_df["Low"].ffill()
-                _pf_atr_approx = float((_pf_high.tail(14) - _pf_low.tail(14)).mean()) / max(_pf_close, 0.01) * 100
-                if _pf_atr_approx < 1.5:
-                    _prefiltered_skip += 1
-                    continue
-            except Exception:
-                pass
-        except Exception:
-            pass
-        _prefiltered_tickers.append(_pf_ticker)
-
-    scan_debug["prefilter_skip"] = _prefiltered_skip
-    scan_debug["prefilter_kept"] = len(_prefiltered_tickers)
-    _signal_universe = _prefiltered_tickers   # renamed for clarity in loop below
-
+    # v15.8 speed: cap expensive option-chain HTTP calls during broad
+    # master scans. Price/volume signals still run for the whole universe;
+    # options are only additive and should not dominate scan time.
     _option_enrich_count = 0
     _max_option_enrich = 40 if total >= 700 else 80
     _skip_individual_fallback = bool(batch_cache) and total >= 200
 
-    for i, ticker in enumerate(_signal_universe):
+    for i, ticker in enumerate(all_tickers):
         try:
-            _scan_progress(i, f"Scanning {ticker} ({i+1}/{len(_signal_universe)})...")
+            _scan_progress(i, f"Scanning {ticker} ({i+1}/{total})...")
 
             # ── Earnings guard — pre-fetched calendar cache ──────────────
             if skip_earnings:
@@ -2063,11 +1948,6 @@ def fetch_analysis(green_sectors, red_sectors, regime,
 
     status_text.empty()
     progress_bar.empty()
-
-    # timing checkpoint: signal loop
-    _t_now = _time_mod.perf_counter()
-    scan_debug["timing"]["signal_loop_s"] = round(_t_now - _t_phase, 1)
-    scan_debug["timing"]["total_s"]       = round(_t_now - _t_start, 1)
 
     def make_df(rows, prob_col):
         if not rows:

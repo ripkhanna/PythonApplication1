@@ -325,7 +325,7 @@ _SIDEBAR_DEFAULTS = {
     "ui_swing_mode":          "Balanced",  # Options: Strict/Balanced/Discovery/Support Entry/Premarket Momentum/High Volume/High Conviction/PSM Strategy
     "ui_skip_earnings":       False,
     "ui_use_live_universe":   True,
-    "ui_max_live_universe":   1000,
+    "ui_max_live_universe":   1000,   # v15.9: reduced from 1000 — 350 is fast, 1000 scans 1200+ tickers
     "ui_always_include":      "",
     # Options layer
     "ui_enable_options":      False,
@@ -901,7 +901,8 @@ if _last_diag_market != market_sel:
                "last_universe_source", "last_universe_count",
                "last_live_ticker_count", "last_existing_ticker_count",
                "last_always_include_csv", "last_always_include_list",
-               "last_scan_debug", "_loaded_csv_cache_key"):
+               "last_scan_debug", "_loaded_csv_cache_key",
+               "_last_scan_signature"):   # v15.9: invalidate skip-rescan guard on market change
         st.session_state.pop(_k, None)
     st.session_state["_diag_market"] = market_sel
 else:
@@ -1983,15 +1984,48 @@ if run:
 
         try:
             with st.spinner(f"Scanning {len(active_tickers)} stocks..."):
-                df_long, df_short, df_operator = fetch_analysis(
-                    tuple(green_sectors), tuple(red_sectors),
-                    regime, skip_earnings, top_n_sectors,
-                    strategy_mode="Discovery",  # master Yahoo cache uses broad scan; strategy filters run locally
-                    live_sectors=live_sectors if live_sectors else None,
-                    market_tickers=tuple(active_tickers),
-                    enable_options=enable_options,
-                    data_freshness_bucket=freshness_cache_bucket,
+                # v15.9: check if the in-memory master scan is still valid for this
+                # exact ticker set + sector context before calling fetch_analysis.
+                # fetch_analysis HAS @st.cache_data(ttl=3600) but _cache_refresh_due
+                # (disk CSV age check) fires on every rerender, causing unnecessary
+                # rescans even when Streamlit's own cache has valid data.
+                # Guard: if ticker list, market, and freshness bucket are unchanged
+                # AND df_long_master is already populated, skip the re-scan.
+                _scan_signature = (
+                    tuple(sorted(active_tickers)),
+                    market_sel,
+                    str(freshness_cache_bucket),
+                    str(regime),
                 )
+                _cached_sig = st.session_state.get("_last_scan_signature")
+                _has_master  = (
+                    not st.session_state.get("df_long_master", pd.DataFrame()).empty
+                    or not st.session_state.get("df_short_master", pd.DataFrame()).empty
+                )
+                _skip_rescan = (
+                    not _manual_scan            # not a user-triggered scan
+                    and _has_master             # already have results
+                    and _cached_sig == _scan_signature  # same context
+                )
+                if _skip_rescan:
+                    # Reuse existing master without hitting Yahoo/yfinance
+                    df_long    = st.session_state.get("df_long_master",    pd.DataFrame())
+                    df_short   = st.session_state.get("df_short_master",   pd.DataFrame())
+                    df_operator= st.session_state.get("df_operator_master",pd.DataFrame())
+                    st.session_state["_cache_no_new_data_notice"] = (
+                        "✅ Reusing cached scan results — ticker universe and market unchanged."
+                    )
+                else:
+                    df_long, df_short, df_operator = fetch_analysis(
+                        tuple(green_sectors), tuple(red_sectors),
+                        regime, skip_earnings, top_n_sectors,
+                        strategy_mode="Discovery",
+                        live_sectors=live_sectors if live_sectors else None,
+                        market_tickers=tuple(active_tickers),
+                        enable_options=enable_options,
+                        data_freshness_bucket=freshness_cache_bucket,
+                    )
+                    st.session_state["_last_scan_signature"] = _scan_signature
         except Exception as _scan_e:
             try:
                 _record_app_error("fetch_analysis_call", _scan_e, extra={"market": market_sel, "ticker_count": len(active_tickers)})
