@@ -312,7 +312,9 @@ def render_diagnostics(ctx: dict) -> None:
         d1, d2, d3, d4 = st.columns(4)
         d1.metric("Tickers attempted", _scan_dbg.get("total_tickers", 0))
         d2.metric("Batch loaded", _scan_dbg.get("batch_loaded", 0))
-        d3.metric("Ticker errors", _scan_dbg.get("ticker_errors", 0))
+        d3.metric("Pre-filter kept", _scan_dbg.get("prefilter_kept", _scan_dbg.get("batch_loaded", 0)),
+                  delta=f"−{_scan_dbg.get('prefilter_skip',0)} skipped early",
+                  help="v15.9: fast pre-filter removes tickers with price<$1, vol<100k or vol_ratio<0.3 before TA runs")
         d4.metric("Skipped liquidity", _scan_dbg.get("skipped_liquidity", 0))
         d5, d6, d7, d8 = st.columns(4)
         d5.metric("Skipped history", _scan_dbg.get("skipped_history", 0))
