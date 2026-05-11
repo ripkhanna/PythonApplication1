@@ -325,7 +325,7 @@ _SIDEBAR_DEFAULTS = {
     "ui_swing_mode":          "Balanced",  # Options: Strict/Balanced/Discovery/Support Entry/Premarket Momentum/High Volume/High Conviction/PSM Strategy
     "ui_skip_earnings":       False,
     "ui_use_live_universe":   True,
-    "ui_max_live_universe":   1000,   # v15.9: reduced from 1000 — 350 is fast, 1000 scans 1200+ tickers
+    "ui_max_live_universe":   350,   # v15.9: reduced from 1000 — 350 is fast, 1000 scans 1200+ tickers
     "ui_always_include":      "",
     # Options layer
     "ui_enable_options":      False,
@@ -902,7 +902,8 @@ if _last_diag_market != market_sel:
                "last_live_ticker_count", "last_existing_ticker_count",
                "last_always_include_csv", "last_always_include_list",
                "last_scan_debug", "_loaded_csv_cache_key",
-               "_last_scan_signature"):   # v15.9: invalidate skip-rescan guard on market change
+               "_last_scan_signature",   # v15.9: invalidate skip-rescan guard on market change
+               "_last_scan_sig_short"):  # v15.9: short signature for pre-run check
         st.session_state.pop(_k, None)
     st.session_state["_diag_market"] = market_sel
 else:
@@ -1523,12 +1524,13 @@ def _show_top_spinner(message: str):
         _top_scan_status.info(message)
 
 
-tab_sectors, tab_trade_desk, tab_long, tab_swing_picks, tab_top_movers, tab_short, tab_operator, tab_both, tab_etf, tab_stock, tab_earn, tab_event, tab_lt, tab_diag, tab_backtest, tab_strategy, tab_help = st.tabs([
+tab_sectors, tab_trade_desk, tab_long, tab_swing_picks, tab_top_movers, tab_premarket, tab_short, tab_operator, tab_both, tab_etf, tab_stock, tab_earn, tab_event, tab_lt, tab_diag, tab_backtest, tab_strategy, tab_help = st.tabs([
     "🗂️ Sector Heatmap",
     "📋 Trade Desk",
     "📈 Long Setups",
     "🎯 Swing Picks",
     "🚀 Movers/Losers",
+    "🌅 Pre-Market",
     "📉 Short Setups",
     "🪤 Operator Activity",
     "🔄 Side by Side",
@@ -1567,6 +1569,7 @@ from swing_trader_app.tabs.strategy_lab_tab import render_strategy_lab
 from swing_trader_app.tabs.swing_picks_tab import render_swing_picks
 from swing_trader_app.tabs.trade_desk_tab import render_trade_desk
 from swing_trader_app.tabs.top_movers_tab import render_top_movers
+from swing_trader_app.tabs.premarket_tab import render_premarket
 
 def format_latest_bar_time(latest_bar_time):
     import pandas as pd
@@ -1871,6 +1874,25 @@ if _cache_refresh_due and not _manual_scan and _loaded_cache is not None:
             pass
 
 run = _manual_scan or _cache_refresh_due or _strategy_auto_refresh
+
+# v15.9: prevent any button click from re-triggering a full scan.
+# When _cache_refresh_due fires (CSV is old), Streamlit re-runs the entire page —
+# including on Refresh Movers, Fetch Earnings, or any other button click.
+# Guard: if we already have a valid in-memory master scan for this exact universe,
+# force _cache_refresh_due = False so run stays False.
+# This means the scan only re-runs on: manual Scan button, market change, or
+# strategy change — NOT on every button click across the app.
+if _cache_refresh_due and not _manual_scan and not _strategy_auto_refresh:
+    _sig_now = (
+        market_sel,
+        str(freshness_cache_bucket),
+    )
+    _sig_stored = st.session_state.get("_last_scan_sig_short")
+    _has_master = not st.session_state.get("df_long_master", pd.DataFrame()).empty
+    if _has_master and _sig_stored == _sig_now:
+        _cache_refresh_due = False
+        run = False
+        st.session_state["scan_cache_refresh_due"] = False
 if _strategy_auto_refresh:
     _show_top_spinner(st.session_state.get("_strategy_changed_notice", "🔄 Strategy changed — refreshing scan/grid..."))
 elif _cache_due_no_new_data:
@@ -2026,6 +2048,10 @@ if run:
                         data_freshness_bucket=freshness_cache_bucket,
                     )
                     st.session_state["_last_scan_signature"] = _scan_signature
+                    st.session_state["_last_scan_sig_short"] = (
+                        market_sel,
+                        str(freshness_cache_bucket),
+                    )
         except Exception as _scan_e:
             try:
                 _record_app_error("fetch_analysis_call", _scan_e, extra={"market": market_sel, "ticker_count": len(active_tickers)})
@@ -2299,6 +2325,9 @@ with tab_swing_picks:
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_top_movers:
     _safe_render_tab('top_movers', render_top_movers)
+
+with tab_premarket:
+    _safe_render_tab('premarket', render_premarket)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
