@@ -1,4 +1,4 @@
-"""Help tab renderer — updated for all new strategies and features."""
+"""Help tab renderer — updated for Breakout Scanner, universe_data refactor, and all features."""
 
 
 def render_help(ctx: dict) -> None:
@@ -6,60 +6,74 @@ def render_help(ctx: dict) -> None:
 
     st.markdown("## ❓ Swing Scanner — Complete Guide")
     st.caption(
-        "Covers all 8 strategies · Pre-market & Support Entry · PSM · High Conviction · "
-        "Speed fixes · Always-include tickers · Diagnostics · Stock Analysis sync"
+        "19 tabs · 8 strategies · US + SGX + India + HK · "
+        "Breakout Scanner · Bayesian engine · Operator layer · Options signals"
     )
 
     # ── What's new ────────────────────────────────────────────────────────────
     with st.expander("🆕 What changed recently", expanded=True):
         st.markdown("""
-### Latest build
-- **PSM Help updated** — PSM Strategy, Rank/View/Buy Condition, PI Proxy, PSS Score, and compare-shortlist behavior are now documented.
-- **PSM filter-bar reliability note** — PSM filters such as Min ATR/Min PI/Min probability should default safely during Streamlit reruns.
-- **Cache freshness check added** — when scanner TTL is due, the app first checks Yahoo's latest available bar before rebuilding the expensive full scan.
-- **No-new-bar optimization** — if Yahoo's latest bar is the same as the cached latest bar, the app keeps the existing cache and writes a Diagnostics note instead of re-downloading all stocks.
-- **Latest bar display cleanup** — fixed duplicate label like `Latest bar: Latest bar: ...`; times are shown cleanly in SGT where the latest-bar formatter is used.
-- **🇭🇰 Hong Kong market added** as a full market radio option.
-- **HK expanded universe**: 137 curated liquid/high-beta `.HK` stocks, including your original 30 core names.
-- **🚀 Movers/Losers tab added** — Top Gainers, Top Losers, and Volume Leaders for US/SGX/India/HK.
-- **Master Yahoo cache architecture** — Yahoo data is downloaded once, then strategy changes only re-filter cached data.
-- **Latest bar time formatting** — latest bar display can be converted to Singapore time for clearer diagnostics.
-- **8 Swing Strategies** in the sidebar dropdown (was 3) including **PSM Strategy** for 5–7 day swing candidates.
-- **Speed**: parallel pre-fetch cuts scan time from ~15 min → ~2 min for 410 tickers.
-- **Always include tickers** is the single place to add custom tickers (duplicate "Custom tickers" field removed).
-- **Stock Analysis** operator label now matches the scanner exactly.
-- **Diagnostics** shows always-include status, ticker search box, and per-ticker fetch log.
-- **High Conviction** strategy added — requires all 5 signal categories simultaneously.
-- **Support Entry** strategy — only shows stocks AT a support level, not already extended.
-- **Premarket Momentum** strategy — stocks with +1–8% pre-market gain + intact trend.
-- Master scan empty-result fix: Discovery mode now catches all stocks regardless of market direction.
+### Latest build — v13.90
 
-### Previous major milestones
-- **v13.52** — Balanced/Strict/Discovery/High Volume strategies, live-market swing criteria.
-- **v12** — Options signals (US + India F&O), operator activity layer.
-- **v11** — SGX/India markets, intraday overlay, sector heatmap.
+#### ⚡ Breakout Scanner (new tab)
+A unified, market-aware breakout discovery engine added as a dedicated tab.
+Three signals are combined into a single ranked table with a **Score 0–100**:
+- **🔥 High-Volume Breakout** — price > N-day high with volume ≥ N× 20-day average
+- **📈 52-Week High Setup** — stock within X% of its 52-week high
+- **🚀 Market Mover** — Yahoo live gainers / losers / most-active feed (US only)
+
+Universe dropdown lets you pick which index pool to scan (S&P 500, NASDAQ-100, All US, etc.).
+Market dropdown correctly filters to market-specific stocks only — SGX shows only `.SI`, India only `.NS`, HK only `.HK`.
+
+#### 🌍 Universe refactor (universe_data.py)
+All ticker lists are now defined in a single file (`tabs/universe_data.py`) and imported everywhere:
+- `config_core.py` no longer defines its own lists — it imports from `universe_data`
+- `top_movers_tab.py` delegates to `get_tickers_for_market()` instead of reading `g` globals directly
+- Every market is now `existing curated list + actual index components`, merged and deduplicated
+- Zero ticker overlap between markets (verified)
+
+| Market | Total tickers | How built |
+|--------|--------------|-----------|
+| 🇺🇸 US | 746 | Curated watchlist + S&P 500 (~489) + NASDAQ-100 (~108) |
+| 🇸🇬 SGX | 111 | STI-30 + REITs + growth + SGX Mainboard liquid |
+| 🇮🇳 India | 172 | Curated + Nifty 50 + Nifty Next-50 + Midcap-50 |
+| 🇭🇰 HK | 137 | Curated + Hang Seng + HSI Tech constituents |
+
+#### Previous milestones
+- **HK market** added as full market radio option with 137 `.HK` tickers.
+- **PSM Strategy** — 5–7 day swing ranking with PI Proxy, PSS Score, Buy Condition.
+- **High Conviction** strategy — all 5 signal categories must fire simultaneously.
+- **Support Entry** — surfaces stocks AT support, not already extended.
+- **Premarket Momentum** — gap-up names 30 min before open.
+- **8 Swing Strategies** in sidebar.
+- **Master Yahoo cache** — one broad download per market, strategies refilter it.
+- **No-new-bar optimization** — skips expensive re-download when Yahoo has no newer bar.
+- **Movers/Losers tab** — Top Gainers, Losers, Volume Leaders across all markets.
+- **Speed**: ~2 min scan (was ~15 min) via parallel pre-fetch + shared session.
         """)
 
     # ── Quick start ───────────────────────────────────────────────────────────
     with st.expander("🚀 Quick start — daily workflow"):
         st.markdown("""
-1. Pick market: **US**, **SGX**, **India**, or **HK**.
-2. Choose a **Swing strategy** (see table below).
+1. Pick market in sidebar: **US · SGX · India · HK**.
+2. Choose a **Swing strategy** from the dropdown.
 3. Add must-scan names in **Always include tickers** — e.g. `UUUU, APP, NVDA, S58.SI, 0700.HK`.
 4. Click **🚀 Scan**.
-5. Review tabs:
+5. Review tabs in this order:
 
 ```
-Movers/Losers → Sector Heatmap → Long Setups → Swing Picks → Trade Desk → Stock Analysis
+🚀 Movers/Losers → 🗂️ Sector Heatmap → ⚡ Breakout Scanner
+    → 📈 Long Setups → 🎯 Swing Picks → 📋 Trade Desk → 🔬 Stock Analysis
 ```
 
 **Best strategy by time of day:**
 
-| Time (local market) | Strategy to use |
+| Time (local market) | Best strategy |
 |---|---|
 | 30 min before open | **Premarket Momentum** — catch gap-up names |
-| First 30 min after open | **Support Entry** — buy dips that have pulled to MA |
+| First 30 min after open | **Support Entry** — dips at MA levels |
 | Mid-day / end of day | **Balanced**, **High Conviction**, or **PSM Strategy** |
+| Any time for breakouts | **⚡ Breakout Scanner** tab — independent of main scan |
 | Quiet/choppy markets | **Discovery** for watchlist building |
 | Want fewer but stronger | **High Conviction** or **PSM Strategy** |
         """)
@@ -72,50 +86,44 @@ Movers/Losers → Sector Heatmap → Long Setups → Swing Picks → Trade Desk 
 | **Strict** | Strong markets, want A+ only | Very high probability + score gate | 3–10 stocks |
 | **Balanced** | Normal daily trading (default) | Practical trend + volume + operator | 15–40 stocks |
 | **Discovery** | Quiet markets, building watchlist | Wide net, lower thresholds | 40–80+ stocks |
-| **Support Entry ⭐** | Morning scan, before move happens | Only stocks AT MA20/MA60/VWAP/swing low, not already up | 5–20 stocks |
+| **Support Entry ⭐** | Morning scan, before the move | Only stocks AT MA20/MA60/VWAP/swing low | 5–20 stocks |
 | **Premarket Momentum 🚀** | 30 min before open | +1–8% PM gain + intact technical trend | 5–15 stocks |
 | **High Volume 📊** | Finding active names right now | Unusual volume / breakout / pocket pivot | 10–30 stocks |
-| **High Conviction 🎯** | Highest win-rate shortlist | ALL 5 signal categories must confirm simultaneously | 5–15 stocks |
-| **PSM Strategy 🏆** | 5–7 day swing candidates with practical return potential | Combines PI Proxy, PSS Score, rise probability, volume, entry quality, and practical swing ranking | 5–25 stocks |
+| **High Conviction 🎯** | Highest win-rate shortlist | ALL 5 signal categories must confirm | 5–15 stocks |
+| **PSM Strategy 🏆** | 5–7 day swing candidates | PI Proxy + PSS Score + rise prob + volume + entry quality | 5–25 stocks |
 
 ### PSM Strategy — practical swing ranking
-PSM is designed to answer: **which stocks are actually worth considering for a 5–7 day swing trade?**
-
-It is more decision-focused than a broad scanner. It combines:
+PSM answers: **which stocks are worth a 5–7 day swing trade right now?**
 
 | Component | Meaning |
 |---|---|
-| **PI Proxy** | Return-potential proxy; higher means stronger potential move |
-| **PSS Score** | Professional Swing Signal score; counts stronger institutional/technical confirmations |
-| **Rise Probability** | Bayesian rise probability from the scanner engine |
-| **Volume Ratio** | Confirmation that the move has real activity behind it |
-| **Entry Quality** | Whether the entry is buyable now, confirmation-only, extended, or avoid |
-| **Practical Swing Rank** | Display ranking that penalizes extended/high-risk names and rewards tradable setups |
+| **PI Proxy** | Return-potential proxy; higher = stronger potential move |
+| **PSS Score** | Professional Swing Signal score; counts institutional confirmations |
+| **Rise Probability** | Bayesian probability from the scanner engine |
+| **Volume Ratio** | Move has real activity behind it |
+| **Entry Quality** | Buyable now / confirmation-only / extended / avoid |
+| **Practical Swing Rank** | Penalises extended/high-risk, rewards tradable setups |
 
 ### PSM tiers
 | Tier | Meaning |
 |---|---|
-| **STRONG BUY – PSM ELITE** | Highest-quality PSM setup; strongest confirmation and practical entry |
-| **BUY – PSM STRONG** | Strong swing setup; good probability, volume, and entry quality |
-| **BUY – PSM QUALIFIED** | Actionable but lower tier; buy only if the stated condition confirms |
+| **STRONG BUY – PSM ELITE** | Highest-quality setup; strongest confirmation and practical entry |
+| **BUY – PSM STRONG** | Strong setup; good probability, volume, and entry quality |
+| **BUY – PSM QUALIFIED** | Actionable but condition-based — follow the Buy Condition column |
 
 ### PSM display columns
 | Column | Meaning |
 |---|---|
-| **Rank** | Practical swing rank in the visible PSM grid |
-| **View** | Plain-English decision such as Best balanced swing, Best aggressive momentum, Good quality swing, Watch only, or Strong but extended — wait |
-| **Buy Condition** | Practical trigger, e.g. hold support zone or break above trigger with volume; includes stop and TP1 where available |
-| **PI Proxy** | Return-potential proxy used by PSM ranking |
-| **Why Selected** | Short explanation of why the stock passed PSM, including PI/PSS/volume signals |
+| **Rank** | Practical swing rank in the PSM grid |
+| **View** | Plain-English decision: Best balanced swing / Best aggressive momentum / Good quality swing / Watch only / Strong but extended |
+| **Buy Condition** | Practical trigger with stop and TP1 where available |
+| **PI Proxy** | Return-potential proxy |
+| **Why Selected** | Short explanation of PI / PSS / volume signals that passed PSM |
 
 ### PSM compare shortlist
-Use this when you want the scanner to rank **only a custom list** such as:
-
-```text
-GRND, IREN, WMG, QCOM, DDOG
-```
-
-When active, PSM recalculates Rank/View/Buy Condition only for that shortlist instead of the full market universe. This is the correct way to compare a small set of stocks against each other.
+When you want PSM to rank **only a custom list** (e.g. `GRND, IREN, WMG, QCOM, DDOG`):
+type those tickers into the compare shortlist box. PSM recalculates Rank/View/Buy Condition
+for that shortlist only instead of the full universe.
 
 ### Support Entry — tiers explained
 | Tier | Signal | Meaning |
@@ -126,7 +134,7 @@ When active, PSM recalculates Rank/View/Buy Condition only for that shortlist in
 | 🟣 Tier 4 — MA200 | Near 200-day MA | Long-term support, recovery play |
 | ⚪ Tier 5 — VWAP | Holding above VWAP | Intraday level, weakest |
 
-**Gate:** `today_chg_pct ≤ 5%` — stocks already up more than 5% today are hidden. That's the whole point: you want the entry BEFORE the move.
+**Gate:** `today_chg_pct ≤ 5%` — stocks already up >5% are hidden.
 
 ### Premarket Momentum — tiers explained
 | Tier | PM Change | Action |
@@ -135,7 +143,7 @@ When active, PSM recalculates Rank/View/Buy Condition only for that shortlist in
 | 📈 Tier B | +1% to +3% | Wait for first 5-min candle to confirm direction |
 | 🟡 Tier C/D | Live momentum | Technical momentum when PM data unavailable |
 
-**Gate:** above MA60 + core trend intact + RSI < 72 + no trap risk. A large PM move on a broken stock is filtered out.
+**Gate:** above MA60 + core trend intact + RSI < 72 + no trap risk.
 
 ### High Conviction — 5 categories
 All five must fire at least one signal:
@@ -148,43 +156,122 @@ All five must fire at least one signal:
 | 🏗️ Structure | Higher lows, VCP tightness, strong close, bull candle |
 | 🌍 Market | RS > SPY, RS momentum, sector leader, near 52W high |
 
-Look for `HC[T+M+V+S+X](5/5)` in the Signals column to see which fired.
+Look for `HC[T+M+V+S+X](5/5)` in the Signals column to confirm all five fired.
+        """)
 
-**Top Swing Buys panel:** In High Conviction mode, the Long Setups tab also shows a configurable **Top Swing Buys** panel above the full grid. It ranks only the High Conviction results by rise probability, scanner score, volume confirmation, entry/support quality, extension risk, and options confirmation. This is a display-only ranking layer and does not change the strategy logic.
+    # ── Breakout Scanner ──────────────────────────────────────────────────────
+    with st.expander("⚡ Breakout Scanner — unified breakout discovery"):
+        st.markdown("""
+The **⚡ Breakout Scanner** is an independent tab that scores every stock across
+three signals simultaneously and ranks them by a composite **Score (0–100)**.
+It does not use the sidebar strategy — it runs its own market-filtered scan.
+
+### How to use it
+1. Select **Market** (US / SGX / India / HK) — this filters the stock pool.
+2. Select **Universe** — which index or group to scan.
+3. Adjust signal parameters (optional).
+4. Click **Run Scanner**.
+
+### Universe options per market
+| Market | Universe choices |
+|---|---|
+| 🇺🇸 US | S&P 500 (~489) · NASDAQ-100 (~108) · S&P500+NDX (~517) · Growth watchlist (~337) · S&P500+Growth (~742) · All US (~746) |
+| 🇸🇬 SGX | SGX Mainboard (~111 stocks) |
+| 🇮🇳 India | Nifty 50 · Nifty 150 (50 + Next-50 + Midcap-50) |
+| 🇭🇰 HK | Hang Seng + HSI Tech (~137 stocks) |
+
+### Three signals combined
+| Signal | What it detects | Max Score |
+|---|---|---|
+| 🔥 **High-Volume Breakout** | Price > N-day high AND volume ≥ N× 20-day average | 30 pts (vol) + 20 pts (breakout) |
+| 📈 **52-Week High Setup** | Stock within X% of its 52-week high | 25 pts |
+| 🚀 **Market Mover** | Yahoo live gainers / losers / most-active (US only) | 5 pts |
+| 📊 **Momentum** | Absolute daily Chg % | 10 pts |
+| 🏆 **New 52W High bonus** | Price = 52-week high | 10 pts |
+
+### Score breakdown
+```
+0–20   Low activity — watchlist only
+21–40  Moderate signal — worth monitoring
+41–60  Good setup — one or two signals confirmed
+61–80  Strong — multiple signals confirmed simultaneously
+81–100 Elite — breakout + 52W high + mover + momentum all firing
+```
+
+### Key columns
+| Column | Meaning |
+|---|---|
+| **Score** | Composite 0–100 combining all three signals |
+| **Signals** | Active signal badges: Vol Breakout · 52W Setup · New 52W High · Mover |
+| **Vol Ratio** | Today's volume ÷ 20-day average volume |
+| **Today Vol** | Absolute volume today |
+| **vs 52W %** | How far price is below the 52-week high (0% = at the high) |
+| **In Range %** | Where price sits in the 52-week low→high range (100% = at the high) |
+| **Breakout %** | % above the N-day high |
+| **ATR %** | Daily volatility as % of price — ≥3% is useful swing range |
+| **3M Return %** | 63-session return — momentum context |
+
+### Signal parameters
+| Parameter | Default | Effect |
+|---|---|---|
+| Breakout window (days) | 20 | Price must exceed the prior N-day high |
+| Min vol ratio × | 2.0 | Volume must be ≥ N× the 20-day average |
+| 52W high within % | 5% | Include stocks within this % of their 52-week high |
+| Max tickers | 300 | Cap on universe size scanned (larger = slower) |
+
+### Top Picks panel
+Stocks scoring ≥ 40 appear as metric cards above the table showing Price, Chg%, Score, Vol Ratio, and 52W proximity.
+
+### Market filter note
+Yahoo's predefined screeners (day_gainers, day_losers, most_actives) return **US-listed stocks regardless of region parameter**.
+For SGX, India, and HK scans the mover feed is skipped entirely — results contain only tickers from the selected market's universe.
         """)
 
     # ── Tab guide ─────────────────────────────────────────────────────────────
-    with st.expander("🧭 Tab guide"):
+    with st.expander("🧭 Tab guide — all 19 tabs"):
         st.markdown("""
 | Tab | Purpose |
 |---|---|
-| 🚀 **Movers/Losers** | Top Gainers, Top Losers, and Volume Leaders across US/SGX/India/HK |
-| 🗂️ **Sector Heatmap** | Market direction first — color tiles, green/red summary |
-| 📋 **Trade Desk** | Execution: entry zone, stop, target, R/R, position size |
-| 📈 **Long Setups** | Bullish swing candidates — strategy-aware sections |
+| 🗂️ **Sector Heatmap** | Market direction first — color tiles, green/red sector summary |
+| 📋 **Trade Desk** | Execution: entry zone, stop, target, R/R, position size calculator |
+| 📈 **Long Setups** | Bullish swing candidates — strategy-aware sections and columns |
 | 🎯 **Swing Picks** | Final shortlist — Bayesian + operator + sector + news ranking |
+| 🚀 **Movers/Losers** | Top Gainers, Top Losers, and Volume Leaders across all markets |
+| 🌅 **Pre-Market** | Pre-market gappers and overnight movers before the open |
 | 📉 **Short Setups** | Bearish candidates — best for liquid US names |
 | 🪤 **Operator Activity** | Smart-money footprints across scanned universe |
-| 🔄 **Side by Side** | Compare best longs vs best shorts, spot conflict |
-| 📊 **ETF Holdings** | Add ETF constituents to universe |
+| ⚡ **Breakout Scanner** | Independent scanner: Vol Breakout + 52W High + Market Mover combined score |
+| 🔄 **Side by Side** | Compare best longs vs best shorts simultaneously |
+| 📊 **ETF Holdings** | Add ETF constituents to the scan universe |
 | 🔬 **Stock Analysis** | One-stock deep dive — operator label matches scanner |
-| 📅 **Earnings** | Earnings risk calendar — avoid nearby events |
-| 📰 **Event Predictor** | Contract/order/upgrade/dilution keyword scan |
+| 📅 **Earnings** | Earnings risk calendar — avoid or trade upcoming events |
+| 📰 **Event Predictor** | Contract / order / upgrade / dilution keyword scan |
 | 🌱 **Long Term** | 1–5 year quality scoring + near-support filter |
-| 🔍 **Diagnostics** | Cloud debug — errors, ticker list, always-include check |
-| 🧪 **Accuracy Lab** | Signal backtest / validation |
+| 🔍 **Diagnostics** | Cloud debug — errors, ticker list, cache status, always-include check |
+| 🧪 **Accuracy Lab** | Signal backtest and validation |
 | 🧠 **Strategy Lab** | ML research layer |
 | ❓ **Help** | This guide |
+
+### Recommended daily workflow order
+```
+🚀 Movers/Losers    ← what's moving right now?
+🗂️ Sector Heatmap  ← which sectors are leading?
+⚡ Breakout Scanner ← which stocks are breaking out?
+📈 Long Setups      ← strategy scan results
+🎯 Swing Picks      ← final shortlist
+📋 Trade Desk       ← position sizing and execution
+🔬 Stock Analysis   ← confirm your top 1–3 names
+```
         """)
 
-    # ── Long/Short setups ─────────────────────────────────────────────────────
+    # ── Long/Short setups columns ─────────────────────────────────────────────
     with st.expander("📈 Long / 📉 Short Setups — columns explained"):
         st.markdown("""
 ### Long setup action labels (Balanced mode)
 | Label | Meaning |
 |---|---|
 | 🔥 STRONG BUY | Highest accuracy: prob + score + trend + volume + no trap |
-| WATCH – HIGH QUALITY | Actionable setup, one confirmation short of STRONG BUY |
+| WATCH – HIGH QUALITY | Actionable, one confirmation short of STRONG BUY |
 | WATCH – DEVELOPING | Setup forming, not yet fully confirmed |
 | WATCH – TRAP RISK | Looks good but has false breakout / gap chase warning |
 
@@ -193,7 +280,7 @@ Look for `HC[T+M+V+S+X](5/5)` in the Signals column to see which fired.
 |---|---|
 | STRONG BUY – PSM ELITE | Highest-quality 5–7 day swing candidate |
 | BUY – PSM STRONG | Strong PSM setup with good confirmation |
-| BUY – PSM QUALIFIED | Actionable but condition-based; follow the Buy Condition column |
+| BUY – PSM QUALIFIED | Actionable but condition-based — follow Buy Condition column |
 
 ### Long setup action labels (Support Entry mode)
 | Label | Meaning |
@@ -210,19 +297,19 @@ Look for `HC[T+M+V+S+X](5/5)` in the Signals column to see which fired.
 | **Rise Prob** | Bayesian probability — above 70% is high quality |
 | **Setup Type** | Pullback / Breakout / Continuation / Support / PM Momentum |
 | **Operator** | 🔥 STRONG OPERATOR = smart money accumulating |
-| **Trap Risk** | FALSE BO / GAP CHASE / DISTRIB — avoid or reduce size |
+| **Trap Risk** | FALSE BO / GAP CHASE / DISTRIB — reduce size or skip |
 | **VWAP** | ABOVE = buyers in control |
-| **MA60 Stop** | Place stop just below this — setup is invalid if broken |
+| **MA60 Stop** | Place stop just below — setup is invalid if broken |
 | **TP1/2/3** | +10% / +15% / +20% targets — take partial at TP1 |
-| **RSI Now** | Only visible in Support Entry mode — want 28–65 |
-| **PM Chg%** | Only visible in Premarket mode — pre-market move % |
-| **Support Tier** | Only visible in Support Entry mode — tier 1 is strongest |
+| **RSI Now** | Support Entry mode only — want 28–65 |
+| **PM Chg%** | Premarket mode only — pre-market move % |
+| **Support Tier** | Support Entry mode only — Tier 1 is strongest |
         """)
 
     # ── Operator / Trap ───────────────────────────────────────────────────────
-    with st.expander("🪤 Operator Activity vs Trap Patterns — they are different"):
+    with st.expander("🪤 Operator Activity vs Trap Patterns"):
         st.markdown("""
-These are two separate scoring systems. Both are shown in **Stock Analysis**.
+Two separate scoring systems — both visible in **Stock Analysis** and the **Operator Activity** tab.
 
 ### Operator Score (accumulation)
 Measures smart-money buying footprints:
@@ -235,19 +322,17 @@ Measures smart-money buying footprints:
 
 | Label | Score | Meaning |
 |---|---|---|
-| 🔥 STRONG OPERATOR | ≥ 6 | Strong accumulation — multiple confirmation signals |
+| 🔥 STRONG OPERATOR | ≥ 6 | Multiple accumulation confirmations |
 | 🟢 ACCUMULATION | ≥ 4 | Good signs of buying pressure |
 | 🟡 WEAK SIGNS | ≥ 2 | Some activity, not conclusive |
 | ⚪ NONE | 0–1 | No operator footprint |
 
 ### Trap Patterns (manipulation / risk flags)
-Looks for failed breakouts and distribution:
-- False breakout — new high on volume but closes weak
-- Gap chase risk — today up >7% on 2.5× volume
-- Distribution — high volume + tiny move + weak close
+- **False breakout** — new high on volume but closes weak
+- **Gap chase risk** — today up >7% on 2.5× volume
+- **Distribution** — high volume + tiny move + weak close
 
-**A stock can have 🔥 STRONG OPERATOR and zero trap patterns simultaneously — that is the ideal setup.**
-The Stock Analysis tab now shows both clearly and labels them differently.
+**A stock can show 🔥 STRONG OPERATOR and zero trap patterns — that is the ideal setup.**
         """)
 
     # ── Long Term tab ─────────────────────────────────────────────────────────
@@ -267,7 +352,7 @@ Separate from swing trading — for 1–5 year holds.
 | Analyst target above price | +1 |
 | BUY/STRONG BUY rating | +1 |
 
-### Support score (0–5) — added criteria
+### Support score (0–5)
 Each worth +1:
 1. Price within −20%…+8% of MA50
 2. Price within −8%…+18% of MA200
@@ -275,9 +360,9 @@ Each worth +1:
 4. Price 8–45% below 52-week high (healthy correction)
 5. Price 8–65% above 52-week low (support floor intact)
 
-Tick **📍 Near support only** to filter to stocks at technically attractive long-term entry points.
+Tick **📍 Near support only** to show only stocks at technically attractive long-term entries.
 
-### Filter bar (above the grid)
+### Filter bar
 | Filter | Use |
 |---|---|
 | 🔍 Ticker / name | Search any stock |
@@ -285,58 +370,41 @@ Tick **📍 Near support only** to filter to stocks at technically attractive lo
 | Sector | Filter by sector |
 | 📍 Near support | Only stocks at support |
 | Min support score | 0–5 slider |
-| Min analyst upside | Skip low-conviction analyst targets |
+| Min analyst upside | Skip low-conviction targets |
         """)
 
     # ── Movers and cache ──────────────────────────────────────────────────────
     with st.expander("🚀 Movers/Losers tab + master cache"):
         st.markdown("""
 ### Movers/Losers tab
-Use this tab to quickly see what is active before selecting a strategy.
+Use this tab to see what is active before selecting a strategy.
 
 | Section | Meaning |
 |---|---|
-| **Top Gainers** | Biggest positive movers for selected market/timeframe |
-| **Top Losers** | Biggest negative movers for selected market/timeframe |
+| **Top Gainers** | Biggest positive movers for the selected market / timeframe |
+| **Top Losers** | Biggest negative movers |
 | **Volume Leaders** | Most active names by relative/absolute volume |
 
-Supported markets:
-```
-Current selected market, US, SGX, India, HK
-```
+Supported markets: US · SGX · India · HK
 
 ### Master Yahoo cache
-The scanner now stores one broad Yahoo-enriched master scan per market.
-Strategy changes should re-filter cached data instead of downloading Yahoo again.
+The scanner stores one broad Yahoo-enriched master scan per market.
+Strategy changes refilter the cached data rather than downloading Yahoo again.
 
-Expected cache examples:
+Cache files per market:
 ```
-us_long_setups.csv
-sgx_long_setups.csv
-india_long_setups.csv
-hk_long_setups.csv
-```
-
-Metadata file:
-```
+us_long_setups.csv      sgx_long_setups.csv
+india_long_setups.csv   hk_long_setups.csv
 *_scan_meta.json
 ```
 
-Look for:
-```json
-"cache_type": "master_scan_v1",
-"strategy_mode": "MASTER"
-```
+### Freshness rule and no-new-bar optimisation
+- **During market hours**: shorter refresh interval.
+- **Outside market hours**: longer cache is used.
+- When cache TTL expires the app first does a **lightweight latest-bar check**.
+- If Yahoo has a newer bar → full master scan is refreshed.
+- If Yahoo's latest bar equals the cached bar → existing cache is kept; this is logged in Diagnostics.
 
-### Freshness rule and no-new-bar check
-- During market hours: shorter refresh interval is used for minimum delay.
-- Outside market hours: longer cache is used.
-- When cache TTL is due, the app first performs a lightweight latest-bar check using a small Yahoo sample.
-- If Yahoo's **available latest bar** is newer than the cached latest bar, the full master scan is refreshed.
-- If Yahoo's available latest bar is the same as the cached latest bar, the app **keeps the existing scanner cache** and records this in Diagnostics instead of doing the costly full Yahoo download.
-- Changing Strategy should re-filter the master cache. It only triggers a full refresh when the cache is due **and** Yahoo has a newer bar, or when you manually click Scan/Refresh.
-
-Typical message:
 ```
 No newer Yahoo bar available — existing scanner cache was kept.
 Last checked: 2026-05-08 16:05:00 SGT
@@ -345,88 +413,49 @@ Available latest bar: 2026-05-08 16:00:00 SGT
 ```
         """)
 
-    # ── Diagnostics ───────────────────────────────────────────────────────────
-    with st.expander("🔍 Diagnostics — debugging no-data issues"):
+    # ── Universe ──────────────────────────────────────────────────────────────
+    with st.expander("🌍 Universe — how ticker lists are built"):
         st.markdown("""
-Open **🔍 Diagnostics** when scan completes but shows no stocks.
+### Single source of truth: universe_data.py
+All ticker lists are defined once in `tabs/universe_data.py` and imported everywhere.
+`config_core.py` imports from it; `top_movers_tab.py` calls `get_tickers_for_market()`.
+Adding a ticker in `universe_data.py` makes it available in every tab immediately.
 
-### Cache freshness diagnostics
-When cache TTL is due, Diagnostics can show whether a full Yahoo refresh was actually needed:
-
-| Field | Meaning |
-|---|---|
-| **Last checked** | When the lightweight Yahoo latest-bar check ran |
-| **Cached latest bar** | Latest bar currently stored in scanner cache |
-| **Available latest bar** | Latest bar Yahoo currently has from the sample check |
-| **Decision** | Full refresh performed, or no newer Yahoo bar available so existing cache was kept |
-
-This avoids rebuilding the expensive master scan when Yahoo has not published a newer bar yet.
-
-### Scan debug summary
-Shows exactly why stocks were dropped:
-- **Batch loaded** — how many had OHLCV data
-- **Skipped history** — no price data
-- **Skipped liquidity** — too thin / low ATR
-- **Skipped earnings** — earnings within 7 days (if guard is ON)
-- **Ticker errors** — exceptions per ticker
-- **Raw long/short rows** — rows before strategy filter
-
-If **Raw long rows = 0** but **Batch loaded = 410**, it means:
-- signals computed but all tickers produced `l_action = None`
-- Check market direction — bearish sessions produce fewer signals
-
-### Always-include tickers status
-- ✅ Green — all always-include tickers were in the last scan
-- ⚠️ Warning — tickers added after last scan → click **🚀 Scan** again
-- 🔍 Search box — check any specific ticker
-
-### Long-Term scan diagnostics
-After a 🌱 Long Term scan, shows per-ticker fetch log:
-- OK / FAIL for each SGX/US stock
-- Which step failed (info empty, history blocked, no price)
-- Score and support score per ticker
-
-### Common cloud fixes
-```
-HTTP 401 Invalid Crumb  → yfinance rate-limited; wait 60s and scan again
-Latest bar: unknown     → df_long_master is empty; check Raw long rows above
-Operator: 274, Long: 0  → signals compute but action assignment failing; update app
-```
-        """)
-
-    # ── Universe / tickers ────────────────────────────────────────────────────
-    with st.expander("🌍 Universe — curated + live + always-include"):
-        st.markdown("""
 ### How the scan universe is built
-
 ```
 Always include tickers  ← highest priority, always present
-+ Curated hard-coded watchlist (US/SGX/India/HK)
-+ Live movers / Yahoo-derived universe where available
-= active_tickers passed to the scan
++ get_tickers_for_market(selected_market)
+    = existing curated watchlist
+    + actual index components (S&P 500 / NASDAQ-100 / Nifty / Hang Seng)
+    deduplicated, market-isolated
+= _active_tickers passed to all tabs
 ```
 
-### Hong Kong universe
-HK is now a full market option, not only a Movers/Losers filter.
+### Per-market universe
+| Market | Tickers | Composition |
+|---|---|---|
+| 🇺🇸 US | 746 | Curated high-beta/sector watchlist + S&P 500 (~489) + NASDAQ-100 (~108) |
+| 🇸🇬 SGX | 111 | STI-30 + REITs + growth names + SGX Mainboard liquid fallback |
+| 🇮🇳 India | 172 | Curated high-beta + Nifty 50 + Nifty Next-50 + Nifty Midcap-50 |
+| 🇭🇰 HK | 137 | Curated volatile/liquid + Hang Seng + HSI Tech constituents |
 
-- Default universe: **137 curated `.HK` stocks**.
-- Includes your original core HK tickers first.
-- Covers Hang Seng blue chips, Hang Seng TECH, EV/auto, semiconductors, brokers, casino, property, and biotech names.
-- HK cache files use the `hk_` prefix, for example:
+### Breakout Scanner universe presets (independent from main scan)
+| Market | Preset | Size |
+|---|---|---|
+| US | S&P 500 | ~489 |
+| US | NASDAQ-100 | ~108 |
+| US | S&P 500 + NASDAQ-100 | ~517 |
+| US | High-Beta / Growth | ~337 |
+| US | S&P 500 + Growth | ~742 |
+| US | All US | ~746 |
+| SGX | SGX Mainboard | ~111 |
+| India | Nifty 50 | 50 |
+| India | Nifty 150 | 172 |
+| HK | Hang Seng + HSI Tech | ~137 |
 
-```
-hk_long_setups.csv
-hk_short_setups.csv
-hk_operator_activity.csv
-hk_scan_meta.json
-```
-
-Core HK examples:
-```
-0700.HK,9988.HK,3690.HK,1810.HK,1024.HK,9618.HK,9888.HK,9999.HK,2015.HK,9868.HK,1211.HK,0981.HK,2382.HK,2018.HK,6618.HK
-```
-
-**Always include tickers** (sidebar) is the single place to add custom stocks. Type comma-separated or line-separated:
+### Always include tickers
+The sidebar **Always include tickers** field is the single place to add custom stocks.
+They are guaranteed to be present in every scan regardless of market/strategy.
 ```
 UUUU, APP, NVDA
 S58.SI, D05.SI
@@ -434,32 +463,63 @@ RELIANCE.NS
 0700.HK, 9988.HK
 ```
 
-### Speed: why scanning is faster now
-Previously: `.calendar`, `.info`, and `.fast_info` were called **serially inside the loop** — 0.8s + 1.0s + 0.4s × 410 tickers = **15 minutes**.
-
-Now: a `ThreadPoolExecutor` with 5 workers and a shared session pre-fetches all meta **before** the loop in **~2 minutes**. The loop itself only does signal computation (fast pandas/ta-lib).
-
-### HTTP 401 Invalid Crumb
-Caused by too many parallel Yahoo requests invalidating the auth token. Fixed by:
-- Shared `requests.Session` across all workers (same crumb)
-- Workers capped at 5 (not 25)
-- Retry with backoff on 401
+### Speed: why scanning is faster
+- `ThreadPoolExecutor` with 5 workers pre-fetches all meta before the loop.
+- Shared `requests.Session` across workers preserves Yahoo auth token.
+- Result: ~2 minutes per scan (was ~15 minutes for 410 tickers).
         """)
 
-    # ── Columns reference ──────────────────────────────────────────────────────
+    # ── Diagnostics ───────────────────────────────────────────────────────────
+    with st.expander("🔍 Diagnostics — debugging no-data issues"):
+        st.markdown("""
+Open **🔍 Diagnostics** when the scan completes but shows no stocks.
+
+### Cache freshness diagnostics
+| Field | Meaning |
+|---|---|
+| **Last checked** | When the lightweight Yahoo latest-bar check ran |
+| **Cached latest bar** | Latest bar currently stored in the scanner cache |
+| **Available latest bar** | Latest bar Yahoo currently has from the sample check |
+| **Decision** | Full refresh performed, or no newer bar so existing cache was kept |
+
+### Scan debug summary
+- **Batch loaded** — how many had OHLCV data
+- **Skipped history** — no price data
+- **Skipped liquidity** — too thin / low ATR
+- **Skipped earnings** — earnings within 7 days (if guard is ON)
+- **Ticker errors** — exceptions per ticker
+- **Raw long/short rows** — rows before strategy filter
+
+If **Raw long rows = 0** but **Batch loaded = 410**, signals computed but all produced `l_action = None` — usually a bear-market session.
+
+### Always-include tickers status
+- ✅ Green — all always-include tickers were in the last scan
+- ⚠️ Warning — tickers added after last scan → click **🚀 Scan** again
+- 🔍 Search box — check any specific ticker
+
+### Common cloud fixes
+```
+HTTP 401 Invalid Crumb  → yfinance rate-limited; wait 60s and scan again
+Latest bar: unknown     → df_long_master is empty; check Raw long rows
+Operator: 274, Long: 0  → action assignment failing; update app
+```
+        """)
+
+    # ── All columns reference ─────────────────────────────────────────────────
     with st.expander("🔎 All columns explained"):
         st.markdown("""
+### Main scanner columns
 | Column | Meaning |
 |---|---|
-| **Rank** | Display-only rank inside the shown grid; lower number = stronger candidate in that section |
-| **Action** | Strategy-specific label (STRONG BUY / BUY – MA60 SUPPORT / BUY – PM MOMENTUM etc.) |
+| **Rank** | Display-only rank inside the shown grid |
+| **Action** | Strategy label (STRONG BUY / BUY – MA60 SUPPORT / etc.) |
 | **View** | Plain-English decision: Best swing buy / Buy on confirmation / Watchlist / Wait / Avoid |
-| **Buy Condition** | Practical entry rule such as buy only if support holds, breakout confirms, plus stop/target when available |
+| **Buy Condition** | Practical entry rule with stop and target where available |
 | **Setup Type** | Pullback / Breakout / Support zone / PM% / Volume tier |
 | **Entry Quality** | ✅ BUY · 👀 WATCH · ⏳ WAIT · 🚫 AVOID |
-| **Rise Prob / Fall Prob** | Bucket-capped Bayesian probability |
+| **Rise Prob / Fall Prob** | Bayesian probability (bucket-capped) |
 | **Score** | Count of active setup signals |
-| **Operator / Op Score** | Smart-money accumulation label and score |
+| **Operator / Op Score** | Smart-money accumulation label and raw score |
 | **VWAP** | ABOVE = buyers winning · BELOW = sellers winning |
 | **Trap Risk** | FALSE BO · GAP CHASE · DISTRIB · — (none) |
 | **Today %** | Current day change |
@@ -469,14 +529,27 @@ Caused by too many parallel Yahoo requests invalidating the auth token. Fixed by
 | **MA60 Stop** | Hard stop — exit if price closes below |
 | **TP1 / TP2 / TP3** | +10% / +15% / +20% targets |
 | **Smart TP** | Options-implied target when available |
-| **Implied Move 2W** | Options market's expected ±% over 2 weeks |
+| **Implied Move 2W** | Options market expected ±% over 2 weeks |
 | **Float / Short %** | Float size and short interest (US only) |
-| **PI Proxy** | PSM return-potential proxy; higher values indicate stronger potential move |
-| **PSS Score** | PSM professional swing signal score; higher = more confirmations |
-| **Why Selected** | PSM/High Conviction explanation showing key reasons for selection |
+| **PI Proxy** | PSM return-potential proxy |
+| **PSS Score** | PSM professional swing signal score |
+| **Why Selected** | PSM/High Conviction key reasons for selection |
 | **Signals** | Raw signal tags — HC[T+M+V+S+X](5/5) for High Conviction |
-| **Opt Flow** | Options-derived signals: CALL FLOW / CALL SKEW / P/C↓ etc. |
-| **Last Bar** | Timestamp of the latest OHLCV bar used; latest-bar display is cleaned to avoid duplicate `Latest bar:` text |
+| **Opt Flow** | Options signals: CALL FLOW / CALL SKEW / P/C↓ etc. |
+| **Last Bar** | Timestamp of the latest OHLCV bar used |
+
+### Breakout Scanner columns
+| Column | Meaning |
+|---|---|
+| **Score** | Composite 0–100 combining all three signals |
+| **Signals** | Active badges: Vol Breakout · 52W Setup · New 52W High · Mover |
+| **Vol Ratio** | Today's volume ÷ 20-day average volume |
+| **Today Vol** | Absolute volume today |
+| **vs 52W %** | Distance below 52-week high (0% = at the high) |
+| **In Range %** | Position in 52W low→high range (100% = at the high) |
+| **Breakout %** | % above the N-day high |
+| **ATR %** | Daily volatility as % of price |
+| **3M Return %** | 63-session return |
         """)
 
     # ── Risk ──────────────────────────────────────────────────────────────────
@@ -506,9 +579,9 @@ Caused by too many parallel Yahoo requests invalidating the auth token. Fixed by
 ```
 
 ### Risk management
-- Risk fixed small amount per trade (e.g. 1% of portfolio).
+- Risk a fixed small amount per trade (e.g. 1% of portfolio).
 - Stop = where the setup is **invalid**, not a random percentage.
-- Take partial at TP1 (+10%) — let rest run with trailing stop.
+- Take partial at TP1 (+10%) — let the rest run with a trailing stop.
 - For SGX names use **limit orders** — spreads can be wide.
 - Do not average down on losing trades without a clear reason.
         """)
@@ -537,7 +610,7 @@ Key packages: `streamlit` · `yfinance` · `pandas` · `numpy` · `ta` ·
 
     st.markdown("---")
     st.caption(
-        "Swing Scanner · 8 strategies · US + SGX + India + HK · "
-        "Bayesian engine + operator layer + options signals · "
+        "Swing Scanner v13.90 · 19 tabs · 8 strategies · US + SGX + India + HK · "
+        "⚡ Breakout Scanner · Bayesian engine · Operator layer · Options signals · "
         "Not financial advice"
     )

@@ -1,5 +1,5 @@
 """
-Swing Scanner v13.83 — Bayesian Ensemble
+Swing Scanner v13.90 — Bayesian Ensemble
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -16,7 +16,7 @@ v12 add-ons  : options-derived signals — call/put unusual flow, IV term
 Install:
   pip install financedatabase ta streamlit yfinance pandas numpy nsepython requests streamlit-autorefresh
 """
-# v13.83: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
+# v13.90: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
 # NotImplementedError from __annotate__ when @st.cache_data wraps functions
 # with bare unsubscripted generics like `-> tuple`. This `from __future__`
 # downgrades all annotations in this module to strings at parse time,
@@ -43,7 +43,7 @@ import streamlit as st
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v13.83",
+    page_title="Swing Scanner v13.90",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -225,9 +225,9 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v13.83")
+st.title("📈 Swing/Long Term Scanner v13.90")
 
-# v13.83: COMPACT SELF-STAMP
+# v13.90: COMPACT SELF-STAMP
 # The build identity (path, mtime, hash, size) is still computed so it can
 # self-prove the running file, but only the short hash and mtime are visible
 # in the caption. The full path and size are tucked into the tooltip — hover
@@ -342,7 +342,7 @@ _SIDEBAR_DEFAULTS = {
     "ui_req_s_decel":         False,
     # Misc
     "ui_load_csv_on_start":   True,
-    "ui_refresh_choice":      "15 min",
+    "ui_refresh_choice":      "Off",
 }
 
 # Disk-backed persistence: load saved settings once per session
@@ -877,18 +877,22 @@ market_sel = st.radio(
     horizontal=True, key="market_selector", label_visibility="collapsed"
 )
 
+# ── Single source of truth: universe_data.get_tickers_for_market() ──────────
+# All ticker lists are now merged (existing curated + index components) and
+# defined once in universe_data.py.  Every tab receives the same merged list
+# via g["US_TICKERS"] / g["SG_TICKERS"] etc. (populated by config_core exec).
 # Map selection → ticker list, sector map, currency symbol
 if market_sel == "🇺🇸 US":
-    _active_tickers = US_TICKERS;  _active_sectors = SECTOR_ETFS
+    _active_tickers = get_tickers_for_market("US");  _active_sectors = SECTOR_ETFS
     _currency_sym = "$";           _price_fmt = lambda p: f"${p:,.2f}"
 elif market_sel == "🇸🇬 SGX":
-    _active_tickers = SG_TICKERS;  _active_sectors = {}
+    _active_tickers = get_tickers_for_market("SGX");  _active_sectors = {}
     _currency_sym = "S$";          _price_fmt = lambda p: f"S${p:,.3f}"
 elif market_sel == "🇭🇰 HK":
-    _active_tickers = HK_TICKERS;  _active_sectors = {}
+    _active_tickers = get_tickers_for_market("Hong Kong");  _active_sectors = {}
     _currency_sym = "HK$";         _price_fmt = lambda p: f"HK${p:,.3f}"
 else:
-    _active_tickers = INDIA_TICKERS; _active_sectors = INDIA_SECTOR_ETFS
+    _active_tickers = get_tickers_for_market("India"); _active_sectors = INDIA_SECTOR_ETFS
     _currency_sym = "₹";            _price_fmt = lambda p: f"₹{p:,.2f}"
 
 # When the user switches market, clear stale ticker-list session keys so
@@ -1524,7 +1528,7 @@ def _show_top_spinner(message: str):
         _top_scan_status.info(message)
 
 
-tab_sectors, tab_trade_desk, tab_long, tab_swing_picks, tab_top_movers, tab_premarket, tab_short, tab_operator, tab_both, tab_etf, tab_stock, tab_earn, tab_event, tab_lt, tab_diag, tab_backtest, tab_strategy, tab_help = st.tabs([
+tab_sectors, tab_trade_desk, tab_long, tab_swing_picks, tab_top_movers, tab_premarket, tab_short, tab_operator, tab_both, tab_etf, tab_stock, tab_earn, tab_event, tab_lt, tab_diag, tab_backtest, tab_strategy, tab_breakout, tab_help = st.tabs([
     "🗂️ Sector Heatmap",
     "📋 Trade Desk",
     "📈 Long Setups",
@@ -1533,6 +1537,7 @@ tab_sectors, tab_trade_desk, tab_long, tab_swing_picks, tab_top_movers, tab_prem
     "🌅 Pre-Market",
     "📉 Short Setups",
     "🪤 Operator Activity",
+    "⚡ Breakout Scanner",
     "🔄 Side by Side",
     "📊 ETF Holdings",
     "🔬 Stock Analysis",
@@ -1570,6 +1575,7 @@ from swing_trader_app.tabs.swing_picks_tab import render_swing_picks
 from swing_trader_app.tabs.trade_desk_tab import render_trade_desk
 from swing_trader_app.tabs.top_movers_tab import render_top_movers
 from swing_trader_app.tabs.premarket_tab import render_premarket
+from swing_trader_app.tabs.breakout_scanner_tab import render_breakout_scanner
 
 def format_latest_bar_time(latest_bar_time):
     import pandas as pd
@@ -2457,6 +2463,13 @@ with tab_diag:
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_backtest:
     _safe_render_tab('backtest', render_accuracy_lab)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB — BREAKOUT SCANNER (High Vol · 52W High · Market Movers)
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_breakout:
+    _safe_render_tab('breakout', render_breakout_scanner)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

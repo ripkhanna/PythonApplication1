@@ -2,6 +2,27 @@
 Loaded by app_runtime with exec(..., globals()) to preserve the original single-file behavior.
 """
 
+# universe_data is the single source of truth for all ticker lists.
+# Import here so fetch_hk_market_universe / fetch_sgx_market_universe
+# can use the merged lists as their authoritative fallback.
+import sys as _sys_uc, pathlib as _pl_uc
+_app_root = _pl_uc.Path(__file__).resolve().parent.parent
+if str(_app_root) not in _sys_uc.path if hasattr(_sys_uc, 'path') else True:
+    _sys_uc.path.insert(0, str(_app_root))
+try:
+    from swing_trader_app.tabs.universe_data import (
+        HK_TICKERS as _UD_HK_TICKERS,
+        SG_TICKERS as _UD_SG_TICKERS,
+        INDIA_TICKERS as _UD_INDIA_TICKERS,
+    )
+    _universe_data_available = True
+except ImportError:
+    _UD_HK_TICKERS = []
+    _UD_SG_TICKERS = []
+    _UD_INDIA_TICKERS = []
+    _universe_data_available = False
+
+
 def _score_stocks_batch(symbols: list) -> dict:
     """
     ONE batch download → swing score for every symbol.
@@ -329,7 +350,7 @@ def fetch_sgx_market_universe(max_symbols: int = 180) -> list:
     # live universe in that case; merge the curated SGX fallback so scans still
     # cover a useful number of Singapore names.
     try:
-        fallback = globals().get("SGX_LIQUID_FALLBACK_TICKERS", []) or globals().get("SG_TICKERS", [])
+        fallback = (_UD_SG_TICKERS if _UD_SG_TICKERS else globals().get("SGX_LIQUID_FALLBACK_TICKERS", []) or globals().get("SG_TICKERS", []))
         if len(tickers) < 60 and fallback:
             tickers.extend([_clean_symbol(x, ".SI") for x in fallback])
     except Exception:
@@ -382,7 +403,8 @@ def fetch_nse_market_universe(max_symbols: int = 220) -> list:
 def fetch_hk_market_universe(max_symbols: int = 160) -> list:
     """Return Hong Kong watchlist. Yahoo HK live universe is unreliable, so use curated liquid .HK names."""
     try:
-        base = globals().get("HK_TICKERS", [])
+        # Use universe_data merged list; fall back to globals for older exec() contexts
+        base = _UD_HK_TICKERS if _UD_HK_TICKERS else globals().get("HK_TICKERS", [])
         # Normalize numeric HK tickers to 4 digits for Yahoo, e.g. 700.HK -> 0700.HK.
         out = []
         for t in base:

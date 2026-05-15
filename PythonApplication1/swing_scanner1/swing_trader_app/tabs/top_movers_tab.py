@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import yfinance as yf
+from swing_trader_app.tabs.universe_data import get_tickers_for_market as _get_tickers_for_market
 
 
 HK_VOLATILE_TICKERS = [
@@ -78,15 +79,15 @@ def _market_key_from_selection(selection: str, current_market_label: str) -> str
 
 
 def _tickers_for_market(g: dict, market_key: str) -> list[str]:
-    if market_key == "US":
-        return _unique_keep_order(g.get("US_TICKERS", []))
-    if market_key == "SGX":
-        return _unique_keep_order(g.get("SG_TICKERS", []))
-    if market_key == "India":
-        return _unique_keep_order(g.get("INDIA_TICKERS", []))
-    if market_key == "Hong Kong":
-        return _unique_keep_order(g.get("HK_TICKERS", HK_VOLATILE_TICKERS))
-    return []
+    # Delegates to universe_data — single source of truth for all ticker lists.
+    # g dict keys (US_TICKERS etc.) are kept as fallback for any cached globals.
+    tickers = _get_tickers_for_market(market_key)
+    if tickers:
+        return tickers
+    # Fallback: use whatever is in g globals (backward compat)
+    key_map = {"US": "US_TICKERS", "SGX": "SG_TICKERS",
+               "India": "INDIA_TICKERS", "Hong Kong": "HK_TICKERS"}
+    return _unique_keep_order(g.get(key_map.get(market_key, "US_TICKERS"), []))
 
 
 def _fmt_sgt(ts) -> str:
