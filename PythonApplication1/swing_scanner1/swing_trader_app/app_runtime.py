@@ -1528,7 +1528,7 @@ def _show_top_spinner(message: str):
         _top_scan_status.info(message)
 
 
-tab_sectors, tab_trade_desk, tab_long, tab_swing_picks, tab_top_movers, tab_premarket, tab_short, tab_operator, tab_both, tab_etf, tab_stock, tab_earn, tab_event, tab_lt, tab_diag, tab_backtest, tab_strategy, tab_breakout, tab_help = st.tabs([
+tab_sectors, tab_trade_desk, tab_long, tab_swing_picks, tab_top_movers, tab_premarket, tab_short, tab_operator, tab_breakout, tab_both, tab_etf, tab_stock, tab_earn, tab_event, tab_lt, tab_diag, tab_backtest, tab_strategy, tab_help = st.tabs([
     "🗂️ Sector Heatmap",
     "📋 Trade Desk",
     "📈 Long Setups",
