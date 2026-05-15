@@ -62,8 +62,6 @@ Rules:
 
 
 def get_client():
-    # setx OPENAI_API_KEY "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"
-    # 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
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         st.error("Missing OPENAI_API_KEY. Set it in Windows environment variables.")
