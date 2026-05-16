@@ -662,47 +662,56 @@ def fetch_finviz_screen(preset: str = "swing_breakout") -> list:
 def fetch_unusual_options_universe(
     universe: list,
     min_oi_ratio: float = 3.0,
-    max_scan: int = 150,
+    max_scan: int = 60,          # FIX: reduced from 150 — options chain calls are slow
 ) -> list:
     """
-    Return US tickers with unusual near-money CALL volume (volume/OI ≥ min_oi_ratio).
+    Return US tickers with unusual near-money CALL volume (volume/OI >= min_oi_ratio).
 
-    Options unusual activity is a leading indicator — it often precedes price
-    moves by 1–3 days as informed traders position ahead of catalysts.
-    Only meaningful for US-listed equities with liquid option chains.
-
-    Caps at max_scan tickers to avoid rate-limit issues on free Yahoo data.
+    v15.7 speed fix: parallelised with ThreadPoolExecutor (was fully sequential —
+    3 serial yfinance calls × 150 tickers = ~450 HTTP requests, 90-150s alone).
+    Also uses fast_info.last_price instead of tkr.info (heavy call, ~0.5s each).
+    max_scan reduced from 150 → 60 to stay within Yahoo rate limits when parallel.
     """
-    unusual = []
-    for sym in list(universe)[:max_scan]:
-        if "." in sym:          # skip SGX / NSE / HK — no liquid US options chain
-            continue
+    import concurrent.futures as _fut
+
+    candidates = [s for s in list(universe)[:max_scan] if "." not in str(s)]
+
+    def _check_options(sym: str):
         try:
-            tkr = yf.Ticker(sym)
+            tkr       = yf.Ticker(sym)
             exp_dates = tkr.options
             if not exp_dates:
-                continue
-            chain  = tkr.option_chain(exp_dates[0])
-            calls  = chain.calls
-            if calls.empty:
-                continue
-            price  = float(tkr.info.get("regularMarketPrice") or
-                           tkr.info.get("currentPrice") or 0)
+                return None
+            chain = tkr.option_chain(exp_dates[0])
+            calls = chain.calls
+            if calls is None or calls.empty:
+                return None
+            # Use fast_info instead of tkr.info (fast_info is ~10x faster)
+            import contextlib as _cl, io as _io
+            with _cl.redirect_stderr(_io.StringIO()), _cl.redirect_stdout(_io.StringIO()):
+                price = float(getattr(yf.Ticker(sym).fast_info, "last_price", 0) or 0)
             if price <= 0:
-                continue
-            # ATM calls: strikes within ±10% of current price
+                return None
             atm = calls[
                 (calls["strike"] >= price * 0.90) &
                 (calls["strike"] <= price * 1.10)
             ]
             if atm.empty:
-                continue
+                return None
             total_vol = float(atm["volume"].fillna(0).sum())
             total_oi  = float(atm["openInterest"].fillna(0).sum())
             if total_oi > 0 and total_vol / total_oi >= min_oi_ratio and total_vol >= 100:
-                unusual.append(sym)
+                return sym
         except Exception:
-            continue
+            pass
+        return None
+
+    unusual = []
+    # 6 workers: enough parallelism without hammering Yahoo rate limits
+    with _fut.ThreadPoolExecutor(max_workers=6) as ex:
+        for result in ex.map(_check_options, candidates):
+            if result:
+                unusual.append(result)
     return unusual
 
 
@@ -751,8 +760,49 @@ def fetch_premarket_gappers(
     results.sort(key=lambda x: x[1], reverse=True)
     return [sym for sym, _ in results]
 
+@st.cache_data(ttl=15 * 60, show_spinner=False)
+def fetch_post_earnings_gappers(universe: list, min_gap_pct: float = 5.0, max_scan: int = 100) -> list:
+    """Recent earnings reporters gapping today. Catches SEDG-type moves."""
+    import concurrent.futures as _fut
+    today = pd.Timestamp.now(tz="Asia/Singapore").date()
+    us_set = {str(t).strip().upper() for t in list(universe)[:max_scan]
+              if not str(t).upper().endswith((".SI",".HK",".NS",".BO"))}
+    recent: set = set()
+    try:
+        from swing_trader_app.core_runtime.event_core import _nasdaq_earnings_for_date
+        for _b in range(4):
+            _d = today - pd.Timedelta(days=_b)
+            for _r in _nasdaq_earnings_for_date(_d.strftime("%Y-%m-%d")):
+                s = str((_r or {}).get("symbol") or "").strip().upper()
+                if s in us_set: recent.add(s)
+    except Exception: pass
+    candidates = list(recent) if recent else list(us_set)[:40]
+    def _chk(sym):
+        try:
+            import contextlib as _cl, io as _io
+            with _cl.redirect_stderr(_io.StringIO()), _cl.redirect_stdout(_io.StringIO()):
+                fi = yf.Ticker(sym).fast_info
+            last = float(getattr(fi, "last_price", 0) or 0)
+            prev = float(getattr(fi, "previous_close", 0) or 0)
+            vol  = float(getattr(fi, "last_volume", 0) or 0)
+            avg3m = float(getattr(fi, "three_month_average_volume", 1) or 1)
+            if last > 0 and prev > 0:
+                pct = (last - prev) / prev * 100
+                if pct >= min_gap_pct and (vol / avg3m if avg3m > 0 else 0) >= 1.5:
+                    return (sym, pct)
+        except Exception: pass
+        return None
+    results = []
+    with _fut.ThreadPoolExecutor(max_workers=8) as ex:
+        for r in ex.map(_chk, candidates[:80]):
+            if r: results.append(r)
+    results.sort(key=lambda x: -x[1])
+    return [s for s, _ in results]
+
+
 @st.cache_data(ttl=30 * 60, show_spinner=False)
-def fetch_live_market_universe(market_name: str, max_symbols: int = 350) -> tuple:
+def fetch_live_market_universe(market_name: str, max_symbols: int = 350,
+                               enable_slow_enrichment: bool = False) -> tuple:
     """
     Build the LIVE/Yahoo side of the scan universe.
 
@@ -792,10 +842,11 @@ def fetch_live_market_universe(market_name: str, max_symbols: int = 350) -> tupl
         except Exception:
             pass
 
-        try:
-            _fviz = fetch_finviz_screen("swing_breakout")
-        except Exception:
-            pass
+        if enable_slow_enrichment:
+            try:
+                _fviz = fetch_finviz_screen("swing_breakout")
+            except Exception:
+                pass
 
         try:
             top = get_top_sector_etfs(n=3)
@@ -818,28 +869,35 @@ def fetch_live_market_universe(market_name: str, max_symbols: int = 350) -> tupl
         except Exception:
             pass
 
-        try:
-            _e = fetch_earnings_universe(base_pool[:200], window_ahead=7)
-            _earn_tickers = _e.get("upcoming", []) + _e.get("recent_beat", [])
-        except Exception:
-            pass
+        if enable_slow_enrichment:
+            try:
+                _e = fetch_earnings_universe(base_pool[:200], window_ahead=7)
+                _earn_tickers = _e.get("upcoming", []) + _e.get("recent_beat", [])
+            except Exception:
+                pass
 
-        try:
-            _opt_unusual = fetch_unusual_options_universe(base_pool[:150], min_oi_ratio=3.0)
-        except Exception:
-            pass
+            try:
+                _opt_unusual = fetch_unusual_options_universe(base_pool[:60], min_oi_ratio=3.0)
+            except Exception:
+                pass
 
         try:
             _pm_gappers = fetch_premarket_gappers(base_pool[:200], min_gap_pct=3.0)
         except Exception:
             pass
+        _earn_gappers: list = []
+        try:
+            _earn_gappers = fetch_post_earnings_gappers(base_pool[:200], min_gap_pct=5.0)
+        except Exception:
+            pass
 
         tickers = _unique_keep_order(
-            _52w + _pm_gappers + _fviz + _earn_tickers + _opt_unusual + _sector_stocks + base_pool
+            _earn_gappers + _52w + _pm_gappers + _fviz + _earn_tickers + _opt_unusual + _sector_stocks + base_pool
         )
         source = (
-            "v15.6: 52w breakouts + PreMkt gappers + Finviz + "
-            "Earnings + Unusual options + Top sectors + Yahoo (all cached)"
+            "v15.10: 52w breakouts + PreMkt gappers + Top sectors + Yahoo"
+            + (" + Finviz + Earnings + Unusual options" if enable_slow_enrichment else "")
+            + " (all cached)"
         )
 
     elif market_name == "🇸🇬 SGX":

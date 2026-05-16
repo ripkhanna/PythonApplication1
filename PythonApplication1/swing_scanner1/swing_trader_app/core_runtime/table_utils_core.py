@@ -368,12 +368,13 @@ def _build_swing_view(row: pd.Series) -> str:
     if ticker == "VPG" and "BUY" in action:
         return "Watch only"
 
-    if "WAIT" in action or "EXTENDED" in entry or today > 15:
+    _is_earn_gap = "EARNINGS GAP" in str(row.get("Signals","")) or "PEAD" in str(row.get("Signals",""))
+    if not _is_earn_gap and ("WAIT" in action or "EXTENDED" in entry or today > 15):
         return "Strong but extended — wait"
 
     # If a high-priced stock is already up strongly, the practical swing view is
     # usually "wait for pullback" even when the PSM signal is technically valid.
-    if price > 100 and today >= 5:
+    if not _is_earn_gap and price > 100 and today >= 5:
         return "Strong but extended — wait"
 
     aggressive_keywords = ("CRYPTO", "BITCOIN", "MINER", "HIGH VOLUME", "EXTREME", "MOMENTUM")

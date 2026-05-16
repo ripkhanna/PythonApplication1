@@ -1,5 +1,5 @@
 """
-Swing Scanner v13.90 — Bayesian Ensemble
+Swing Scanner v13.95 — Bayesian Ensemble
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -16,7 +16,7 @@ v12 add-ons  : options-derived signals — call/put unusual flow, IV term
 Install:
   pip install financedatabase ta streamlit yfinance pandas numpy nsepython requests streamlit-autorefresh
 """
-# v13.90: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
+# v13.95: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
 # NotImplementedError from __annotate__ when @st.cache_data wraps functions
 # with bare unsubscripted generics like `-> tuple`. This `from __future__`
 # downgrades all annotations in this module to strings at parse time,
@@ -43,7 +43,7 @@ import streamlit as st
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v13.90",
+    page_title="Swing Scanner v13.95",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -225,9 +225,9 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v13.90")
+st.title("📈 Swing/Long Term Scanner v13.95")
 
-# v13.90: COMPACT SELF-STAMP
+# v13.95: COMPACT SELF-STAMP
 # The build identity (path, mtime, hash, size) is still computed so it can
 # self-prove the running file, but only the short hash and mtime are visible
 # in the caption. The full path and size are tucked into the tooltip — hover
@@ -325,7 +325,7 @@ _SIDEBAR_DEFAULTS = {
     "ui_swing_mode":          "Balanced",  # Options: Strict/Balanced/Discovery/Support Entry/Premarket Momentum/High Volume/High Conviction/PSM Strategy
     "ui_skip_earnings":       False,
     "ui_use_live_universe":   True,
-    "ui_max_live_universe":   350,   # v15.9: reduced from 1000 — 350 is fast, 1000 scans 1200+ tickers
+    "ui_max_live_universe":   150,   # v15.10: reduced from 350 — 150 live + 746 curated = ~700 combined (fast)
     "ui_always_include":      "",
     # Options layer
     "ui_enable_options":      False,
@@ -552,15 +552,38 @@ use_live_universe = st.sidebar.checkbox(
          "This means stocks like UUUU/APP remain scanned even if they are not in today's movers.",
 )
 max_live_universe = st.sidebar.slider(
-    "Max live stocks to scan", 50, 1000, step=25,
+    "Max live stocks to scan", 50, 400, step=25,
     key="ui_max_live_universe",
     help=(
-        "Controls the live/Yahoo universe size. "
-        "350 = fast (10-20s, recommended). "
-        "1000 = slow (60-120s). "
-        "Curated + always-include tickers are always added on top."
+        "Controls how many live/Yahoo tickers are fetched. "
+        "150 (default) = fast 15-30s. "
+        "300 = moderate 30-60s. "
+        "400 = slow 60-120s. "
+        "The existing curated watchlist (~746) is always scanned on top — "
+        "lowering this only reduces the number of *new* live tickers added."
     ),
 )
+# FIX v15.10: hard cap on combined (live + curated) universe size
+max_combined_tickers = st.sidebar.slider(
+    "Max total tickers to scan", 200, 1200, 750, 50,
+    key="ui_max_combined",
+    help=(
+        "Hard cap on the combined (live + curated) universe. "
+        "750 (default) = ~60-90s. 500 = ~40-60s. 300 = ~25-40s. "
+        "Highest-signal tickers (live breakouts, gappers) are kept first."
+    ),
+)
+enable_slow_universe_enrichment = st.sidebar.checkbox(
+    "Enable slow enrichment (options/finviz/earnings)",
+    value=True,
+    key="ui_slow_enrich",
+    help=(
+        "When ON: fetches unusual options activity, Finviz screener, and earnings universe. "
+        "These add signal but each takes 15-60s on cold cache. "
+        "Recommended: OFF for quick scans, ON once per session for full signal set."
+    ),
+)
+
 always_include_text = st.sidebar.text_area(
     "Always include tickers",
     key="ui_always_include",
@@ -988,6 +1011,8 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
                 df_long["Action"] = "WATCH – STRICT QUALITY"
                 strong = (p.reindex(df_long.index).fillna(0) >= max(float(min_prob_long), 80.0)) & (score.reindex(df_long.index).fillna(0) >= 8)
                 df_long.loc[strong, "Action"] = "STRONG BUY – STRICT"
+                earn_s = signals.reindex(df_long.index).fillna("").str.contains("EARNINGS GAP|PEAD", na=False, regex=True)
+                df_long.loc[strong & earn_s, "Action"] = "STRONG BUY – EARNINGS GAP"
 
         elif mode == "BALANCED":
             # v2 fix: lowered score gate from 5 to 4 so weak-market sessions still show results.
@@ -995,6 +1020,7 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
             mask = (p >= max(float(min_prob_long), 58.0)) & (score >= 4) & not_candidate
             # Also include high-vol operator signals even at score 3
             mask |= ((score >= 3) & (vol_ratio >= 2.0) & (p >= 58.0) & not_candidate)
+            mask |= (signals.str.contains("EARNINGS GAP|PEAD", na=False, regex=True) & not_candidate)
             df_long = df_long[mask].copy()
             if not df_long.empty:
                 # Normalise labels from Discovery → Balanced labels
@@ -1004,6 +1030,8 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
                             (p.reindex(df_long.index).fillna(0) >= 72), "Action"] = "WATCH – HIGH QUALITY"
                 strong = (p.reindex(df_long.index).fillna(0) >= max(float(min_prob_long), 70.0)) & (score.reindex(df_long.index).fillna(0) >= 6)
                 df_long.loc[strong & signals.reindex(df_long.index).fillna("").str.contains("🎯HIGH-ACCURACY", na=False), "Action"] = "STRONG BUY"
+                earn_m = signals.reindex(df_long.index).fillna("").str.contains("EARNINGS GAP|PEAD", na=False, regex=True)
+                df_long.loc[earn_m, "Action"] = "STRONG BUY – EARNINGS GAP"
                 df_long.loc[act.reindex(df_long.index).fillna("").str.contains("TRAP RISK", na=False), "Action"] = "WATCH – TRAP RISK"
 
         elif mode == "DISCOVERY":
@@ -1986,9 +2014,13 @@ if run:
             _show_top_spinner("🌐 Fetching Yahoo/live market universe...")
             with st.spinner("🌐 Fetching Yahoo/live market universe..."):
                 live_tickers, live_source = fetch_live_market_universe(
-                    market_sel, max_symbols=max_live_universe
+                    market_sel, max_symbols=max_live_universe,
+                    enable_slow_enrichment=enable_slow_universe_enrichment,
                 )
+            # Merge live + curated, then apply combined cap (live tickers have priority)
             active_tickers = _unique_keep_order(list(live_tickers) + list(_active_tickers))
+            if len(active_tickers) > max_combined_tickers:
+                active_tickers = active_tickers[:max_combined_tickers]
             universe_source = (
                 f"{live_source} + existing curated watchlist"
                 if live_tickers else

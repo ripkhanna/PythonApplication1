@@ -201,7 +201,7 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
     # Limit-up filter: today's move not >8% (avoid limit-up/gap-up chasing)
     today_chg_pct = float((close.iloc[-1] - close.iloc[-2]) / close.iloc[-2] * 100) if len(close) >= 2 else 0
     #not_limit_up = today_chg_pct < 8.0
-    not_limit_up = today_chg_pct < 12.0
+    not_limit_up = today_chg_pct < 30.0
 
 
     # Stop-loss trigger: price broke below MA60 with significant volume (>1.5× avg)
@@ -239,7 +239,10 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
     vwap_support = p >= vwap_now * 0.995
 
     false_breakout = (p >= h10 * 0.995) and (vr >= 1.8) and (not strong_close)
-    gap_chase_risk = (today_chg_pct > 7.0) and (vr > 2.5)
+    _rng = max(float(high.iloc[-1]) - float(low.iloc[-1]), 0.001)
+    _close_pos = (float(close.iloc[-1]) - float(low.iloc[-1])) / _rng
+    _weak_close = _close_pos < 0.30
+    gap_chase_risk = (today_chg_pct > 10.0) and (vr > 2.5) and _weak_close
     operator_distribution = (vr >= 1.8) and (today_chg_pct <= 0.5) and (not strong_close)
 
     operator_score = 0

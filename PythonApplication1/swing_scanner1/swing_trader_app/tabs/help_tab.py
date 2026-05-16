@@ -13,7 +13,7 @@ def render_help(ctx: dict) -> None:
     # ── What's new ────────────────────────────────────────────────────────────
     with st.expander("🆕 What changed recently", expanded=True):
         st.markdown("""
-### Latest build — v13.90
+### Latest build — v13.95
 
 #### ⚡ Breakout Scanner (new tab)
 A unified, market-aware breakout discovery engine added as a dedicated tab.
@@ -610,7 +610,7 @@ Key packages: `streamlit` · `yfinance` · `pandas` · `numpy` · `ta` ·
 
     st.markdown("---")
     st.caption(
-        "Swing Scanner v13.90 · 19 tabs · 8 strategies · US + SGX + India + HK · "
+        "Swing Scanner v13.95 · 19 tabs · 8 strategies · US + SGX + India + HK · "
         "⚡ Breakout Scanner · Bayesian engine · Operator layer · Options signals · "
         "Not financial advice"
     )

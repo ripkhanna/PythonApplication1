@@ -399,6 +399,21 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         except Exception:
             return daily_df
 
+    # ── Recent earners set (Nasdaq calendar, last 3 days) ─────────────────
+    # post_earnings_gap later checks this to bypass gap_chase_risk / not_limit_up.
+    recent_earners_set: set = set()
+    try:
+        from swing_trader_app.core_runtime.event_core import _nasdaq_earnings_for_date
+        _rne_today = pd.Timestamp.now().date()
+        for _rne_back in range(4):
+            _rne_d = _rne_today - pd.Timedelta(days=_rne_back)
+            for _rne_r in _nasdaq_earnings_for_date(_rne_d.strftime("%Y-%m-%d")):
+                _rne_sym = str((_rne_r or {}).get("symbol") or "").strip().upper()
+                if _rne_sym:
+                    recent_earners_set.add(_rne_sym)
+    except Exception:
+        pass
+
     # Skip intraday fetch outside market hours — saves ~30s when market is closed
     _market_is_open = False
     try:
@@ -893,7 +908,9 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     (_vr_fast >= 1.35 and _close_pos_fast <= 0.40) or
                     (_c_now < _ma20_fast * 0.985 and _ma20_fast < _ma60_fast)
                 )
-                if swing_mode == "HIGH VOLUME":
+                if abs(_today_pct_fast) >= 5.0 and _vr_fast >= 1.5:
+                    _cheap_ok = True   # big mover: earnings gap, catalyst
+                elif swing_mode == "HIGH VOLUME":
                     _cheap_ok = (_vr_fast >= 1.05 or abs(_today_pct_fast) >= 0.8 or _vol_avg_s > 0)
                 elif swing_mode == "SUPPORT ENTRY":
                     _cheap_ok = (_near_support_fast or _vr_fast >= 1.10 or abs(_today_pct_fast) >= 0.8)
@@ -1144,7 +1161,27 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             )
             # Practical live-market setup types. These make the screener useful
             # even when a stock has no news catalyst or only moderate operator score.
-            major_trap_risk = false_breakout or distribution_risk or (gap_chase_risk and raw.get("today_chg_pct", 0) > 10)
+            # _today_chg_abs and post_earnings_gap defined here so they
+            # are available to is_chasing (defined further down).
+            _today_chg_abs = float(raw.get("today_chg_pct", 0) or 0)
+            _strong_close_sig = bool(
+                raw.get("strong_close") or raw.get("vwap_support")
+                or raw.get("above_vwap")
+                or (vr >= 2.5 and _today_chg_abs >= 8.0)
+            )
+            _pure_vol_gap = (
+                _today_chg_abs >= 8.0 and vr >= 2.5 and _strong_close_sig
+            )
+            post_earnings_gap = (
+                (ticker.upper() in recent_earners_set or _pure_vol_gap)
+                and _today_chg_abs >= 5.0
+                and vr >= 1.5
+            )
+            major_trap_risk = (
+                (false_breakout or distribution_risk
+                 or (gap_chase_risk and _today_chg_abs > 10))
+                and not post_earnings_gap
+            )
             core_long_trend = (
                 long_sig.get("trend_daily", False) or
                 long_sig.get("full_ma_stack", False) or
@@ -1437,16 +1474,27 @@ def fetch_analysis(green_sectors, red_sectors, regime,
 
             has_hv_signal = bool(hv_tier is not None and rsi_now < 95 and -8.0 <= today_pct <= 25.0)
 
+            _earn_momentum_long = (
+                post_earnings_gap
+                and vr >= 2.0
+                and 8.0 <= _today_chg_abs <= 70.0
+                and l_prob >= 0.45
+                and not false_breakout
+                and not distribution_risk
+            )
             high_accuracy_long = (
-                l_prob >= min_prob_strong_long and
-                l_score >= min_score_strong_long and
-                raw.get("above_ma60", False) and
-                raw.get("not_limit_up", False) and
-                raw.get("today_chg_pct", 99) < (8 if swing_mode != "DISCOVERY" else 10) and
-                not major_trap_risk and
-                core_long_trend and
-                momentum_confirmed and
-                (volume_confirmed or operator_or_vwap or pullback_setup)
+                _earn_momentum_long
+                or (
+                    l_prob >= min_prob_strong_long and
+                    l_score >= min_score_strong_long and
+                    raw.get("above_ma60", False) and
+                    raw.get("not_limit_up", False) and
+                    raw.get("today_chg_pct", 99) < (8 if swing_mode != "DISCOVERY" else 10) and
+                    not major_trap_risk and
+                    core_long_trend and
+                    momentum_confirmed and
+                    (volume_confirmed or operator_or_vwap or pullback_setup)
+                )
             )
             actionable_long = (
                 l_prob >= (0.66 if swing_mode == "DISCOVERY" else 0.70) and
@@ -1548,7 +1596,9 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     # sessions where trend_daily=False and above_ma60=False.
                     # Do NOT gate WATCH-EARLY on core_long_trend: that causes empty
                     # master → all strategies show zero results in down markets.
-                    if high_accuracy_long:
+                    if high_accuracy_long and _earn_momentum_long:
+                        l_action = "STRONG BUY – EARNINGS GAP"
+                    elif high_accuracy_long:
                         l_action = "STRONG BUY – DISCOVERY"
                     elif actionable_long:
                         l_action = "WATCH – DISCOVERY QUALITY"
@@ -1568,7 +1618,9 @@ def fetch_analysis(green_sectors, red_sectors, regime,
 
                 else:  # BALANCED
                     # Practical mode: stricter than Discovery, looser than Strict.
-                    if high_accuracy_long:
+                    if high_accuracy_long and _earn_momentum_long:
+                        l_action = "STRONG BUY – EARNINGS GAP"
+                    elif high_accuracy_long:
                         l_action = "STRONG BUY"
                     elif actionable_long:
                         l_action = "WATCH – HIGH QUALITY"
@@ -1633,8 +1685,10 @@ def fetch_analysis(green_sectors, red_sectors, regime,
 
                 # ── Strategy filter tags ──────────────────────────────────────────
                 strat_tags = []
-                if raw.get("dip_to_ma20"):   strat_tags.append("📍DIP-MA20")
-                if raw.get("dip_to_ma60"):   strat_tags.append("📍DIP-MA60")
+                if post_earnings_gap:          strat_tags.append("📅EARNINGS GAP")
+                if _earn_momentum_long:         strat_tags.append("🚀PEAD")
+                if raw.get("dip_to_ma20"):     strat_tags.append("📍DIP-MA20")
+                if raw.get("dip_to_ma60"):     strat_tags.append("📍DIP-MA60")
                 if raw.get("vol_declining"): strat_tags.append("📉VOL-DIP")
                 if not raw.get("not_chasing", True):  strat_tags.append("⚠️CHASING")
                 if not raw.get("not_limit_up", True): strat_tags.append("🚫LIMIT-UP")
@@ -1645,13 +1699,20 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                                raw.get("vol_declining") and raw.get("not_chasing") and \
                                raw.get("not_limit_up")
                 is_vol_surge = long_sig.get("vol_surge_up", False)   # vol burst entry
-                is_chasing   = not raw.get("not_chasing", True) or not raw.get("not_limit_up", True)
+                # post_earnings_gap is defined above (near major_trap_risk)
+                # so this reference is safe.
+                is_chasing   = (
+                    (not raw.get("not_chasing", True) or not raw.get("not_limit_up", True))
+                    and not post_earnings_gap
+                )
                 is_stopped   = raw.get("ma60_stop_triggered", False)
 
                 if is_stopped:
                     entry_quality = "🚫 AVOID"
                 elif major_trap_risk:
                     entry_quality = "⏳ WAIT"
+                elif _earn_momentum_long:
+                    entry_quality = "✅ BUY"
                 elif high_accuracy_long and (is_ideal_dip or is_vol_surge or long_sig.get("pocket_pivot", False) or long_sig.get("vol_breakout", False) or continuation_setup):
                     entry_quality = "✅ BUY"
                 elif actionable_long and not is_chasing:
