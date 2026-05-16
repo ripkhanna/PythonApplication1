@@ -78,6 +78,135 @@ def _fmt_sgt(ts) -> str:
         return "---"
 
 
+def _ema(series: pd.Series, span: int) -> pd.Series:
+    return pd.to_numeric(series, errors="coerce").ewm(span=span, adjust=False).mean()
+
+
+def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
+    close = pd.to_numeric(series, errors="coerce")
+    delta = close.diff()
+    gain = delta.clip(lower=0).rolling(period).mean()
+    loss = (-delta.clip(upper=0)).rolling(period).mean()
+    rs = gain / loss.replace(0, np.nan)
+    return 100 - (100 / (1 + rs))
+
+
+def _next_day_buy_model(price, prev, high, low, close, vol, chg_pct, vol_ratio, atr_pct, is_brk, new_52w):
+    """Score whether a mover is buyable on the next session, not just already moving.
+
+    The model rewards controlled momentum, strong close, trend alignment, volume
+    confirmation and tradable ATR. It penalises chase gaps, weak closes, low
+    liquidity/volume and overextension. Output is display/ranking guidance only.
+    """
+    if close is None or len(close) < 30:
+        return 0, "Avoid", "Insufficient history", "---", "---", "---"
+
+    ema8 = _ema(close, 8).iloc[-1]
+    ema21 = _ema(close, 21).iloc[-1]
+    ema50 = _ema(close, 50).iloc[-1] if len(close) >= 50 else ema21
+    rsi_now = _rsi(close, 14).iloc[-1]
+
+    day_high = float(high.iloc[-1]) if len(high) else price
+    day_low = float(low.iloc[-1]) if len(low) else price
+    day_range = max(day_high - day_low, 1e-9)
+    close_loc = (price - day_low) / day_range
+
+    # Extension versus short/intermediate trend. Big extension often means next day gap-and-fade risk.
+    ext_ema8 = ((price / ema8) - 1) * 100 if ema8 and np.isfinite(ema8) else 0.0
+    ext_ema21 = ((price / ema21) - 1) * 100 if ema21 and np.isfinite(ema21) else 0.0
+
+    last5 = close.tail(5)
+    green_3of5 = int((last5.diff() > 0).sum()) >= 3 if len(last5) >= 5 else False
+    trend_ok = price > ema8 > ema21 and price > ema50
+    reclaim_ok = price > ema21 and close.iloc[-2] <= ema21 if len(close) >= 2 and np.isfinite(ema21) else False
+    controlled_move = 1.0 <= chg_pct <= 8.5
+    explosive_but_risky = chg_pct > 12 or ext_ema8 > 9 or ext_ema21 > 14
+    volume_ok = np.isfinite(vol_ratio) and 1.3 <= vol_ratio <= 4.5
+    volume_extreme = np.isfinite(vol_ratio) and vol_ratio > 6
+    atr_ok = 2.0 <= atr_pct <= 9.0
+    atr_too_hot = atr_pct > 14
+    strong_close = close_loc >= 0.65
+    weak_close = close_loc < 0.45
+    rsi_ok = np.isfinite(rsi_now) and 48 <= rsi_now <= 72
+    rsi_hot = np.isfinite(rsi_now) and rsi_now > 78
+
+    score = 0.0
+    reasons = []
+
+    if trend_ok:
+        score += 18; reasons.append("trend aligned")
+    elif reclaim_ok:
+        score += 12; reasons.append("EMA21 reclaim")
+    elif price > ema21:
+        score += 8; reasons.append("above EMA21")
+    else:
+        score -= 12; reasons.append("below EMA21")
+
+    if controlled_move:
+        score += 15; reasons.append("controlled green move")
+    elif 8.5 < chg_pct <= 12 and strong_close:
+        score += 6; reasons.append("strong but extended")
+    elif chg_pct < 0:
+        score -= 10; reasons.append("red day")
+
+    if volume_ok:
+        score += 16; reasons.append("volume confirmed")
+    elif np.isfinite(vol_ratio) and vol_ratio >= 1.1:
+        score += 6; reasons.append("volume improving")
+    elif np.isfinite(vol_ratio):
+        score -= 8; reasons.append("weak volume")
+
+    if strong_close:
+        score += 14; reasons.append("closed near high")
+    elif weak_close:
+        score -= 14; reasons.append("weak close")
+
+    if rsi_ok:
+        score += 10; reasons.append("RSI healthy")
+    elif rsi_hot:
+        score -= 10; reasons.append("RSI hot")
+
+    if atr_ok:
+        score += 10; reasons.append("tradable ATR")
+    elif atr_too_hot:
+        score -= 10; reasons.append("ATR too risky")
+
+    if is_brk:
+        score += 10; reasons.append("fresh breakout")
+    if new_52w and controlled_move:
+        score += 5; reasons.append("52W strength")
+    if green_3of5:
+        score += 5; reasons.append("3/5 day momentum")
+
+    if explosive_but_risky:
+        score -= 20; reasons.append("chase risk")
+    if volume_extreme and chg_pct > 10:
+        score -= 8; reasons.append("possible blow-off")
+
+    score = int(max(0, min(100, round(score))))
+
+    if score >= 70 and not explosive_but_risky and not weak_close:
+        verdict = "BUY next day on confirmation"
+    elif score >= 58 and not weak_close:
+        verdict = "Watch: buy only above trigger"
+    elif score >= 45:
+        verdict = "Wait for pullback"
+    else:
+        verdict = "Avoid / moved already"
+
+    trigger = price * 1.006 if score >= 58 else price * 1.015
+    pullback_low = price * 0.965
+    pullback_high = price * 0.985
+    stop = price * (0.94 if atr_pct <= 8 else 0.92)
+    target = price * 1.07
+
+    buy_zone = f"hold ${pullback_low:.2f}-${pullback_high:.2f} or break ${trigger:.2f}"
+    stop_txt = f"${stop:.2f}"
+    target_txt = f"${target:.2f}"
+    why = " · ".join(reasons[:5]) if reasons else "setup neutral"
+    return score, verdict, why, buy_zone, stop_txt, target_txt
+
+
 def _extract_ticker_frame(raw: pd.DataFrame, ticker: str, chunk: list) -> pd.DataFrame:
     if raw is None or raw.empty:
         return pd.DataFrame()
@@ -164,6 +293,9 @@ def _analyse(ticker, df, breakout_days, vol_mult, w52_within, mover_symbols, mov
     else:
         atr_pct = 0.0
     ret_3m = _f((close.iloc[-1] - close.iloc[-63]) / close.iloc[-63] * 100) if len(close) >= 63 else 0.0
+    next_score, next_verdict, next_why, next_buy_zone, next_stop, next_target = _next_day_buy_model(
+        price, prev, high, low, close, vol, chg_pct, vol_ratio, atr_pct, is_brk, new_52w
+    )
     score = 0
     if np.isfinite(vol_ratio):
         score += min(30, int((vol_ratio - 1.0) / 4.0 * 30))
@@ -185,6 +317,12 @@ def _analyse(ticker, df, breakout_days, vol_mult, w52_within, mover_symbols, mov
     return {
         "Ticker":      ticker,
         "Score":       score,
+        "Next-Day Score": next_score,
+        "Next-Day Verdict": next_verdict,
+        "Next-Day Why": next_why,
+        "Buy Zone": next_buy_zone,
+        "Stop": next_stop,
+        "Target 5-10%": next_target,
         "Signals":     " | ".join(badges) if badges else "---",
         "Price":       round(price, 3),
         "Chg %":       round(chg_pct, 2),
@@ -232,7 +370,7 @@ def _run_scan(tickers_tuple, market_key, breakout_days, vol_mult, w52_within,
     df = pd.DataFrame(rows)
     if not df.empty:
         df["Score"] = pd.to_numeric(df["Score"], errors="coerce").fillna(0).astype(int)
-        df = df.sort_values("Score", ascending=False).reset_index(drop=True)
+        df = df.sort_values(["Next-Day Score", "Score"], ascending=False).reset_index(drop=True)
     meta = {
         "market":    market_key,
         "scanned":   len(tickers),
@@ -271,8 +409,8 @@ def _fmt_df(df: pd.DataFrame) -> pd.DataFrame:
 def render_breakout_scanner(g: dict) -> None:
     st.subheader("Breakout Scanner")
     st.caption(
-        "Unified scanner: every stock scored across Vol Breakout, 52W High Setup, and Market Mover signals. "
-        "Score 0-100 ranks all three combined. Market dropdown filters the universe."
+        "Unified scanner: finds movers/breakouts, then adds a Next-Day Score to separate buyable swing setups "
+        "from stocks that already moved too far. Market dropdown filters the universe."
     )
     st.markdown("---")
 
@@ -383,11 +521,12 @@ def render_breakout_scanner(g: dict) -> None:
     with f4:
         sort_col = st.selectbox(
             "Sort by",
-            ["Score", "Vol Ratio", "Chg %", "vs 52W %", "3M Return %", "Breakout %"],
+            ["Next-Day Score", "Score", "Vol Ratio", "Chg %", "vs 52W %", "3M Return %", "Breakout %"],
             index=0, key="bk_sort",
         )
 
     rows_show = st.slider("Rows to show", 10, 100, 30, 10, key="bk_rows")
+    next_day_only = st.checkbox("Show only next-day buy/watch candidates", value=True, key="bk_next_day_only")
 
     view = df.copy()
     if search:
@@ -401,9 +540,11 @@ def render_breakout_scanner(g: dict) -> None:
                 mask = mask | view["Signals"].str.contains(sig, na=False)
         view = view[mask]
     view = view[view["Score"] >= min_score]
+    if next_day_only and "Next-Day Score" in view.columns:
+        view = view[view["Next-Day Score"] >= 58]
     view = view.sort_values(sort_col, ascending=(sort_col == "vs 52W %")).head(rows_show)
 
-    top3 = df[df["Score"] >= 40].head(3)
+    top3 = df[df["Next-Day Score"] >= 58].sort_values(["Next-Day Score", "Score"], ascending=False).head(3)
     if not top3.empty:
         st.markdown(f"#### Top Picks — {market_key} | {universe_lbl}")
         pcols = st.columns(len(top3))
@@ -417,7 +558,7 @@ def render_breakout_scanner(g: dict) -> None:
                 )
                 vr = row.get("Vol Ratio", float("nan"))
                 vs = row.get("vs 52W %",  float("nan"))
-                parts = [f"Score: {row['Score']}"]
+                parts = [f"Next-Day: {row.get('Next-Day Score', 0)}", f"Move Score: {row['Score']}"]
                 if pd.notna(vr) and np.isfinite(vr):
                     parts.append(f"Vol: {vr:.1f}x")
                 if np.isfinite(vs):
@@ -427,7 +568,8 @@ def render_breakout_scanner(g: dict) -> None:
         st.markdown("---")
 
     st.markdown(f"#### {len(view)} stocks  |  filtered from {len(df)}  |  {market_key} / {universe_lbl}")
-    cols_show = ["Ticker","Score","Signals","Price","Chg %","Vol Ratio","Today Vol",
+    cols_show = ["Ticker","Next-Day Score","Next-Day Verdict","Buy Zone","Stop","Target 5-10%",
+                 "Next-Day Why","Score","Signals","Price","Chg %","Vol Ratio","Today Vol",
                  "vs 52W %","In Range %","Breakout %","ATR %","3M Return %","Last Bar"]
     cols_show = [c for c in cols_show if c in view.columns]
     st.dataframe(_fmt_df(view[cols_show]), use_container_width=True, hide_index=True)
@@ -436,8 +578,8 @@ def render_breakout_scanner(g: dict) -> None:
     st.markdown("#### Signal Breakdown")
     cc1, cc2 = st.columns(2)
     with cc1:
-        st.markdown("**Score — top stocks**")
-        sdf = view[["Ticker","Score"]].set_index("Ticker").head(20)
+        st.markdown("**Next-Day Score — top candidates**")
+        sdf = view[["Ticker","Next-Day Score"]].set_index("Ticker").head(20)
         if not sdf.empty:
             st.bar_chart(sdf)
     with cc2:
@@ -457,7 +599,11 @@ def render_breakout_scanner(g: dict) -> None:
 
     with st.expander("How the Score works"):
         st.markdown(f"""
-Score 0-100 combines all three signals:
+**Move Score** finds what already moved. **Next-Day Score** ranks what is still buyable tomorrow.
+
+Next-Day Score rewards: trend above EMA8/21/50, controlled +1% to +8.5% move, 1.3x–4.5x volume, strong close near day high, RSI 48–72, ATR 2%–9%, and fresh breakout. It penalises chase gaps, weak closes, RSI >78, ATR >14%, and extreme extension above EMA8/21.
+
+Move Score 0-100 combines all three signals:
 
 | Component | Condition | Max Pts |
 |-----------|-----------|---------|
