@@ -979,7 +979,8 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
         if df.empty:
             return df
         for c in ["Action", "Setup Type", "Signals", "Opt Flow", "Rise Prob", "Fall Prob",
-                  "Score", "Vol Ratio", "Support Tier", "PM Chg%", "Entry Quality"]:
+                  "Score", "Vol Ratio", "Support Tier", "PM Chg%", "Entry Quality",
+                  "Next-Day Score", "Next-Day Rating", "Vol Quality", "Trap Risk"]:
             if c not in df.columns:
                 df[c] = "–"
         return df
@@ -994,6 +995,9 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
         signals   = df_long["Signals"].astype(str)
         opt_flow  = df_long["Opt Flow"].astype(str) if "Opt Flow" in df_long.columns else pd.Series(["–"] * len(df_long), index=df_long.index)
         vol_ratio = pd.to_numeric(df_long["Vol Ratio"], errors="coerce").fillna(0) if "Vol Ratio" in df_long.columns else pd.Series([0.0] * len(df_long), index=df_long.index)
+        nd_score  = pd.to_numeric(df_long.get("Next-Day Score", 0), errors="coerce").fillna(0) if "Next-Day Score" in df_long.columns else pd.Series([0.0] * len(df_long), index=df_long.index)
+        vol_quality = df_long["Vol Quality"].astype(str) if "Vol Quality" in df_long.columns else pd.Series([""] * len(df_long), index=df_long.index)
+        trap_text = df_long["Trap Risk"].astype(str) if "Trap Risk" in df_long.columns else pd.Series(["–"] * len(df_long), index=df_long.index)
         today_pct = _pct_to_num(df_long["Today %"], 0) if "Today %" in df_long.columns else pd.Series([0.0] * len(df_long), index=df_long.index)
         supp_num  = pd.to_numeric(df_long.get("Supp#", 0), errors="coerce").fillna(0) if "Supp#" in df_long.columns else pd.Series([0] * len(df_long), index=df_long.index)
         support_tier = df_long["Support Tier"].astype(str) if "Support Tier" in df_long.columns else pd.Series(["–"] * len(df_long), index=df_long.index)
@@ -1017,10 +1021,13 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
         elif mode == "BALANCED":
             # v2 fix: lowered score gate from 5 to 4 so weak-market sessions still show results.
             # BALANCED = real trades; Discovery master rows with score 4+ and p >= 58 qualify.
-            mask = (p >= max(float(min_prob_long), 58.0)) & (score >= 4) & not_candidate
+            mask = (p >= max(float(min_prob_long), 58.0)) & (score >= 4) & (nd_score >= 5) & not_candidate
             # Also include high-vol operator signals even at score 3
-            mask |= ((score >= 3) & (vol_ratio >= 2.0) & (p >= 58.0) & not_candidate)
+            mask |= ((score >= 3) & (vol_ratio >= 2.0) & (p >= 58.0) & (nd_score >= 5) & not_candidate)
             mask |= (signals.str.contains("EARNINGS GAP|PEAD", na=False, regex=True) & not_candidate)
+            # For real BUY candidates, avoid low-volatility/no-confirmation and trap-risk rows.
+            mask &= (~vol_quality.str.contains("⚠️ Low", na=False, regex=False)) | signals.str.contains("EARNINGS GAP|PEAD", na=False, regex=True)
+            mask &= trap_text.isin(["–", "", "nan", "None"]) | signals.str.contains("FAILED BRKDN|EARNINGS GAP|PEAD", na=False, regex=True)
             df_long = df_long[mask].copy()
             if not df_long.empty:
                 # Normalise labels from Discovery → Balanced labels
@@ -1028,7 +1035,7 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
                 df_long["Action"] = "WATCH – DEVELOPING"
                 df_long.loc[act.str.contains("STRONG BUY|HIGH QUALITY|DISCOVERY QUALITY", na=False, regex=True) |
                             (p.reindex(df_long.index).fillna(0) >= 72), "Action"] = "WATCH – HIGH QUALITY"
-                strong = (p.reindex(df_long.index).fillna(0) >= max(float(min_prob_long), 70.0)) & (score.reindex(df_long.index).fillna(0) >= 6)
+                strong = (p.reindex(df_long.index).fillna(0) >= max(float(min_prob_long), 70.0)) & (score.reindex(df_long.index).fillna(0) >= 6) & (nd_score.reindex(df_long.index).fillna(0) >= 7)
                 df_long.loc[strong & signals.reindex(df_long.index).fillna("").str.contains("🎯HIGH-ACCURACY", na=False), "Action"] = "STRONG BUY"
                 earn_m = signals.reindex(df_long.index).fillna("").str.contains("EARNINGS GAP|PEAD", na=False, regex=True)
                 df_long.loc[earn_m, "Action"] = "STRONG BUY – EARNINGS GAP"
@@ -1372,6 +1379,13 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
             df_long = df_long_master.sort_values(master_p.name if hasattr(master_p, "name") and master_p.name in df_long_master.columns else df_long_master.columns[0], ascending=False).head(top_n).copy()
             if "Action" in df_long.columns:
                 df_long["Action"] = f"WATCH – {mode} (no exact match – showing top Discovery)"
+
+    if not df_long.empty and "Next-Day Score" in df_long.columns:
+        try:
+            df_long["_nds_sort"] = pd.to_numeric(df_long["Next-Day Score"], errors="coerce").fillna(0)
+            df_long = df_long.sort_values(by=["_nds_sort", "Rise Prob"], ascending=[False, False], kind="stable").drop(columns=["_nds_sort"], errors="ignore")
+        except Exception:
+            pass
 
     if not df_short.empty:
         p_s     = _pct_to_num(df_short["Fall Prob"], 0)

@@ -14,8 +14,9 @@ def render_accuracy_lab(ctx: dict) -> None:
     st.caption("🧪 Accuracy Lab · walk-forward check of current swing signal quality")
     st.info(
         "This tab does not change BUY/SELL logic. It replays historical candles, "
-        "runs the same signal engine, and checks forward returns after 5/10/15 days. "
-        "Use it to verify real hit rate instead of trusting displayed probability alone."
+        "runs the same signal engine, and checks whether price hits a +6% target "
+        "before a -4% stop within 5/10/15 trading days. Use it to verify real "
+        "swing-trade hit rate instead of trusting displayed probability alone."
     )
 
     bt_cols = st.columns([3, 1, 1, 1])
@@ -44,8 +45,58 @@ def render_accuracy_lab(ctx: dict) -> None:
         except Exception:
             return np.nan
 
+    def _hit_long_target_before_stop(highs, lows, entry, start_idx, horizon, target_pct=0.06, stop_pct=0.04):
+        """True only when +target is reached before -stop inside the horizon."""
+        target = float(entry) * (1.0 + target_pct)
+        stop = float(entry) * (1.0 - stop_pct)
+        for j in range(start_idx + 1, min(start_idx + horizon + 1, len(highs))):
+            hit_stop = float(lows.iloc[j]) <= stop
+            hit_target = float(highs.iloc[j]) >= target
+            if hit_stop and hit_target:
+                return False  # conservative when both happen intraday
+            if hit_stop:
+                return False
+            if hit_target:
+                return True
+        return False
+
+    def _hit_short_target_before_stop(highs, lows, entry, start_idx, horizon, target_pct=0.06, stop_pct=0.04):
+        """True only when -target is reached before +stop inside the horizon."""
+        target = float(entry) * (1.0 - target_pct)
+        stop = float(entry) * (1.0 + stop_pct)
+        for j in range(start_idx + 1, min(start_idx + horizon + 1, len(highs))):
+            hit_stop = float(highs.iloc[j]) >= stop
+            hit_target = float(lows.iloc[j]) <= target
+            if hit_stop and hit_target:
+                return False
+            if hit_stop:
+                return False
+            if hit_target:
+                return True
+        return False
+
+    def _max_long_return_before_stop(highs, lows, entry, start_idx, horizon, stop_pct=0.04):
+        """Best long % seen before stop/horizon; used for PI magnitude."""
+        best = 0.0
+        stop = float(entry) * (1.0 - stop_pct)
+        for j in range(start_idx + 1, min(start_idx + horizon + 1, len(highs))):
+            best = max(best, (float(highs.iloc[j]) / float(entry) - 1.0) * 100.0)
+            if float(lows.iloc[j]) <= stop:
+                break
+        return best
+
+    def _max_short_return_before_stop(highs, lows, entry, start_idx, horizon, stop_pct=0.04):
+        """Best short % seen before stop/horizon; used for PI magnitude."""
+        best = 0.0
+        stop = float(entry) * (1.0 + stop_pct)
+        for j in range(start_idx + 1, min(start_idx + horizon + 1, len(highs))):
+            best = max(best, (1.0 - float(lows.iloc[j]) / float(entry)) * 100.0)
+            if float(highs.iloc[j]) >= stop:
+                break
+        return best
+
     def _quick_signal_backtest(ticker: str, horizon: int = 10, period: str = "2y", mode: str = "BUY/SELL") -> dict:
-        """Backtest the current signal engine without changing live scanner behaviour."""
+        """Backtest current signals using target-before-stop swing labels."""
         try:
             raw = yf.download(ticker, period=period, interval="1d", progress=False, auto_adjust=True)
             df = _bt_flatten(raw)
@@ -72,11 +123,8 @@ def render_accuracy_lab(ctx: dict) -> None:
                     continue
 
                 p_now = float(c.iloc[-1])
-                p_fut = float(closes.iloc[end + horizon])
-                if p_now <= 0 or np.isnan(p_now) or np.isnan(p_fut):
+                if p_now <= 0 or np.isnan(p_now):
                     continue
-
-                fwd_ret = (p_fut / p_now - 1) * 100
                 l_score = sum(1 for x in long_sig.values() if x)
                 s_score = sum(1 for x in short_sig.values() if x)
                 l_prob = bayesian_prob(LONG_WEIGHTS, long_sig, 0)
@@ -105,12 +153,14 @@ def render_accuracy_lab(ctx: dict) -> None:
 
                 if long_gate:
                     long_trades += 1
-                    long_wins += int(fwd_ret > 0)
-                    long_rets.append(fwd_ret)
+                    long_win = _hit_long_target_before_stop(highs, lows, p_now, end - 1, horizon, 0.06, 0.04)
+                    long_wins += int(long_win)
+                    long_rets.append(_max_long_return_before_stop(highs, lows, p_now, end - 1, horizon, 0.04))
                 if short_gate:
                     short_trades += 1
-                    short_wins += int(fwd_ret < 0)
-                    short_rets.append(-fwd_ret)
+                    short_win = _hit_short_target_before_stop(highs, lows, p_now, end - 1, horizon, 0.06, 0.04)
+                    short_wins += int(short_win)
+                    short_rets.append(_max_short_return_before_stop(highs, lows, p_now, end - 1, horizon, 0.04))
 
             long_win_pct  = (long_wins  / long_trades  * 100) if long_trades  else 0.0
             short_win_pct = (short_wins / short_trades * 100) if short_trades else 0.0
@@ -141,6 +191,7 @@ def render_accuracy_lab(ctx: dict) -> None:
                 "Short Trades":  int(short_trades),
                 "Short Win %":   f"{short_win_pct:.1f}%" if short_trades else "–",
                 "Short Avg %":   f"{short_avg:.2f}%"     if short_rets   else "–",
+                "Target/Stop":   f"+6% / -4% in {horizon}d",
                 "Note":          "OK" if (long_trades + short_trades) else "No signal samples"
             }
         except Exception as e:
@@ -195,6 +246,7 @@ def render_accuracy_lab(ctx: dict) -> None:
                 "Short Trades": st.column_config.NumberColumn("Short",    width=60),
                 "Short Win %":  st.column_config.TextColumn("Short Win",  width=80),
                 "Short Avg %":  st.column_config.TextColumn("Short Avg",  width=80),
+                "Target/Stop":  st.column_config.TextColumn("Target/Stop", width=120),
                 "Note":         st.column_config.TextColumn("Note",       width=180),
             }
         )

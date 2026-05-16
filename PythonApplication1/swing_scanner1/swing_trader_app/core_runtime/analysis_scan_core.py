@@ -1070,9 +1070,17 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 "Banks—Regional", "Banks—Diversified",
                 "Grocery Stores", "Discount Stores",
             }
-            is_biotech   = (industry in _high_risk_industries or
-                            "biotech" in industry.lower() or
-                            "pharma"  in industry.lower())
+            # Use industry + sector label + cached sector detail. Yahoo often leaves
+            # small biotech/pharma names as "Mixed", so industry-only checks miss
+            # binary-event names and allow too many weak STRONG BUY labels.
+            _sector_text = f"{industry} {sector_detail} {sector_label(ticker)}".lower()
+            is_biotech   = (
+                industry in _high_risk_industries
+                or "biotech" in _sector_text
+                or "biotechnology" in _sector_text
+                or "drug manufacturers" in _sector_text
+                or "pharma" in _sector_text
+            )
             is_caution   = industry in _caution_industries
             is_slow      = industry in _low_momentum_industries
 
@@ -1239,10 +1247,93 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 "Mixed"
             )
 
-            # Pre-extract the two scalars the HC block needs.
-            # (The full support/PM variable block runs after HC, so we read
-            # directly from raw{} here rather than waiting for that block.)
+            # ── Next-day swing score: ranks likely continuation/pullback buys ──
+            # This is deliberately separate from the Bayesian probability because
+            # many correlated trend signals can over-saturate Rise Prob. The goal
+            # is fewer, cleaner 5–10% swing candidates rather than every mover.
             rsi_now = float(raw.get("rsi0", 50) or 50)
+            atr_pct_live = float(raw.get("atr_pct", 0.0) or 0.0)
+            has_vol_live = bool(raw.get("has_enough_volatility", atr_pct_live >= 2.5))
+            high_vol_live = bool(raw.get("high_volatility", atr_pct_live >= 4.0))
+            low_vol_exception = bool(post_earnings_gap and vr >= 2.5 and _today_chg_abs >= 5.0)
+
+            setup_family_ok = bool(
+                pullback_setup or breakout_setup or continuation_setup
+                or raw.get("failed_breakdown", False)
+                or raw.get("tight_flag", False)
+                or raw.get("nr7_setup", False)
+                or raw.get("inside_day", False)
+                or raw.get("cup_handle", False)
+                or pre_earnings_run
+            )
+            confirmation_ok = bool(
+                volume_confirmed or operator_score >= 4 or raw.get("vwap_support", False)
+                or long_sig.get("strong_close", False) or post_earnings_gap
+            )
+
+            next_day_score = 0
+            if core_long_trend: next_day_score += 2
+            if raw.get("above_ma60", False): next_day_score += 1
+            if volume_confirmed: next_day_score += 3
+            if operator_score >= 4: next_day_score += 2
+            elif operator_score >= 3: next_day_score += 1
+            if pullback_setup: next_day_score += 2
+            if breakout_setup: next_day_score += 2
+            if continuation_setup: next_day_score += 1
+            if raw.get("failed_breakdown", False): next_day_score += 2
+            if raw.get("tight_flag", False): next_day_score += 2
+            if raw.get("nr7_setup", False): next_day_score += 1
+            if raw.get("inside_day", False): next_day_score += 1
+            if raw.get("cup_handle", False): next_day_score += 1
+            if pre_earnings_run: next_day_score += 1
+            if high_vol_live: next_day_score += 2
+            elif has_vol_live: next_day_score += 1
+            else: next_day_score -= 3
+            if major_trap_risk: next_day_score -= 4
+            if _today_chg_abs > 10 and not post_earnings_gap: next_day_score -= 3
+            if _today_chg_abs < -6 and not raw.get("failed_breakdown", False): next_day_score -= 3
+            if rsi_now > 76: next_day_score -= 2
+            if vr < 1.0 and not pullback_setup: next_day_score -= 2
+            if is_biotech and not post_earnings_gap and operator_score < 5: next_day_score -= 2
+
+            if next_day_score >= 9:
+                next_day_rating = "🔥 A+ NEXT-DAY BUY"
+            elif next_day_score >= 7:
+                next_day_rating = "✅ BUY"
+            elif next_day_score >= 5:
+                next_day_rating = "👀 WATCH"
+            else:
+                next_day_rating = "SKIP"
+
+            next_day_buy_ok = bool(
+                raw.get("above_ma60", False)
+                and core_long_trend
+                and (has_vol_live or low_vol_exception)
+                and not major_trap_risk
+                and 35 <= rsi_now <= 72
+                and setup_family_ok
+                and confirmation_ok
+                and next_day_score >= 7
+            )
+
+            # Probability calibration: do not allow weak/no-volume setups to show
+            # unrealistic 90–95% probabilities. This fixes the main false sense of
+            # accuracy in Discovery/Balanced outputs.
+            if not volume_confirmed and operator_score < 4 and not pullback_setup and not post_earnings_gap:
+                l_prob = min(l_prob, 0.72)
+            if _today_chg_abs < -6 and not raw.get("failed_breakdown", False):
+                l_prob = min(l_prob, 0.62)
+            if vr < 1.0 and not pullback_setup and not post_earnings_gap:
+                l_prob = min(l_prob, 0.70)
+            if (not has_vol_live) and not low_vol_exception:
+                l_prob = min(l_prob, 0.68)
+            if major_trap_risk:
+                l_prob = min(l_prob, 0.60)
+            if is_biotech and not post_earnings_gap and operator_score < 5:
+                l_prob = min(l_prob, 0.68)
+            l_prob = round(float(l_prob), 4)
+
+            # Pre-extract the second scalar the HC block needs.
             p_raw   = float(raw.get("p", 0) or p)
 
             # ── HIGH CONVICTION: category-based confluence (5 independent groups) ──
@@ -1483,26 +1574,26 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 and not distribution_risk
             )
             high_accuracy_long = (
-                _earn_momentum_long
+                (_earn_momentum_long and next_day_score >= 7)
                 or (
+                    next_day_buy_ok and
                     l_prob >= min_prob_strong_long and
                     l_score >= min_score_strong_long and
-                    raw.get("above_ma60", False) and
                     raw.get("not_limit_up", False) and
                     raw.get("today_chg_pct", 99) < (8 if swing_mode != "DISCOVERY" else 10) and
-                    not major_trap_risk and
-                    core_long_trend and
                     momentum_confirmed and
-                    (volume_confirmed or operator_or_vwap or pullback_setup)
+                    (volume_confirmed or operator_score >= 4 or raw.get("vwap_support", False) or pullback_setup)
                 )
             )
             actionable_long = (
-                l_prob >= (0.66 if swing_mode == "DISCOVERY" else 0.70) and
+                next_day_score >= 6 and
+                l_prob >= (0.64 if swing_mode == "DISCOVERY" else 0.68) and
                 l_score >= (4 if swing_mode == "DISCOVERY" else 5) and
                 raw.get("above_ma60", False) and
                 not major_trap_risk and
                 core_long_trend and
-                (pullback_setup or breakout_setup or continuation_setup or operator_or_vwap)
+                setup_family_ok and
+                (confirmation_ok or pullback_setup)
             )
 
             if swing_mode == "SUPPORT ENTRY":
@@ -1711,16 +1802,28 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     entry_quality = "🚫 AVOID"
                 elif major_trap_risk:
                     entry_quality = "⏳ WAIT"
-                elif _earn_momentum_long:
+                elif _earn_momentum_long and next_day_score >= 7:
                     entry_quality = "✅ BUY"
-                elif high_accuracy_long and (is_ideal_dip or is_vol_surge or long_sig.get("pocket_pivot", False) or long_sig.get("vol_breakout", False) or continuation_setup):
+                elif high_accuracy_long and next_day_buy_ok and (is_ideal_dip or is_vol_surge or long_sig.get("pocket_pivot", False) or long_sig.get("vol_breakout", False) or continuation_setup):
                     entry_quality = "✅ BUY"
-                elif actionable_long and not is_chasing:
+                elif actionable_long and next_day_score >= 7 and not is_chasing:
                     entry_quality = "✅ BUY"
                 elif is_chasing:
                     entry_quality = "⏳ WAIT"
                 else:
                     entry_quality = "👀 WATCH"
+
+                # Final BUY-quality downgrades for 5–10% swing target. Low ATR
+                # and binary-event biotech names can be watched, but should not
+                # be promoted to fresh BUY unless there is a real catalyst/volume.
+                if entry_quality == "✅ BUY" and (not has_vol_live) and not low_vol_exception:
+                    entry_quality = "👀 WATCH"
+                if entry_quality == "✅ BUY" and is_biotech and not post_earnings_gap and operator_score < 5:
+                    entry_quality = "👀 WATCH"
+                if l_action and "STRONG BUY" in str(l_action) and ((not has_vol_live and not low_vol_exception) or not confirmation_ok):
+                    l_action = "WATCH – LOW VOL/NO CONFIRM"
+                if l_action and "STRONG BUY" in str(l_action) and is_biotech and not post_earnings_gap and operator_score < 5:
+                    l_action = "WATCH – BIOTECH RISK"
 
                 l_tags = []
                 if long_sig["stoch_confirmed"]: l_tags.append("STOCH BOUNCE")
@@ -1746,6 +1849,9 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 if combo_bonus > 0:             l_tags.append(f"COMBO+{combo_bonus:.0%}")
                 if high_accuracy_long:          l_tags.append("🎯HIGH-ACCURACY")
                 elif l_prob >= 0.82:            l_tags.append("⚠️PROB-NO-GATE")
+                if next_day_score >= 9:         l_tags.append("🔥NEXT-DAY-A+")
+                elif next_day_score >= 7:       l_tags.append("✅NEXT-DAY")
+                elif next_day_score >= 5:       l_tags.append("👀NEXT-DAY-WATCH")
                 l_tags.extend(strat_tags)
                 # ── v15: High win-rate pattern tags ───────────────────────────
                 if raw.get("nr7_setup"):        l_tags.append("📐NR7")
@@ -1802,6 +1908,8 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "Supp#":          support_tier,
                     "RSI Now":        round(rsi_now, 1),
                     "Entry Quality":  entry_quality,
+                    "Next-Day Score": int(next_day_score),
+                    "Next-Day Rating": next_day_rating,
                     "Rise Prob":      f"{l_prob * 100:.1f}%",
                     "Prob Tier":      prob_label(l_prob),
                     "Score":          f"{l_score}/{len(long_sig)}",

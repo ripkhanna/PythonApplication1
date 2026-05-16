@@ -542,7 +542,15 @@ def show_table(df, label, prob_col="Rise Prob"):
     # Prefer practical Swing Rank Score when a strategy panel supplies it.
     # This keeps the displayed Rank aligned with the Monday-style swing view,
     # rather than sorting only by Pro Score / probability.
-    if "Swing Rank Score" in df.columns:
+    if "Next-Day Score" in df.columns:
+        df["_prob_sort"] = _display_num(df["Next-Day Score"], 0)
+        if "Entry Quality" in df.columns:
+            df["_eq_sort"] = df["Entry Quality"].map(_quality_order).fillna(9)
+            df = df.sort_values(["_eq_sort", "_prob_sort"], ascending=[True, False])
+            df = df.drop(columns="_eq_sort")
+        else:
+            df = df.sort_values("_prob_sort", ascending=False)
+    elif "Swing Rank Score" in df.columns:
         # Rebuild view before sorting so wait/extended rows do not outrank
         # cleaner actionable setups. If the PSM compare-shortlist box is active,
         # sort by practical Swing Rank Score inside the shortlist instead of
@@ -605,7 +613,7 @@ def show_table(df, label, prob_col="Rise Prob"):
     else:
         wanted = [
             "Rank", "Ticker", "Action", "View", "Buy Condition",
-            "Entry Quality", "Setup Type", "Today %", "Rise Prob", "Swing Rank Score", "Pro Score", "PI Proxy", "Tier", "Why Buy",
+            "Entry Quality", "Next-Day Score", "Next-Day Rating", "Setup Type", "Today %", "Rise Prob", "Swing Rank Score", "Pro Score", "PI Proxy", "Tier", "Why Buy",
             "Operator", "VWAP", "Trap Risk", "Price", "MA60 Stop", "Best Stop",
             "TP1 +10%", "TP2 +15%", "TP3 +20%", "Target Est.", "Hold Est.",
             "Vol Ratio", "ATR%", "Vol Quality", "PSM Quality", "PSS Score", "PSS Label", "Op Score", "Score",
@@ -625,6 +633,8 @@ def show_table(df, label, prob_col="Rise Prob"):
         "Setup Type":    st.column_config.TextColumn("Setup",         width=90),
         "Today %":       st.column_config.TextColumn("Today%",        width=58),
         "Rise Prob":     st.column_config.TextColumn("Rise%",         width=55),
+        "Next-Day Score": st.column_config.NumberColumn("N-Day",       width=60),
+        "Next-Day Rating": st.column_config.TextColumn("Next-Day",     width=130),
         "Swing Rank Score": st.column_config.NumberColumn("SwingRank", width=70),
         "Fall Prob":     st.column_config.TextColumn("Fall%",         width=55),
         "Operator":      st.column_config.TextColumn("Operator",      width=120),
