@@ -1,5 +1,5 @@
 """
-Swing Scanner v13.95 — Bayesian Ensemble
+Swing Scanner v13.96 — Bayesian Ensemble
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -16,7 +16,7 @@ v12 add-ons  : options-derived signals — call/put unusual flow, IV term
 Install:
   pip install financedatabase ta streamlit yfinance pandas numpy nsepython requests streamlit-autorefresh
 """
-# v13.95: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
+# v13.96: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
 # NotImplementedError from __annotate__ when @st.cache_data wraps functions
 # with bare unsubscripted generics like `-> tuple`. This `from __future__`
 # downgrades all annotations in this module to strings at parse time,
@@ -43,7 +43,7 @@ import streamlit as st
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v13.95",
+    page_title="Swing Scanner v13.96",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -225,9 +225,9 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v13.95")
+st.title("📈 Swing/Long Term Scanner v13.96")
 
-# v13.95: COMPACT SELF-STAMP
+# v13.96: COMPACT SELF-STAMP
 # The build identity (path, mtime, hash, size) is still computed so it can
 # self-prove the running file, but only the short hash and mtime are visible
 # in the caption. The full path and size are tucked into the tooltip — hover
@@ -980,7 +980,8 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
             return df
         for c in ["Action", "Setup Type", "Signals", "Opt Flow", "Rise Prob", "Fall Prob",
                   "Score", "Vol Ratio", "Support Tier", "PM Chg%", "Entry Quality",
-                  "Next-Day Score", "Next-Day Rating", "Vol Quality", "Trap Risk"]:
+                  "Next-Day Score", "Quality Score", "Tradeable Buy", "Next-Day Rating",
+                  "Next-Day Move", "7D Move Est", "Upside to Res", "RR Est", "Vol Quality", "Trap Risk"]:
             if c not in df.columns:
                 df[c] = "–"
         return df
@@ -996,6 +997,8 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
         opt_flow  = df_long["Opt Flow"].astype(str) if "Opt Flow" in df_long.columns else pd.Series(["–"] * len(df_long), index=df_long.index)
         vol_ratio = pd.to_numeric(df_long["Vol Ratio"], errors="coerce").fillna(0) if "Vol Ratio" in df_long.columns else pd.Series([0.0] * len(df_long), index=df_long.index)
         nd_score  = pd.to_numeric(df_long.get("Next-Day Score", 0), errors="coerce").fillna(0) if "Next-Day Score" in df_long.columns else pd.Series([0.0] * len(df_long), index=df_long.index)
+        quality_score = pd.to_numeric(df_long.get("Quality Score", nd_score), errors="coerce").fillna(0) if ("Quality Score" in df_long.columns or "Next-Day Score" in df_long.columns) else pd.Series([0.0] * len(df_long), index=df_long.index)
+        tradeable_buy = df_long.get("Tradeable Buy", pd.Series([""] * len(df_long), index=df_long.index)).astype(str).str.upper().eq("YES")
         vol_quality = df_long["Vol Quality"].astype(str) if "Vol Quality" in df_long.columns else pd.Series([""] * len(df_long), index=df_long.index)
         trap_text = df_long["Trap Risk"].astype(str) if "Trap Risk" in df_long.columns else pd.Series(["–"] * len(df_long), index=df_long.index)
         today_pct = _pct_to_num(df_long["Today %"], 0) if "Today %" in df_long.columns else pd.Series([0.0] * len(df_long), index=df_long.index)
@@ -1021,9 +1024,11 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
         elif mode == "BALANCED":
             # v2 fix: lowered score gate from 5 to 4 so weak-market sessions still show results.
             # BALANCED = real trades; Discovery master rows with score 4+ and p >= 58 qualify.
-            mask = (p >= max(float(min_prob_long), 58.0)) & (score >= 4) & (nd_score >= 5) & not_candidate
+            mask = (p >= max(float(min_prob_long), 58.0)) & (score >= 4) & (nd_score >= 5) & (quality_score >= 6) & not_candidate
             # Also include high-vol operator signals even at score 3
-            mask |= ((score >= 3) & (vol_ratio >= 2.0) & (p >= 58.0) & (nd_score >= 5) & not_candidate)
+            mask |= ((score >= 3) & (vol_ratio >= 2.0) & (p >= 58.0) & (nd_score >= 5) & (quality_score >= 6) & not_candidate)
+            # Always include scanner-approved tradeable BUY rows.
+            mask |= (tradeable_buy & not_candidate)
             mask |= (signals.str.contains("EARNINGS GAP|PEAD", na=False, regex=True) & not_candidate)
             # For real BUY candidates, avoid low-volatility/no-confirmation and trap-risk rows.
             mask &= (~vol_quality.str.contains("⚠️ Low", na=False, regex=False)) | signals.str.contains("EARNINGS GAP|PEAD", na=False, regex=True)
@@ -1035,8 +1040,8 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
                 df_long["Action"] = "WATCH – DEVELOPING"
                 df_long.loc[act.str.contains("STRONG BUY|HIGH QUALITY|DISCOVERY QUALITY", na=False, regex=True) |
                             (p.reindex(df_long.index).fillna(0) >= 72), "Action"] = "WATCH – HIGH QUALITY"
-                strong = (p.reindex(df_long.index).fillna(0) >= max(float(min_prob_long), 70.0)) & (score.reindex(df_long.index).fillna(0) >= 6) & (nd_score.reindex(df_long.index).fillna(0) >= 7)
-                df_long.loc[strong & signals.reindex(df_long.index).fillna("").str.contains("🎯HIGH-ACCURACY", na=False), "Action"] = "STRONG BUY"
+                strong = (p.reindex(df_long.index).fillna(0) >= max(float(min_prob_long), 70.0)) & (score.reindex(df_long.index).fillna(0) >= 6) & (nd_score.reindex(df_long.index).fillna(0) >= 8) & (quality_score.reindex(df_long.index).fillna(0) >= 9) & (tradeable_buy.reindex(df_long.index).fillna(False))
+                df_long.loc[strong & signals.reindex(df_long.index).fillna("").str.contains("🎯HIGH-ACCURACY|VOL BREAKOUT|POCKET PIVOT|EARNINGS GAP|PEAD", na=False, regex=True), "Action"] = "STRONG BUY"
                 earn_m = signals.reindex(df_long.index).fillna("").str.contains("EARNINGS GAP|PEAD", na=False, regex=True)
                 df_long.loc[earn_m, "Action"] = "STRONG BUY – EARNINGS GAP"
                 df_long.loc[act.reindex(df_long.index).fillna("").str.contains("TRAP RISK", na=False), "Action"] = "WATCH – TRAP RISK"
@@ -1064,30 +1069,60 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
                 df_long = df_long.sort_values(by=["Supp#", "Rise Prob"], ascending=[True, False], kind="stable") if "Supp#" in df_long.columns else df_long
 
         elif mode == "PREMARKET MOMENTUM":
-            mask = (pm_chg > 0.1) | ((today_pct > 0.3) & (score >= 3)) | signals.str.contains("MACD ACCEL|VOL BREAKOUT|VOL SURGE|POCKET PIVOT|RS>SPY|WKLY TREND", na=False, regex=True)
-            mask &= (p >= 35) & not_candidate
+            # v16.1 fix: Premarket Momentum is a WATCHLIST / activity mode, not a final
+            # quality gate.  Do NOT hide WATCH-CANDIDATE rows here. Event movers such
+            # as SEDG can be overextended and therefore marked as candidate by the
+            # accuracy gate, but users still need to see them in momentum mode.
+            event_mover = signals.str.contains(
+                "EARNINGS GAP|PEAD|GAP|NEWS|CATALYST|VOL BREAKOUT|VOL SURGE|POCKET PIVOT|RS>SPY|WKLY TREND",
+                na=False, regex=True,
+            ) | ((today_pct >= 1.0) & (vol_ratio >= 1.2))
+            live_momentum = (pm_chg > 0.1) | ((today_pct > 0.3) & (score >= 2))
+            mask = live_momentum | event_mover
+            # Keep weak-probability rows only when there is actual event/volume momentum.
+            mask &= ((p >= 25) | event_mover)
             df_long = df_long[mask].copy()
             if not df_long.empty:
                 pm_r = pm_chg.reindex(df_long.index).fillna(0)
                 p_r  = p.reindex(df_long.index).fillna(0)
+                today_r = today_pct.reindex(df_long.index).fillna(0)
+                vr_r = vol_ratio.reindex(df_long.index).fillna(0)
+                candidate_r = ~not_candidate.reindex(df_long.index).fillna(True)
+                overext_r = today_r > 8.0
                 df_long["Action"] = "WATCH – MOMENTUM CANDIDATE"
                 df_long.loc[pm_r >= 1.0, "Action"] = "WATCH – PM/LIVE MOMENTUM"
-                df_long.loc[(pm_r >= 3.0) | (p_r >= 62), "Action"] = "BUY – PM/LIVE MOMENTUM"
+                df_long.loc[(today_r >= 3.0) & (vr_r >= 1.5), "Action"] = "WATCH – POST-GAP MOMENTUM"
+                df_long.loc[((pm_r >= 3.0) | (p_r >= 62)) & (~overext_r) & (~candidate_r), "Action"] = "BUY – PM/LIVE MOMENTUM"
+                # Overextended/event names remain visible but are not promoted to BUY.
+                df_long.loc[overext_r | candidate_r, "Action"] = "WATCH – MOMENTUM / WAIT PULLBACK"
                 df_long["Setup Type"] = df_long.get("PM Chg%", "–").astype(str).where(df_long.get("PM Chg%", "–").astype(str) != "–", "TECH MOMENTUM")
-                df_long = df_long.sort_values(by=["PM Chg%", "Rise Prob"], ascending=[False, False], kind="stable") if "PM Chg%" in df_long.columns else df_long
+                if "PM Chg%" in df_long.columns:
+                    df_long = df_long.assign(_today=today_r, _vr=vr_r).sort_values(by=["PM Chg%", "_today", "_vr", "Rise Prob"], ascending=[False, False, False, False], kind="stable").drop(columns=["_today", "_vr"])
+                else:
+                    df_long = df_long.assign(_today=today_r, _vr=vr_r).sort_values(by=["_today", "_vr", "Rise Prob"], ascending=[False, False, False], kind="stable").drop(columns=["_today", "_vr"])
 
         elif mode == "HIGH VOLUME":
-            mask = (vol_ratio >= 1.05) | signals.str.contains("VOL BREAKOUT|VOL SURGE|POCKET PIVOT|OBV", na=False, regex=True)
-            mask &= (p >= 35) & not_candidate
+            # v16.1 fix: High Volume must show active movers even if the final accuracy
+            # gate downgraded them to WATCH-CANDIDATE due to chasing/overextension.
+            activity_mover = (vol_ratio >= 1.05) | signals.str.contains(
+                "VOL BREAKOUT|VOL SURGE|POCKET PIVOT|OBV|EARNINGS GAP|PEAD|GAP|NEWS|CATALYST",
+                na=False, regex=True,
+            ) | ((today_pct >= 1.0) & (vol_ratio >= 1.2))
+            mask = activity_mover & ((p >= 25) | (vol_ratio >= 1.2) | (today_pct >= 1.0))
             df_long = df_long[mask].copy()
             if not df_long.empty:
                 vr_r = vol_ratio.reindex(df_long.index).fillna(0)
+                today_r = today_pct.reindex(df_long.index).fillna(0)
+                candidate_r = ~not_candidate.reindex(df_long.index).fillna(True)
+                overext_r = today_r > 8.0
                 df_long["Action"] = "WATCH – ACTIVE VOLUME"
                 df_long.loc[vr_r >= 1.5, "Action"] = "WATCH – UNUSUAL VOLUME"
-                df_long.loc[vr_r >= 2.0, "Action"] = "BUY – VOLUME BREAKOUT"
-                df_long.loc[vr_r >= 3.0, "Action"] = "BUY – EXTREME VOLUME"
+                df_long.loc[(vr_r >= 2.0) & (~overext_r) & (~candidate_r), "Action"] = "BUY – VOLUME BREAKOUT"
+                df_long.loc[(vr_r >= 3.0) & (~overext_r) & (~candidate_r), "Action"] = "BUY – EXTREME VOLUME"
+                # Keep SEDG-style huge movers visible, but label correctly as wait/pullback.
+                df_long.loc[overext_r | candidate_r, "Action"] = "WATCH – HIGH VOLUME / WAIT PULLBACK"
                 df_long["Setup Type"] = "Vol " + vr_r.round(2).astype(str) + "x"
-                df_long = df_long.assign(_vs=vr_r).sort_values("_vs", ascending=False, kind="stable").drop(columns="_vs")
+                df_long = df_long.assign(_vs=vr_r, _today=today_r).sort_values(["_vs", "_today"], ascending=[False, False], kind="stable").drop(columns=["_vs", "_today"])
 
         elif mode == "HIGH CONVICTION":
             # Require signals from multiple categories — detected via Signals column tags.
@@ -1380,10 +1415,12 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
             if "Action" in df_long.columns:
                 df_long["Action"] = f"WATCH – {mode} (no exact match – showing top Discovery)"
 
-    if not df_long.empty and "Next-Day Score" in df_long.columns:
+    if not df_long.empty and ("Quality Score" in df_long.columns or "Next-Day Score" in df_long.columns):
         try:
-            df_long["_nds_sort"] = pd.to_numeric(df_long["Next-Day Score"], errors="coerce").fillna(0)
-            df_long = df_long.sort_values(by=["_nds_sort", "Rise Prob"], ascending=[False, False], kind="stable").drop(columns=["_nds_sort"], errors="ignore")
+            df_long["_q_sort"] = pd.to_numeric(df_long.get("Quality Score", df_long.get("Next-Day Score", 0)), errors="coerce").fillna(0)
+            df_long["_nds_sort"] = pd.to_numeric(df_long.get("Next-Day Score", 0), errors="coerce").fillna(0)
+            df_long["_tb_sort"] = df_long.get("Tradeable Buy", "").astype(str).str.upper().eq("YES").astype(int) if "Tradeable Buy" in df_long.columns else 0
+            df_long = df_long.sort_values(by=["_tb_sort", "_q_sort", "_nds_sort", "Rise Prob"], ascending=[False, False, False, False], kind="stable").drop(columns=["_tb_sort", "_q_sort", "_nds_sort"], errors="ignore")
         except Exception:
             pass
 
@@ -2031,7 +2068,10 @@ if run:
                     market_sel, max_symbols=max_live_universe,
                     enable_slow_enrichment=enable_slow_universe_enrichment,
                 )
-            # Merge live + curated, then apply combined cap (live tickers have priority)
+            # Merge live + curated, then apply combined cap.
+            # Do NOT hard-code a priority watchlist here. Activity-based names
+            # should enter through the live universe/movers/earnings-gapper feeds,
+            # and user-specific names should enter through Always include / Add tickers.
             active_tickers = _unique_keep_order(list(live_tickers) + list(_active_tickers))
             if len(active_tickers) > max_combined_tickers:
                 active_tickers = active_tickers[:max_combined_tickers]

@@ -222,8 +222,11 @@ def render_premarket(g: dict) -> None:
         extra_list = [t.strip() for t in extra_raw.split(",") if t.strip()]
         us_tickers = list(dict.fromkeys(extra_list + us_tickers))
 
-    max_scan = st.slider("Max tickers to scan", 50, 500, 200, 50, key="pm_max_scan",
-                         help="More tickers = more complete results but slower fetch (~8s per 100)")
+    # Keep this tab data-driven: no hard-coded priority watchlist.
+    # Use the Add tickers box above for a specific symbol, or raise the cap to
+    # scan deeper into the curated US universe.
+    max_scan = st.slider("Max tickers to scan", 50, 500, 250, 50, key="pm_max_scan",
+                         help="More tickers = more complete results but slower fetch (~8s per 100). Use Add tickers for any specific symbol you always want checked.")
 
     us_tickers = us_tickers[:max_scan]
 

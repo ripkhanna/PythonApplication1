@@ -1370,6 +1370,172 @@ def _score_news_titles(news_items):
     order_tag = "✅ Order/Contract" if order_score >= 2 else "–"
     return news_score, order_score, sentiment, order_tag, pos_hits, neg_hits, order_hits
 
+
+
+def _event_squeeze_metrics(tkr, info: dict) -> dict:
+    """Return SEDG-style event reversal / squeeze metrics.
+
+    This is intentionally isolated to Event Predictor only.  It does not change
+    the main Strict Swing gate, High Volume tab, or normal scanner rankings.
+    """
+    metrics = {
+        "squeeze_score": 0,
+        "post_score": 0,
+        "label": "–",
+        "dist_52w_high_pct": None,
+        "short_float_pct": None,
+        "days_to_cover": None,
+        "vol_ratio": None,
+        "today_pct": None,
+        "gap_hold_pct": None,
+        "close_near_high": False,
+        "tight_base": False,
+        "volume_dryup": False,
+        "break_20d_high": False,
+        "trigger": "–",
+    }
+    try:
+        price = _safe_float_event(info.get("currentPrice") or info.get("regularMarketPrice"))
+        high_52w = _safe_float_event(info.get("fiftyTwoWeekHigh"))
+        avg_vol = _safe_float_event(info.get("averageVolume") or info.get("averageDailyVolume10Day"))
+        cur_vol = _safe_float_event(info.get("volume") or info.get("regularMarketVolume"))
+        short_float = _safe_float_event(info.get("shortPercentOfFloat"), None)
+        short_ratio = _safe_float_event(info.get("shortRatio"), None)
+
+        if short_float is not None and short_float <= 1:
+            short_float *= 100.0
+        metrics["short_float_pct"] = short_float
+        metrics["days_to_cover"] = short_ratio
+
+        if price and high_52w:
+            metrics["dist_52w_high_pct"] = (price / high_52w - 1.0) * 100.0
+
+        if avg_vol and cur_vol:
+            metrics["vol_ratio"] = cur_vol / avg_vol
+
+        hist = None
+        try:
+            hist = tkr.history(period="3mo", interval="1d", auto_adjust=False, actions=False)
+        except Exception:
+            hist = None
+
+        if hist is not None and not hist.empty and len(hist) >= 15:
+            h = hist.dropna(subset=["Close"]).copy()
+            if not h.empty:
+                close = h["Close"].astype(float)
+                high = h["High"].astype(float) if "High" in h.columns else close
+                low = h["Low"].astype(float) if "Low" in h.columns else close
+                open_ = h["Open"].astype(float) if "Open" in h.columns else close
+                vol = h["Volume"].astype(float) if "Volume" in h.columns else None
+
+                last_close = float(close.iloc[-1])
+                prev_close = float(close.iloc[-2]) if len(close) >= 2 else last_close
+                last_open = float(open_.iloc[-1])
+                last_high = float(high.iloc[-1])
+                last_low = float(low.iloc[-1])
+                today_pct = (last_close / prev_close - 1.0) * 100.0 if prev_close else 0.0
+                metrics["today_pct"] = today_pct
+
+                # Close near high: important for post-event continuation.
+                day_range = max(last_high - last_low, 0.0)
+                if day_range > 0:
+                    close_pos = (last_close - last_low) / day_range
+                    metrics["close_near_high"] = close_pos >= 0.70
+
+                # Gap hold proxy: close relative to the gap from yesterday close to today open.
+                gap = last_open - prev_close
+                if abs(gap) > 0:
+                    metrics["gap_hold_pct"] = max(-100.0, min(200.0, ((last_close - prev_close) / gap) * 100.0))
+
+                if len(high) >= 21:
+                    metrics["break_20d_high"] = last_close >= float(high.iloc[-21:-1].max())
+
+                if len(close) >= 12:
+                    rng10 = (float(high.iloc[-10:].max()) - float(low.iloc[-10:].min())) / max(last_close, 0.01) * 100.0
+                    metrics["tight_base"] = rng10 <= 14.0
+
+                if vol is not None and len(vol) >= 25:
+                    recent5 = float(vol.iloc[-6:-1].mean())
+                    base20 = float(vol.iloc[-25:-6].mean())
+                    if base20 > 0:
+                        metrics["volume_dryup"] = recent5 <= 0.70 * base20
+                    last_vol = float(vol.iloc[-1])
+                    avg20 = float(vol.iloc[-21:-1].mean()) if len(vol) >= 21 else base20
+                    if avg20 > 0:
+                        metrics["vol_ratio"] = last_vol / avg20
+
+        squeeze_score = 0
+        post_score = 0
+
+        dist = metrics.get("dist_52w_high_pct")
+        if dist is not None:
+            if dist <= -50:
+                squeeze_score += 2
+            if dist <= -70:
+                squeeze_score += 1
+
+        sf = metrics.get("short_float_pct")
+        if sf is not None:
+            if sf >= 15:
+                squeeze_score += 2
+            elif sf >= 8:
+                squeeze_score += 1
+
+        dtc = metrics.get("days_to_cover")
+        if dtc is not None and dtc >= 3:
+            squeeze_score += 1
+
+        if metrics.get("volume_dryup"):
+            squeeze_score += 1
+        if metrics.get("tight_base"):
+            squeeze_score += 1
+        if metrics.get("break_20d_high"):
+            squeeze_score += 2
+
+        vr = metrics.get("vol_ratio") or 0.0
+        tp = metrics.get("today_pct") or 0.0
+        if 5 <= tp <= 25:
+            post_score += 2
+        elif 25 < tp <= 35:
+            post_score += 1
+        elif tp > 35:
+            post_score -= 3
+
+        if vr >= 2.5:
+            post_score += 3
+        elif vr >= 1.5:
+            post_score += 1
+
+        if metrics.get("close_near_high"):
+            post_score += 2
+        if metrics.get("break_20d_high"):
+            post_score += 2
+        if metrics.get("gap_hold_pct") is not None and metrics["gap_hold_pct"] >= 50:
+            post_score += 1
+
+        # Reuse headline/event evidence already available to the Event Predictor.
+        metrics["squeeze_score"] = int(squeeze_score)
+        metrics["post_score"] = int(post_score)
+
+        if post_score >= 8:
+            label = "⚡ POST-EVENT MOMENTUM"
+            trigger = "Buy only on VWAP/gap hold or break above prior high; avoid if gap midpoint fails."
+        elif squeeze_score >= 7:
+            label = "🔥 SQUEEZE WATCH"
+            trigger = "Watch for catalyst + volume >2.5x and breakout above 20D high."
+        elif squeeze_score >= 5:
+            label = "👀 EVENT REVERSAL WATCH"
+            trigger = "Wait for base breakout, positive news, or next-session follow-through."
+        else:
+            label = "–"
+            trigger = "–"
+
+        metrics["label"] = label
+        metrics["trigger"] = trigger
+    except Exception:
+        pass
+    return metrics
+
 @st.cache_data(ttl=1800)
 def fetch_event_predictions(tickers: tuple, days_ahead: int = 30) -> pd.DataFrame:
     today = datetime.today().date()
@@ -1427,6 +1593,10 @@ def fetch_event_predictions(tickers: tuple, days_ahead: int = 30) -> pd.DataFram
             news_items = _extract_news_titles(tkr, limit=12)
             news_score, order_score, sentiment, order_tag, pos_hits, neg_hits, order_hits = _score_news_titles(news_items)
 
+            # v16.5: SEDG-style explosive event reversal / squeeze metrics.
+            # Isolated to Event Predictor; does not affect Strict Swing or main scanner gates.
+            squeeze = _event_squeeze_metrics(tkr, info)
+
             trend_score = 0
             if price and ma50 and price > ma50:
                 trend_score += 1
@@ -1437,7 +1607,11 @@ def fetch_event_predictions(tickers: tuple, days_ahead: int = 30) -> pd.DataFram
             if rec in ("BUY", "STRONG BUY"):
                 trend_score += 1
 
-            total_score = earnings_score + news_score + order_score + trend_score
+            # Squeeze/Event score is a watchlist signal, not a blind BUY promoter.
+            # It can improve WATCH visibility but does not override near-earnings risk.
+            squeeze_bonus = 1 if squeeze.get("squeeze_score", 0) >= 5 else 0
+            post_bonus = 1 if squeeze.get("post_score", 0) >= 6 else 0
+            total_score = earnings_score + news_score + order_score + trend_score + squeeze_bonus + post_bonus
             if total_score >= 8 and trend_score >= 2 and earnings_score >= 0:
                 verdict, vcol = "✅ BUY", "buy"
             elif total_score >= 6:
@@ -1464,6 +1638,14 @@ def fetch_event_predictions(tickers: tuple, days_ahead: int = 30) -> pd.DataFram
                 "News": sentiment,
                 "Orders": order_tag,
                 "Trend Score": f"{trend_score}/4",
+                "Squeeze Score": squeeze.get("squeeze_score", 0),
+                "Post-Event Score": squeeze.get("post_score", 0),
+                "SEDG-Type": squeeze.get("label", "–"),
+                "52W Dist": f"{squeeze.get('dist_52w_high_pct'):.1f}%" if squeeze.get("dist_52w_high_pct") is not None else "–",
+                "Short Float": f"{squeeze.get('short_float_pct'):.1f}%" if squeeze.get("short_float_pct") is not None else "–",
+                "Vol Ratio": f"{squeeze.get('vol_ratio'):.1f}x" if squeeze.get("vol_ratio") is not None else "–",
+                "Today %": f"{squeeze.get('today_pct'):+.1f}%" if squeeze.get("today_pct") is not None else "–",
+                "Trigger": squeeze.get("trigger", "–"),
                 "Event Score": total_score,
                 "Verdict": verdict,
                 "Evidence": " ; ".join(evidence) if evidence else "–",

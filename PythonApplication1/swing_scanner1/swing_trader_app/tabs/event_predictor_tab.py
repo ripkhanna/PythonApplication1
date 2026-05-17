@@ -80,8 +80,10 @@ def render_event_predictor(ctx: dict) -> None:
             return ""
 
         disp = [c for c in [
-            "Ticker", "Price", "Earnings", "Days Out", "EPS Trend", "News", "Orders",
-            "Trend Score", "Event Score", "Verdict", "Evidence", "Top News"
+            "Ticker", "Verdict","Price", "Earnings", "Days Out", "EPS Trend", "News", "Orders",
+            "Trend Score", "Squeeze Score", "Post-Event Score", "SEDG-Type",
+            "52W Dist", "Short Float", "Vol Ratio", "Today %", "Trigger",
+            "Event Score", "Evidence", "Top News"
         ] if c in df_event.columns]
         df_show = df_event[disp].copy()
         if "Days Out" in df_show.columns:
@@ -96,6 +98,14 @@ def render_event_predictor(ctx: dict) -> None:
             "News": st.column_config.TextColumn("News", width=90),
             "Orders": st.column_config.TextColumn("Orders", width=110),
             "Trend Score": st.column_config.TextColumn("Trend", width=62),
+            "Squeeze Score": st.column_config.NumberColumn("Squeeze", width=70),
+            "Post-Event Score": st.column_config.NumberColumn("PostEvt", width=70),
+            "SEDG-Type": st.column_config.TextColumn("SEDG-Type", width=160),
+            "52W Dist": st.column_config.TextColumn("52W Dist", width=75),
+            "Short Float": st.column_config.TextColumn("Short", width=65),
+            "Vol Ratio": st.column_config.TextColumn("Vol", width=55),
+            "Today %": st.column_config.TextColumn("Today", width=65),
+            "Trigger": st.column_config.TextColumn("Trigger", width=260),
             "Event Score": st.column_config.NumberColumn("Score", width=55),
             "Verdict": st.column_config.TextColumn("Verdict", width=90),
             "Evidence": st.column_config.TextColumn("Evidence", width=220),
@@ -106,11 +116,14 @@ def render_event_predictor(ctx: dict) -> None:
         sfn = styler.map if hasattr(styler, "map") else styler.applymap
         styled = sfn(_style_event_verdict, subset=["Verdict"])
         styled = (styled.map if hasattr(styled, "map") else styled.applymap)(_style_event_score, subset=["Event Score"])
+        for _score_col in ["Squeeze Score", "Post-Event Score"]:
+            if _score_col in df_show.columns:
+                styled = (styled.map if hasattr(styled, "map") else styled.applymap)(_style_event_score, subset=[_score_col])
 
         st.dataframe(
             styled, width="stretch", hide_index=True,
             column_config={k:v for k,v in col_cfg.items() if k in df_show.columns},
             height=min(60 + len(df_show) * 36, 560)
         )
-        st.warning("News/order detection uses recent yfinance headlines and keyword matching. Treat it as a watchlist filter, not a guarantee. Confirm important orders from SGX/company announcements before buying.")
+        st.warning("News/order detection uses recent yfinance headlines and keyword matching. SEDG-Type / squeeze labels are watchlist signals only — confirm VWAP/gap hold, volume follow-through, and risk:reward before buying.")
 

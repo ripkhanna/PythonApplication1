@@ -13,7 +13,47 @@ def render_help(ctx: dict) -> None:
     # ── What's new ────────────────────────────────────────────────────────────
     with st.expander("🆕 What changed recently", expanded=True):
         st.markdown("""
-### Latest build — v13.95
+### Latest build — v16 Accuracy Gate
+
+
+#### 🎯 Accuracy Gate for 5–10% in 5–7 days
+The main long scanner now separates **stocks that moved** from **stocks that are tradeable tomorrow**.
+A final unified gate prevents contradictions such as `A+ NEXT-DAY BUY` while `Entry Quality = WAIT`.
+
+A row can become `✅ BUY` only when these checks agree:
+- **Move feasibility** — ATR% implies enough 7-day range to realistically reach +5–10%.
+- **Resistance clearance** — at least ~6% room to overhead resistance, unless breakout is already confirmed.
+- **Risk:reward** — estimated target/stop is around 1:2 or better.
+- **Confirmation** — volume, operator activity, VWAP support, strong close, or earnings/catalyst.
+- **No chase / no trap** — avoids gap-chase, false breakout, distribution, MA60 break and low-volume drifts.
+
+New columns added to Long Setups / Swing Picks:
+
+| Column | Meaning |
+|---|---|
+| **Tradeable Buy** | YES only if final 5–7 day swing gate passes |
+| **Quality Score** | Practical score aligned to 5–10% swing objective |
+| **7D Move Est** | ATR-based estimate of potential 7-day move |
+| **Upside to Res** | Room to nearest overhead resistance |
+| **RR Est** | Estimated reward:risk using target vs stop |
+| **Next-Day Move** | Restored display name for the ATR-based 7-day move feasibility estimate |
+| **Squeeze Score** | Event Predictor score for beaten-down / short-squeeze / recovery setups |
+| **Post-Event Score** | Event Predictor score for SEDG-style post-catalyst momentum |
+| **SEDG-Type** | Watchlist label: Squeeze Watch, Event Reversal Watch, or Post-Event Momentum |
+| **Trigger** | Safer follow-through condition before buying an explosive event mover |
+
+#### 🔥 SEDG-Type Event Reversal / Squeeze scanner
+The **Event Predictor** tab now includes a separate watchlist layer for explosive SEDG-style moves.
+It is designed to find **beaten-down stocks with catalyst + squeeze potential** without changing the Strict Swing logic.
+
+It looks for:
+- Large distance below 52-week high, usually a recovery candidate.
+- Short-float / days-to-cover pressure where Yahoo provides the data.
+- Volume dry-up or tight base before a catalyst.
+- Post-event breakout with volume expansion, close near high, 20D high break, and gap hold.
+
+Important: `SEDG-Type` labels are **WATCHLIST signals**, not automatic BUY signals.
+Use them to monitor names, then require VWAP/gap hold, next-session follow-through, and 1:2 risk:reward before entry.
 
 #### ⚡ Breakout Scanner (new tab)
 A unified, market-aware breakout discovery engine added as a dedicated tab.
@@ -87,8 +127,8 @@ All ticker lists are now defined in a single file (`tabs/universe_data.py`) and 
 | **Balanced** | Normal daily trading (default) | Practical trend + volume + operator | 15–40 stocks |
 | **Discovery** | Quiet markets, building watchlist | Wide net, lower thresholds | 40–80+ stocks |
 | **Support Entry ⭐** | Morning scan, before the move | Only stocks AT MA20/MA60/VWAP/swing low | 5–20 stocks |
-| **Premarket Momentum 🚀** | 30 min before open | +1–8% PM gain + intact technical trend | 5–15 stocks |
-| **High Volume 📊** | Finding active names right now | Unusual volume / breakout / pocket pivot | 10–30 stocks |
+| **Premarket Momentum 🚀** | 30 min before open / live session | PM gain, live momentum, or post-gap event mover. Overextended names stay WATCH, not BUY | 5–25 stocks |
+| **High Volume 📊** | Finding active names right now | Unusual volume / breakout / pocket pivot / post-earnings event volume. Candidate rows are shown as WATCH | 10–40 stocks |
 | **High Conviction 🎯** | Highest win-rate shortlist | ALL 5 signal categories must confirm | 5–15 stocks |
 | **PSM Strategy 🏆** | 5–7 day swing candidates | PI Proxy + PSS Score + rise prob + volume + entry quality | 5–25 stocks |
 
@@ -137,13 +177,37 @@ for that shortlist only instead of the full universe.
 **Gate:** `today_chg_pct ≤ 5%` — stocks already up >5% are hidden.
 
 ### Premarket Momentum — tiers explained
-| Tier | PM Change | Action |
+| Tier | PM / Live condition | Action |
 |---|---|---|
-| 🚀 Tier A | +3% to +8% | High conviction — enter near the open |
-| 📈 Tier B | +1% to +3% | Wait for first 5-min candle to confirm direction |
-| 🟡 Tier C/D | Live momentum | Technical momentum when PM data unavailable |
+| 🚀 Tier A | +3% PM move or strong live move with confirmation | BUY only if not overextended and not candidate-gated |
+| 📈 Tier B | +1% to +3% PM/live momentum | WATCH — wait for first 5-min / VWAP confirmation |
+| 🟡 Tier C/D | Technical momentum when PM data is unavailable | WATCH — validate volume and trend |
+| ⚡ Event mover | Earnings/news/gap + strong live volume, e.g. SEDG-type move | WATCH — visible in this strategy, but wait for pullback if extended |
 
-**Gate:** above MA60 + core trend intact + RSI < 72 + no trap risk.
+**v16.1 behavior:** Premarket Momentum is an activity/watchlist strategy. It now shows post-gap/event movers even if the final accuracy gate marks them as `WATCH – CANDIDATE`. Overextended names are not promoted to BUY; they appear as `WATCH – MOMENTUM / WAIT PULLBACK`.
+
+
+
+### v16.3 no hard-coded priority watchlist
+
+The scanner no longer pins a fixed `priority_pm_watch` list. That design is too biased and can hide better movers that are not on the hard-coded list. The universe is now kept data-driven:
+
+- Live/Yahoo movers, 52-week breakouts, premarket gappers, earnings gappers, sector holdings, and the curated universe are merged.
+- The scan cap is then applied for speed.
+- If you want a specific ticker checked regardless of scan cap, add it in **Always include tickers** in the sidebar or in the Premarket tab's **Add tickers** box.
+
+This keeps SEDG-type names visible when they are picked up by market activity or manually included, without hard-coding SEDG or any other symbol into the app.
+
+### High Volume — tiers explained
+| Tier | Condition | Action |
+|---|---|---|
+| Active volume | Volume ratio ≥ 1.05x or volume signal | WATCH – ACTIVE VOLUME |
+| Unusual volume | Volume ratio ≥ 1.5x | WATCH – UNUSUAL VOLUME |
+| Volume breakout | Volume ratio ≥ 2.0x and not overextended/candidate-gated | BUY – VOLUME BREAKOUT |
+| Extreme volume | Volume ratio ≥ 3.0x and not overextended/candidate-gated | BUY – EXTREME VOLUME |
+| Event high volume | Earnings/news/gap + high volume, but price already spiked | WATCH – HIGH VOLUME / WAIT PULLBACK |
+
+**v16.1 behavior:** High Volume intentionally includes candidate rows. This fixes cases where an active stock such as SEDG disappears because the strict 5–7 day accuracy gate downgraded it for chasing risk.
 
 ### High Conviction — 5 categories
 All five must fire at least one signal:
@@ -293,8 +357,14 @@ For SGX, India, and HK scans the mover feed is skipped entirely — results cont
 ### Key columns
 | Column | What to look for |
 |---|---|
-| **Entry Quality** | ✅ BUY = enter now · 👀 WATCH = monitor · ⏳ WAIT = extended · 🚫 AVOID = broken |
-| **Rise Prob** | Bayesian probability — above 70% is high quality |
+| **Entry Quality** | ✅ BUY = final tradeable gate passed · 👀 WATCH = monitor · ⏳ WAIT = extended / needs confirmation · 🚫 AVOID = broken |
+| **Tradeable Buy** | YES only when trend + volume/operator + ATR feasibility + resistance room + R:R + no trap all pass |
+| **Quality Score** | Practical 5–7 day swing score; use this before Rise Prob |
+| **Next-Day Score** | Continuation / pullback readiness score for the next session |
+| **7D Move Est** | ATR% × √7 estimate; should normally be ≥6% for a 5–10% swing |
+| **Upside to Res** | Estimated room before overhead resistance; prefer ≥6% unless confirmed breakout |
+| **RR Est** | Estimated reward:risk from current price to stop/target; prefer 1:2+ |
+| **Rise Prob** | Bayesian probability — useful, but no longer the main ranking column |
 | **Setup Type** | Pullback / Breakout / Continuation / Support / PM Momentum |
 | **Operator** | 🔥 STRONG OPERATOR = smart money accumulating |
 | **Trap Risk** | FALSE BO / GAP CHASE / DISTRIB — reduce size or skip |
@@ -516,7 +586,13 @@ Operator: 274, Long: 0  → action assignment failing; update app
 | **View** | Plain-English decision: Best swing buy / Buy on confirmation / Watchlist / Wait / Avoid |
 | **Buy Condition** | Practical entry rule with stop and target where available |
 | **Setup Type** | Pullback / Breakout / Support zone / PM% / Volume tier |
-| **Entry Quality** | ✅ BUY · 👀 WATCH · ⏳ WAIT · 🚫 AVOID |
+| **Entry Quality** | ✅ BUY · 👀 WATCH · ⏳ WAIT · 🚫 AVOID · SKIP |
+| **Tradeable Buy** | YES/NO final practical swing gate |
+| **Quality Score** | 5–7 day swing suitability score |
+| **Next-Day Score / Rating** | Next-session readiness score and label |
+| **7D Move Est** | ATR-based 7-day move feasibility estimate |
+| **Upside to Res** | Percent room to nearest resistance |
+| **RR Est** | Estimated reward:risk ratio |
 | **Rise Prob / Fall Prob** | Bayesian probability (bucket-capped) |
 | **Score** | Count of active setup signals |
 | **Operator / Op Score** | Smart-money accumulation label and raw score |
@@ -557,14 +633,16 @@ Operator: 274, Long: 0  → action assignment failing; update app
         st.markdown("""
 ### Trade checklist before entry
 ```
-✅ Setup type is clear and matches the chart
-✅ Entry Quality is BUY or WATCH (not WAIT/AVOID)
-✅ MA60 Stop is logical and not too far
-✅ Reward:risk is at least 2:1
+✅ Tradeable Buy = YES for immediate entries
+✅ Entry Quality = ✅ BUY, not WAIT/AVOID
+✅ Quality Score ≥ 9 and Next-Day Score ≥ 8
+✅ 7D Move Est supports at least a 5–10% move
+✅ Upside to Res is ≥6% OR breakout is confirmed
+✅ RR Est is around 1:2 or better
 ✅ No major Trap Risk flag
-✅ Earnings are not within 7 days
+✅ Earnings are not within 7 days unless catalyst gap is positive
 ✅ Sector and market regime support the direction
-✅ Volume confirms — not buying into a silent drift
+✅ Volume/operator confirms — not buying into a silent drift
 ```
 
 ### Reduce size or skip when
@@ -610,7 +688,10 @@ Key packages: `streamlit` · `yfinance` · `pandas` · `numpy` · `ta` ·
 
     st.markdown("---")
     st.caption(
-        "Swing Scanner v13.95 · 19 tabs · 8 strategies · US + SGX + India + HK · "
+        "Swing Scanner v16 Accuracy Gate · 19 tabs · 8 strategies · US + SGX + India + HK · "
         "⚡ Breakout Scanner · Bayesian engine · Operator layer · Options signals · "
         "Not financial advice"
     )
+
+
+# v16.4 notes are included in the "What changed recently" expander above.

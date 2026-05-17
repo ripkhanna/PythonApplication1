@@ -1,3 +1,6 @@
+import pandas as pd
+import streamlit as st
+
 """Scan Results Tabs renderer — v2 (strategy-aware).
 
 Supports 6 swing strategy modes set in the sidebar:

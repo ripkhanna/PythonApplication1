@@ -147,6 +147,8 @@ def _make_swing_picks_from_scan(df_long_in: pd.DataFrame, max_candidates: int = 
 
     tech = df_long_in.copy()
     tech["_rise"] = tech.get("Rise Prob", "0%").apply(_prob_to_float)
+    tech["_quality"] = pd.to_numeric(tech.get("Quality Score", tech.get("Next-Day Score", 0)), errors="coerce").fillna(0)
+    tech["_tradeable"] = tech.get("Tradeable Buy", pd.Series([""] * len(tech))).astype(str).str.upper().eq("YES")
 
     # Prefer true BUY / high-quality WATCH setups; keep enough candidates for
     # earnings/news enrichment even when the market is quiet.
@@ -154,17 +156,17 @@ def _make_swing_picks_from_scan(df_long_in: pd.DataFrame, max_candidates: int = 
     entry = tech.get("Entry Quality", pd.Series([""] * len(tech))).astype(str).str.upper()
     trap = tech.get("Trap Risk", pd.Series(["–"] * len(tech))).astype(str)
     tech_pref = tech[
-        (tech["_rise"] >= 62) &
         (~trap.isin(["FALSE BO", "GAP CHASE", "DISTRIB"])) &
         (
-            action.str.contains("BUY|HIGH QUALITY|DEVELOPING", na=False) |
-            entry.str.contains("BUY|WATCH", na=False)
+            tech["_tradeable"] |
+            ((tech["_quality"] >= 6) & (tech["_rise"] >= 62) & (entry.str.contains("BUY|WATCH", na=False))) |
+            action.str.contains("BUY|HIGH QUALITY|DEVELOPING", na=False)
         )
     ].copy()
     if tech_pref.empty:
         tech_pref = tech.sort_values("_rise", ascending=False).head(max_candidates).copy()
     else:
-        tech_pref = tech_pref.sort_values("_rise", ascending=False).head(max_candidates).copy()
+        tech_pref = tech_pref.sort_values(["_tradeable", "_quality", "_rise"], ascending=[False, False, False]).head(max_candidates).copy()
 
     tickers = _unique_keep_order(tech_pref["Ticker"].astype(str).str.upper().tolist())
     if not tickers:
@@ -174,7 +176,7 @@ def _make_swing_picks_from_scan(df_long_in: pd.DataFrame, max_candidates: int = 
     if event_df.empty:
         # Still return technical shortlist when Yahoo earnings/news fetch fails.
         out = tech_pref[[c for c in [
-            "Ticker", "Setup Type", "Entry Quality", "Rise Prob", "Score", "Operator", "Op Score",
+            "Ticker", "Setup Type", "Entry Quality", "Tradeable Buy", "Quality Score", "Next-Day Score", "Next-Day Rating", "Next-Day Move", "7D Move Est", "Upside to Res", "RR Est", "Rise Prob", "Score", "Operator", "Op Score",
             "VWAP", "Trap Risk", "Today %", "Price", "Sector", "Action",
             "MA60 Stop", "TP1 +10%", "TP2 +15%", "TP3 +20%"
         ] if c in tech_pref.columns]].copy()
@@ -193,8 +195,12 @@ def _make_swing_picks_from_scan(df_long_in: pd.DataFrame, max_candidates: int = 
             entry_s = str(rr.get("Entry Quality", "")).upper()
             trap_s = str(rr.get("Trap Risk", "–")).upper()
             final_s = _parse_score_num(rr.get("Final Swing Score", 0), 0)
+            tradeable_s = str(rr.get("Tradeable Buy", "")).upper() == "YES"
+            quality_s = _parse_score_num(rr.get("Quality Score", 0), 0)
             if trap_s in ("FALSE BO", "GAP CHASE", "DISTRIB"):
                 return f"⏳ WAIT — {trap_s} risk"
+            if tradeable_s and quality_s >= 9 and "BUY" in entry_s:
+                return "✅ BUY / WATCH ENTRY"
             if "BUY" in entry_s and rise >= 66 and final_s >= 48:
                 return "✅ BUY / WATCH ENTRY"
             if rise >= 62 and final_s >= 42:
@@ -227,8 +233,10 @@ def _make_swing_picks_from_scan(df_long_in: pd.DataFrame, max_candidates: int = 
         event_rank = _event_verdict_rank(event_v)
         days_out = r.get("Days Out", None)
 
-        tech_ok = (rise >= 72) or ("BUY" in action_s) or ("BUY" in entry_s)
-        watch_ok = (rise >= 62) or ("WATCH" in action_s) or ("WATCH" in entry_s)
+        quality_s = _parse_score_num(r.get("Quality Score", r.get("Next-Day Score", 0)), 0)
+        tradeable_s = str(r.get("Tradeable Buy", "")).upper() == "YES"
+        tech_ok = tradeable_s or (quality_s >= 9 and rise >= 62) or (rise >= 72) or ("BUY" in action_s) or ("BUY" in entry_s)
+        watch_ok = (quality_s >= 6) or (rise >= 62) or ("WATCH" in action_s) or ("WATCH" in entry_s)
         near_earn = False
         try:
             near_earn = pd.notna(days_out) and int(days_out) <= 7 and int(days_out) >= 0
@@ -240,7 +248,7 @@ def _make_swing_picks_from_scan(df_long_in: pd.DataFrame, max_candidates: int = 
 
         event_missing = event_v in ("", "–", "nan", "None") or pd.isna(r.get("Verdict", np.nan))
         strong_technical = (
-            ("BUY" in entry_s or rise >= 72) and
+            (tradeable_s or ("BUY" in entry_s and quality_s >= 9) or rise >= 72) and
             final_score >= 50 and
             op_score >= 2 and
             str(r.get("VWAP", "")).upper() != "BELOW"
@@ -251,8 +259,10 @@ def _make_swing_picks_from_scan(df_long_in: pd.DataFrame, max_candidates: int = 
             swing_verdict = "🚫 AVOID — earnings ≤7d"
         elif trap_risk in ("FALSE BO", "GAP CHASE", "DISTRIB"):
             swing_verdict = f"⏳ WAIT — {trap_risk} risk"
-        elif strong_technical and (event_rank >= 1 or event_missing):
+        elif tradeable_s and strong_technical and (event_rank >= 1 or event_missing):
             swing_verdict = "✅ BUY / WATCH ENTRY"
+        elif strong_technical and (event_rank >= 1 or event_missing):
+            swing_verdict = "👀 WATCH"
         elif tech_ok and event_rank >= 2 and final_score >= 48:
             swing_verdict = "✅ BUY / WATCH ENTRY"
         elif good_watch:
@@ -277,6 +287,8 @@ def _make_swing_picks_from_scan(df_long_in: pd.DataFrame, max_candidates: int = 
         item["Why"] = " · ".join(why_parts)
         item["_swing_rank"] = (
             (3 if swing_verdict.startswith("✅") else 2 if swing_verdict.startswith("👀") else 1 if swing_verdict.startswith("⏳") else 0),
+            1 if tradeable_s else 0,
+            quality_s,
             item.get("Final Swing Score", 0),
             rise,
             op_score,
@@ -290,7 +302,9 @@ def _make_swing_picks_from_scan(df_long_in: pd.DataFrame, max_candidates: int = 
     out["_rank_b"] = out["_swing_rank"].apply(lambda x: x[1])
     out["_rank_c"] = out["_swing_rank"].apply(lambda x: x[2])
     out["_rank_d"] = out["_swing_rank"].apply(lambda x: x[3])
-    out = out.sort_values(["_rank_a", "_rank_b", "_rank_c", "_rank_d"], ascending=False)
-    return out.drop(columns=[c for c in ["_swing_rank", "_rank_a", "_rank_b", "_rank_c", "_rank_d", "_rise", "_score", "_vcol"] if c in out.columns])
+    out["_rank_e"] = out["_swing_rank"].apply(lambda x: x[4])
+    out["_rank_f"] = out["_swing_rank"].apply(lambda x: x[5])
+    out = out.sort_values(["_rank_a", "_rank_b", "_rank_c", "_rank_d", "_rank_e", "_rank_f"], ascending=False)
+    return out.drop(columns=[c for c in ["_swing_rank", "_rank_a", "_rank_b", "_rank_c", "_rank_d", "_rank_e", "_rank_f", "_rise", "_quality", "_tradeable", "_score", "_vcol"] if c in out.columns])
 
 

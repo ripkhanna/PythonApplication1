@@ -1271,6 +1271,44 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 or long_sig.get("strong_close", False) or post_earnings_gap
             )
 
+            p_raw = float(raw.get("p", 0) or p)
+
+            # ── v16 accuracy gate: can it realistically make +5–10% in 5–7 days?
+            # The old score could mark a stock A+ even when entry quality later said
+            # WAIT/AVOID. These gates align the whole scanner around the practical
+            # swing target: target before stop, room to resistance, and enough ATR.
+            expected_7d_move = round(float(atr_pct_live) * (7 ** 0.5), 2) if atr_pct_live > 0 else 0.0
+            move_feasible = bool((2.8 <= atr_pct_live <= 10.0 and expected_7d_move >= 6.0) or low_vol_exception)
+            extreme_volatility = bool(atr_pct_live > 12.0 and not post_earnings_gap)
+
+            try:
+                _h20 = float(high.iloc[-21:-1].max()) if len(high) >= 21 else float(raw.get("h10", 0) or 0)
+                _h60 = float(high.iloc[-61:-1].max()) if len(high) >= 61 else _h20
+            except Exception:
+                _h20, _h60 = float(raw.get("h10", 0) or 0), 0.0
+            _swing_hi = float(raw.get("last_swing_high", 0) or 0)
+            _res_candidates = [x for x in [_h20, _h60, _swing_hi] if x and x > p_raw * 1.005]
+            nearest_resistance = min(_res_candidates) if _res_candidates else 0.0
+            upside_to_resistance = round(((nearest_resistance / p_raw) - 1.0) * 100.0, 2) if nearest_resistance > 0 and p_raw > 0 else 99.0
+            confirmed_breakout = bool(((_h20 > 0 and p_raw >= _h20 * 1.003) or long_sig.get("vol_breakout", False)) and (volume_confirmed or post_earnings_gap))
+            resistance_clearance_ok = bool(upside_to_resistance >= 6.0 or confirmed_breakout or post_earnings_gap or raw.get("failed_breakdown", False))
+
+            approx_stop = max(
+                round(p_raw - 1.5 * atrv, 2),
+                round(float(raw.get("last_swing_low", p_raw * 0.95)) * 0.995, 2),
+                round(float(raw.get("ma60", p_raw * 0.95)) * 0.995, 2),
+                round(p_raw * 0.94, 2),
+            )
+            stop_risk_pct = round(max((p_raw - approx_stop) / max(p_raw, 0.01) * 100.0, 0.1), 2)
+            target_for_rr_pct = 8.0 if atr_pct_live >= 4.0 else 6.0
+            rr_est = round(target_for_rr_pct / max(stop_risk_pct, 0.1), 2)
+            risk_reward_ok = bool(rr_est >= 2.0 or (_earn_momentum_long and rr_est >= 1.5))
+
+            not_overextended = bool((_today_chg_abs <= 7.5) or post_earnings_gap)
+            healthy_pullback = bool(-4.5 <= _today_chg_abs <= 3.5 and pullback_setup and raw.get("above_ma60", False))
+            fresh_breakout = bool(0.0 <= _today_chg_abs <= 7.5 and breakout_setup and volume_confirmed)
+            valid_next_day_setup = bool(healthy_pullback or fresh_breakout or flag_active or nr7_active or fbd_active or _earn_momentum_long)
+
             next_day_score = 0
             if core_long_trend: next_day_score += 2
             if raw.get("above_ma60", False): next_day_score += 1
@@ -1289,18 +1327,49 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             if high_vol_live: next_day_score += 2
             elif has_vol_live: next_day_score += 1
             else: next_day_score -= 3
-            if major_trap_risk: next_day_score -= 4
-            if _today_chg_abs > 10 and not post_earnings_gap: next_day_score -= 3
+            if move_feasible: next_day_score += 2
+            else: next_day_score -= 3
+            if resistance_clearance_ok: next_day_score += 2
+            else: next_day_score -= 3
+            if risk_reward_ok: next_day_score += 2
+            else: next_day_score -= 3
+            if valid_next_day_setup: next_day_score += 2
+            else: next_day_score -= 2
+            if major_trap_risk: next_day_score -= 5
+            if _today_chg_abs > 8 and not post_earnings_gap: next_day_score -= 4
             if _today_chg_abs < -6 and not raw.get("failed_breakdown", False): next_day_score -= 3
-            if rsi_now > 76: next_day_score -= 2
-            if vr < 1.0 and not pullback_setup: next_day_score -= 2
-            if is_biotech and not post_earnings_gap and operator_score < 5: next_day_score -= 2
+            if rsi_now > 76: next_day_score -= 3
+            if vr < 1.0 and not pullback_setup: next_day_score -= 3
+            if is_biotech and not post_earnings_gap and operator_score < 5: next_day_score -= 3
+            if extreme_volatility: next_day_score -= 3
 
-            if next_day_score >= 9:
+            quality_score = 0
+            if core_long_trend: quality_score += 2
+            if volume_confirmed: quality_score += 3
+            if long_sig.get("rel_strength", False) or long_sig.get("rs_momentum", False) or long_sig.get("sector_leader", False): quality_score += 2
+            if move_feasible: quality_score += 2
+            if resistance_clearance_ok: quality_score += 2
+            if risk_reward_ok: quality_score += 2
+            if setup_family_ok: quality_score += 2
+            if operator_score >= 4: quality_score += 2
+            elif operator_score >= 3: quality_score += 1
+            if not_overextended: quality_score += 1
+            if valid_next_day_setup: quality_score += 2
+            if not raw.get("not_chasing", True) or not raw.get("not_limit_up", True): quality_score -= 4
+            if major_trap_risk: quality_score -= 5
+            if _today_chg_abs > 8 and not post_earnings_gap: quality_score -= 3
+            if vr < 1.0 and not pullback_setup: quality_score -= 3
+            if rsi_now > 75: quality_score -= 2
+            if atr_pct_live < 2.8: quality_score -= 3
+            if atr_pct_live > 12.0 and not post_earnings_gap: quality_score -= 3
+            if is_biotech and not post_earnings_gap and operator_score < 5: quality_score -= 3
+
+            # provisional only; final rating is recomputed after entry-quality gates
+            if next_day_score >= 10 and quality_score >= 12:
                 next_day_rating = "🔥 A+ NEXT-DAY BUY"
-            elif next_day_score >= 7:
+            elif next_day_score >= 8 and quality_score >= 9:
                 next_day_rating = "✅ BUY"
-            elif next_day_score >= 5:
+            elif next_day_score >= 5 or quality_score >= 6:
                 next_day_rating = "👀 WATCH"
             else:
                 next_day_rating = "SKIP"
@@ -1308,12 +1377,16 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             next_day_buy_ok = bool(
                 raw.get("above_ma60", False)
                 and core_long_trend
-                and (has_vol_live or low_vol_exception)
+                and move_feasible
+                and resistance_clearance_ok
+                and risk_reward_ok
+                and valid_next_day_setup
                 and not major_trap_risk
                 and 35 <= rsi_now <= 72
                 and setup_family_ok
                 and confirmation_ok
-                and next_day_score >= 7
+                and next_day_score >= 8
+                and quality_score >= 9
             )
 
             # Probability calibration: do not allow weak/no-volume setups to show
@@ -1332,9 +1405,6 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             if is_biotech and not post_earnings_gap and operator_score < 5:
                 l_prob = min(l_prob, 0.68)
             l_prob = round(float(l_prob), 4)
-
-            # Pre-extract the second scalar the HC block needs.
-            p_raw   = float(raw.get("p", 0) or p)
 
             # ── HIGH CONVICTION: category-based confluence (5 independent groups) ──
             # Requiring 1+ signal from each of 5 unrelated categories is much
@@ -1800,30 +1870,69 @@ def fetch_analysis(green_sectors, red_sectors, regime,
 
                 if is_stopped:
                     entry_quality = "🚫 AVOID"
-                elif major_trap_risk:
+                elif major_trap_risk or is_chasing:
                     entry_quality = "⏳ WAIT"
-                elif _earn_momentum_long and next_day_score >= 7:
+                elif next_day_buy_ok and (is_ideal_dip or is_vol_surge or long_sig.get("pocket_pivot", False) or long_sig.get("vol_breakout", False) or continuation_setup or _earn_momentum_long or valid_next_day_setup):
                     entry_quality = "✅ BUY"
-                elif high_accuracy_long and next_day_buy_ok and (is_ideal_dip or is_vol_surge or long_sig.get("pocket_pivot", False) or long_sig.get("vol_breakout", False) or continuation_setup):
-                    entry_quality = "✅ BUY"
-                elif actionable_long and next_day_score >= 7 and not is_chasing:
-                    entry_quality = "✅ BUY"
-                elif is_chasing:
-                    entry_quality = "⏳ WAIT"
+                elif quality_score >= 6 or next_day_score >= 5:
+                    entry_quality = "👀 WATCH"
                 else:
-                    entry_quality = "👀 WATCH"
+                    entry_quality = "SKIP"
 
-                # Final BUY-quality downgrades for 5–10% swing target. Low ATR
-                # and binary-event biotech names can be watched, but should not
-                # be promoted to fresh BUY unless there is a real catalyst/volume.
-                if entry_quality == "✅ BUY" and (not has_vol_live) and not low_vol_exception:
+                # Final unified tradeability gate for 5–10% in 5–7 trading days.
+                # This prevents contradictory rows such as A+ Next-Day but WAIT/AVOID.
+                tradeable_buy = bool(
+                    entry_quality == "✅ BUY"
+                    and next_day_buy_ok
+                    and not is_chasing
+                    and not is_stopped
+                    and not major_trap_risk
+                    and confirmation_ok
+                    and move_feasible
+                    and resistance_clearance_ok
+                    and risk_reward_ok
+                    and quality_score >= 9
+                    and next_day_score >= 8
+                )
+                a_plus_buy = bool(
+                    tradeable_buy
+                    and quality_score >= 12
+                    and next_day_score >= 10
+                    and (vr >= 1.5 or post_earnings_gap)
+                    and operator_score >= 3
+                    and expected_7d_move >= 7.0
+                )
+
+                if a_plus_buy:
+                    entry_quality = "✅ BUY"
+                    next_day_rating = "🔥 A+ NEXT-DAY BUY"
+                elif tradeable_buy:
+                    entry_quality = "✅ BUY"
+                    next_day_rating = "✅ BUY"
+                elif entry_quality in ("🚫 AVOID", "⏳ WAIT"):
+                    next_day_rating = "SKIP" if entry_quality == "🚫 AVOID" else "⏳ WAIT"
+                elif quality_score >= 6 or next_day_score >= 5:
                     entry_quality = "👀 WATCH"
-                if entry_quality == "✅ BUY" and is_biotech and not post_earnings_gap and operator_score < 5:
-                    entry_quality = "👀 WATCH"
-                if l_action and "STRONG BUY" in str(l_action) and ((not has_vol_live and not low_vol_exception) or not confirmation_ok):
-                    l_action = "WATCH – LOW VOL/NO CONFIRM"
-                if l_action and "STRONG BUY" in str(l_action) and is_biotech and not post_earnings_gap and operator_score < 5:
-                    l_action = "WATCH – BIOTECH RISK"
+                    next_day_rating = "👀 WATCH"
+                else:
+                    entry_quality = "SKIP"
+                    next_day_rating = "SKIP"
+
+                if l_action and "STRONG BUY" in str(l_action) and not tradeable_buy:
+                    if is_chasing:
+                        l_action = "WATCH – CHASING"
+                    elif not move_feasible:
+                        l_action = "WATCH – MOVE NOT FEASIBLE"
+                    elif not resistance_clearance_ok:
+                        l_action = "WATCH – NEAR RESISTANCE"
+                    elif not risk_reward_ok:
+                        l_action = "WATCH – RR TOO LOW"
+                    elif (not has_vol_live and not low_vol_exception) or not confirmation_ok:
+                        l_action = "WATCH – LOW VOL/NO CONFIRM"
+                    elif is_biotech and not post_earnings_gap and operator_score < 5:
+                        l_action = "WATCH – BIOTECH RISK"
+                    else:
+                        l_action = "WATCH – NEED CONFIRMATION"
 
                 l_tags = []
                 if long_sig["stoch_confirmed"]: l_tags.append("STOCH BOUNCE")
@@ -1909,7 +2018,13 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "RSI Now":        round(rsi_now, 1),
                     "Entry Quality":  entry_quality,
                     "Next-Day Score": int(next_day_score),
+                    "Quality Score": int(quality_score),
+                    "Tradeable Buy": "YES" if tradeable_buy else "NO",
                     "Next-Day Rating": next_day_rating,
+                    "Next-Day Move": f"{expected_7d_move:.1f}%",
+                    "7D Move Est": f"{expected_7d_move:.1f}%",
+                    "Upside to Res": f"{upside_to_resistance:.1f}%",
+                    "RR Est": f"1:{rr_est:.1f}",
                     "Rise Prob":      f"{l_prob * 100:.1f}%",
                     "Prob Tier":      prob_label(l_prob),
                     "Score":          f"{l_score}/{len(long_sig)}",

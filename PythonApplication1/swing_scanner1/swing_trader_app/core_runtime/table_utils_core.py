@@ -542,14 +542,17 @@ def show_table(df, label, prob_col="Rise Prob"):
     # Prefer practical Swing Rank Score when a strategy panel supplies it.
     # This keeps the displayed Rank aligned with the Monday-style swing view,
     # rather than sorting only by Pro Score / probability.
-    if "Next-Day Score" in df.columns:
-        df["_prob_sort"] = _display_num(df["Next-Day Score"], 0)
+    if "Quality Score" in df.columns or "Next-Day Score" in df.columns:
+        df["_prob_sort"] = _display_num(df.get("Quality Score", df.get("Next-Day Score", 0)), 0)
+        df["_nds_sort"] = _display_num(df.get("Next-Day Score", 0), 0)
         if "Entry Quality" in df.columns:
             df["_eq_sort"] = df["Entry Quality"].map(_quality_order).fillna(9)
-            df = df.sort_values(["_eq_sort", "_prob_sort"], ascending=[True, False])
-            df = df.drop(columns="_eq_sort")
+            # BUY rows first, then highest practical quality and next-day scores.
+            # This avoids old contradictions where A+ watch rows outranked real BUYs.
+            df = df.sort_values(["_eq_sort", "_prob_sort", "_nds_sort"], ascending=[True, False, False])
+            df = df.drop(columns=["_eq_sort", "_nds_sort"], errors="ignore")
         else:
-            df = df.sort_values("_prob_sort", ascending=False)
+            df = df.sort_values(["_prob_sort", "_nds_sort"], ascending=[False, False]).drop(columns=["_nds_sort"], errors="ignore")
     elif "Swing Rank Score" in df.columns:
         # Rebuild view before sorting so wait/extended rows do not outrank
         # cleaner actionable setups. If the PSM compare-shortlist box is active,
@@ -601,6 +604,24 @@ def show_table(df, label, prob_col="Rise Prob"):
         df = df.drop(columns="Buy Condition")
     df.insert(2, "Buy Condition", df.apply(_build_buy_condition, axis=1))
 
+    # v16.4: restore a clearly named Next-Day Move column in the main scanner.
+    # Earlier v16 builds renamed this to "7D Move Est", so users thought it was removed.
+    # If old cache rows do not contain the new field, estimate it from ATR% when available.
+    if "Next-Day Move" not in df.columns:
+        if "7D Move Est" in df.columns:
+            df["Next-Day Move"] = df["7D Move Est"]
+        elif "ATR%" in df.columns:
+            try:
+                _atr_num = pd.to_numeric(
+                    df["ATR%"].astype(str).str.replace("%", "", regex=False).str.replace("+", "", regex=False),
+                    errors="coerce",
+                )
+                df["Next-Day Move"] = (_atr_num * (7 ** 0.5)).round(1).astype(str) + "%"
+            except Exception:
+                df["Next-Day Move"] = "–"
+        else:
+            df["Next-Day Move"] = "–"
+
     # ── Column selection ──────────────────────────────────────────────────────
     # Keep Rank/View/Buy Condition visible for long/swing grids so the user can
     # decide quickly. This is display-only and does not affect strategy logic.
@@ -613,7 +634,7 @@ def show_table(df, label, prob_col="Rise Prob"):
     else:
         wanted = [
             "Rank", "Ticker", "Action", "View", "Buy Condition",
-            "Entry Quality", "Next-Day Score", "Next-Day Rating", "Setup Type", "Today %", "Rise Prob", "Swing Rank Score", "Pro Score", "PI Proxy", "Tier", "Why Buy",
+            "Entry Quality", "Tradeable Buy", "Quality Score", "Next-Day Score", "Next-Day Rating", "Next-Day Move", "7D Move Est", "Upside to Res", "RR Est", "Setup Type", "Today %", "Rise Prob", "Swing Rank Score", "Pro Score", "PI Proxy", "Tier", "Why Buy",
             "Operator", "VWAP", "Trap Risk", "Price", "MA60 Stop", "Best Stop",
             "TP1 +10%", "TP2 +15%", "TP3 +20%", "Target Est.", "Hold Est.",
             "Vol Ratio", "ATR%", "Vol Quality", "PSM Quality", "PSS Score", "PSS Label", "Op Score", "Score",
@@ -635,6 +656,12 @@ def show_table(df, label, prob_col="Rise Prob"):
         "Rise Prob":     st.column_config.TextColumn("Rise%",         width=55),
         "Next-Day Score": st.column_config.NumberColumn("N-Day",       width=60),
         "Next-Day Rating": st.column_config.TextColumn("Next-Day",     width=130),
+        "Next-Day Move": st.column_config.TextColumn("Next-Day Move", width=110),
+        "Quality Score": st.column_config.NumberColumn("Quality",      width=65),
+        "Tradeable Buy": st.column_config.TextColumn("Tradeable",      width=75),
+        "7D Move Est": st.column_config.TextColumn("7D Move",          width=70),
+        "Upside to Res": st.column_config.TextColumn("Room",           width=60),
+        "RR Est": st.column_config.TextColumn("R:R",                   width=55),
         "Swing Rank Score": st.column_config.NumberColumn("SwingRank", width=70),
         "Fall Prob":     st.column_config.TextColumn("Fall%",         width=55),
         "Operator":      st.column_config.TextColumn("Operator",      width=120),
