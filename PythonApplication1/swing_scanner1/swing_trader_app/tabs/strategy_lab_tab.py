@@ -35,7 +35,11 @@ def render_strategy_lab(ctx: dict) -> None:
     if not (_lgbm_available or _sklearn_strategy_available):
         st.warning("Install `lightgbm` or `scikit-learn` to train the Strategy Lab model.")
 
-    if st.button("🧠 Train Strategy Lab model", type="primary", key="strategy_lab_train"):
+    _sl_click_cb = globals().get("_set_top_status_for_next_run")
+    _sl_btn_kwargs = {}
+    if callable(_sl_click_cb):
+        _sl_btn_kwargs = {"on_click": _sl_click_cb, "args": ("Training Strategy Lab model...", "Strategy Lab", "🧠", "running")}
+    if st.button("🧠 Train Strategy Lab model", type="primary", key="strategy_lab_train", **_sl_btn_kwargs):
         lab_tickers = _unique_keep_order([t.strip().upper() for t in lab_tickers_txt.replace("\n", ",").split(",") if t.strip()])[:lab_max_tickers]
         if not lab_tickers:
             st.error("Enter at least a few tickers.")
@@ -85,8 +89,13 @@ def render_strategy_lab(ctx: dict) -> None:
         st.caption("Train a Strategy Lab model first.")
     elif latest_swing.empty:
         st.caption("Build 🎯 Swing Picks first, then return here to apply the ML overlay.")
-    elif st.button("Add ML quality/risk columns to latest Swing Picks", key="strategy_apply_overlay"):
-        st.session_state["latest_swing_picks_ml"] = _strategy_apply_to_current(st.session_state.get("strategy_lab_model"), latest_swing)
+    else:
+        _sl_apply_cb = globals().get("_set_top_status_for_next_run")
+        _sl_apply_kwargs = {}
+        if callable(_sl_apply_cb):
+            _sl_apply_kwargs = {"on_click": _sl_apply_cb, "args": ("Adding ML quality/risk columns to Swing Picks...", "Strategy Lab", "🧠", "running")}
+        if st.button("Add ML quality/risk columns to latest Swing Picks", key="strategy_apply_overlay", **_sl_apply_kwargs):
+            st.session_state["latest_swing_picks_ml"] = _strategy_apply_to_current(st.session_state.get("strategy_lab_model"), latest_swing)
 
     latest_ml = st.session_state.get("latest_swing_picks_ml")
     if isinstance(latest_ml, pd.DataFrame) and not latest_ml.empty:

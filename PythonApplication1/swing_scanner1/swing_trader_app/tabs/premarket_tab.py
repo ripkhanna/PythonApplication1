@@ -256,6 +256,9 @@ def render_premarket(g: dict) -> None:
         st.write("")
         do_refresh = st.button("🔄 Refresh", key="pm_refresh")
         if do_refresh:
+            _set_next = g.get("_set_top_status_for_next_run")
+            if callable(_set_next):
+                _set_next(f"Refreshing {market_name} live momentum data...", stage="Pre-Market", icon="🌅")
             _fetch_premarket_data.clear()
             st.rerun()
 
@@ -285,8 +288,17 @@ def render_premarket(g: dict) -> None:
     selected_tickers = selected_tickers[:max_scan]
 
     # ── Fetch ─────────────────────────────────────────────────────────────
-    with st.spinner(f"Scanning {len(selected_tickers)} {market_name} tickers for live momentum data…"):
-        df = _fetch_premarket_data(tuple(selected_tickers), float(min_gap), market_name)
+    _pm_status = st.empty()
+    _top_status = g.get("_show_top_status")
+    _top_active = st.session_state.get("_top_status_context") == "pre_market"
+    if callable(_top_status) and _top_active:
+        _top_status(f"Fetching {market_name} live momentum data for {len(selected_tickers)} tickers...", stage="Pre-Market", icon="🌅")
+    _pm_status.info(f"📡 Fetching {market_name} live momentum data for {len(selected_tickers)} tickers…")
+    df = _fetch_premarket_data(tuple(selected_tickers), float(min_gap), market_name)
+    _pm_status.empty()
+    if callable(_top_status) and _top_active:
+        _top_status(f"Loaded {len(df)} {market_name} momentum rows.", stage="Pre-Market", icon="✅")
+        st.session_state.pop("_top_status_context", None)
 
     if df.empty:
         if is_pm:

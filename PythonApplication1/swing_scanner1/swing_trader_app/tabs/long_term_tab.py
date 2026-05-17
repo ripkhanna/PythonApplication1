@@ -334,8 +334,15 @@ def render_long_term(ctx: dict) -> None:
                 max_lt_scan = st.slider("Max stocks to scan", 50, 1000, 300,
                                         step=25, key=f"{session_key}_max_scan")
 
+        _lt_click_cb = globals().get("_set_top_status_for_next_run")
+        _lt_btn_kwargs = {}
+        if callable(_lt_click_cb):
+            _lt_btn_kwargs = {
+                "on_click": _lt_click_cb,
+                "args": (f"Finding long-term stocks for {session_key.replace('_', ' ').upper()}...", "Long Term", "🌱", "running"),
+            }
         if st.button("🔍 Find Long-Term Stocks",
-                     type="primary", key=f"btn_{session_key}"):
+                     type="primary", key=f"btn_{session_key}", **_lt_btn_kwargs):
             etfs = list(default_etfs)
             existing_tickers = list(existing_tickers or [])
             etf_holdings = {}
@@ -404,6 +411,9 @@ def render_long_term(ctx: dict) -> None:
             results.sort(key=lambda x: (-x.get("ETF Count",0), -x.get("_score",0)))
             st.session_state[session_key] = results
             st.session_state[f"{session_key}_universe_csv"] = ", ".join(scan_list)
+            _top_status = globals().get("_show_top_status")
+            if callable(_top_status):
+                _top_status(f"Long-term scan complete: scored {len(scan_list)} candidates and found {len(results)} rows.", stage="Done", icon="✅", status="done")
             st.caption(
                 f"✅ Scanned: existing **{len(existing_tickers)}** · "
                 f"ETFs **{len(etf_dict)}** · holdings **{len(etf_holdings)}** · "
@@ -536,8 +546,15 @@ def render_long_term(ctx: dict) -> None:
                 lt_sg_max = st.slider("Max scan", 25, 1000, 250, step=25,
                                       key="lt_sg_max_scan")
 
+        _lt_sg_click_cb = globals().get("_set_top_status_for_next_run")
+        _lt_sg_btn_kwargs = {}
+        if callable(_lt_sg_click_cb):
+            _lt_sg_btn_kwargs = {
+                "on_click": _lt_sg_click_cb,
+                "args": ("Scoring SGX long-term stocks...", "Long Term", "🌱", "running"),
+            }
         if st.button("🔍 Score SGX Long-Term Stocks",
-                     type="primary", key="btn_lt_sg"):
+                     type="primary", key="btn_lt_sg", **_lt_sg_btn_kwargs):
             live_sg = []
             live_sg_src = "SGX/live disabled"
             if use_live_universe:
@@ -599,6 +616,9 @@ def render_long_term(ctx: dict) -> None:
             results.sort(key=lambda x: -x.get("_score", 0))
             st.session_state["lt_sg"] = results
             st.session_state["lt_sg_universe_csv"] = ", ".join(sg_scan)
+            _top_status = globals().get("_show_top_status")
+            if callable(_top_status):
+                _top_status(f"SGX long-term scan complete: scored {len(sg_scan)} stocks and found {len(results)} rows.", stage="Done", icon="✅", status="done")
             st.caption(
                 f"✅ Scanned **{len(sg_scan)}** SGX stocks · "
                 f"found **{len(results)}** passing quality filter · "

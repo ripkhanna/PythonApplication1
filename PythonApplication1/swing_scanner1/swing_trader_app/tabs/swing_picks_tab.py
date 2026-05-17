@@ -40,13 +40,27 @@ def render_swing_picks(ctx: dict) -> None:
             rest_rows = df_long[~df_long["Ticker"].astype(str).str.upper().isin(forced)]
             df_swing_source = pd.concat([forced_rows, rest_rows], ignore_index=True)
 
-        if st.button("🎯 Build Swing Picks", type="primary", key="btn_build_swing_picks"):
-            with st.spinner("Adding earnings/news scoring to current Long Setups…"):
-                st.session_state["df_swing_picks"] = _make_swing_picks_from_scan(
-                    df_swing_source,
-                    max_candidates=swing_max_candidates,
-                    event_days=swing_event_days,
-                )
+        _sp_click_cb = globals().get("_set_top_status_for_next_run")
+        _sp_btn_kwargs = {}
+        if callable(_sp_click_cb):
+            _sp_btn_kwargs = {
+                "on_click": _sp_click_cb,
+                "args": ("Building Swing Picks with earnings/news/catalyst checks...", "Swing Picks", "🎯", "running"),
+            }
+        if st.button("🎯 Build Swing Picks", type="primary", key="btn_build_swing_picks", **_sp_btn_kwargs):
+            _sp_status = st.empty()
+            _top_status = globals().get("_show_top_status")
+            if callable(_top_status):
+                _top_status("Scoring Swing Picks with earnings/news/catalyst checks...", stage="Swing Picks", icon="🎯")
+            _sp_status.info("🎯 Scoring Swing Picks with earnings/news/catalyst checks…")
+            st.session_state["df_swing_picks"] = _make_swing_picks_from_scan(
+                df_swing_source,
+                max_candidates=swing_max_candidates,
+                event_days=swing_event_days,
+            )
+            _sp_status.empty()
+            if callable(_top_status):
+                _top_status(f"Built {len(st.session_state.get('df_swing_picks', pd.DataFrame()))} Swing Picks.", stage="Done", icon="✅", status="done")
 
         swing_df = st.session_state.get("df_swing_picks", pd.DataFrame())
         if swing_df.empty:

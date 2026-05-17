@@ -460,26 +460,40 @@ def render_breakout_scanner(g: dict) -> None:
     bc, nc = st.columns([1, 6])
     with bc:
         if st.button("Run Scanner", key="bk_run", type="primary"):
+            _set_next = g.get("_set_top_status_for_next_run")
+            if callable(_set_next):
+                _set_next(f"Running {market_key} breakout scanner...", stage="Breakouts", icon="⚡")
             _run_scan.clear()
             _get_mover_sets.clear()
             st.rerun()
     with nc:
         st.caption("Results cached 5 min. Click Run Scanner to force refresh.")
 
+    _bk_status = st.empty()
+    _top_status = g.get("_show_top_status")
+    _top_active = st.session_state.get("_top_status_context") == "breakouts"
     # Fetch movers US-only - Yahoo screeners return US tickers regardless of region param
     if market_key == "US":
-        with st.spinner("Fetching live US market movers..."):
-            mover_frz, mover_items = _get_mover_sets(YAHOO_REGION["US"], 100)
+        if callable(_top_status) and _top_active:
+            _top_status("Fetching US live market movers for breakout context...", stage="Breakouts", icon="⚡")
+        _bk_status.info("📡 Fetching US live market movers…")
+        mover_frz, mover_items = _get_mover_sets(YAHOO_REGION["US"], 100)
     else:
         mover_frz   = frozenset()
         mover_items = tuple()
 
-    with st.spinner(f"Scanning {n_scan} {market_key} stocks from {universe_lbl}..."):
-        df, meta = _run_scan(
-            tuple(tickers), market_key,
-            breakout_days, vol_mult, w52_within, max_tickers,
-            mover_frz, mover_items,
-        )
+    if callable(_top_status) and _top_active:
+        _top_status(f"Scanning {n_scan} {market_key} stocks from {universe_lbl}...", stage="Breakouts", icon="⚡")
+    _bk_status.info(f"📊 Scanning {n_scan} {market_key} stocks from {universe_lbl}…")
+    df, meta = _run_scan(
+        tuple(tickers), market_key,
+        breakout_days, vol_mult, w52_within, max_tickers,
+        mover_frz, mover_items,
+    )
+    _bk_status.empty()
+    if callable(_top_status) and _top_active:
+        _top_status(f"Breakout scan loaded {meta.get('hits', len(df))} hits for {market_key}.", stage="Breakouts", icon="✅")
+        st.session_state.pop("_top_status_context", None)
 
     st.markdown("---")
     m1, m2, m3, m4, m5, m6 = st.columns(6)

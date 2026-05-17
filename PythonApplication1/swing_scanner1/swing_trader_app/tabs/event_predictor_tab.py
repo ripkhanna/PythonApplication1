@@ -52,9 +52,21 @@ def render_event_predictor(ctx: dict) -> None:
     if _prev_event_market and _prev_event_market != ev_market:
         st.session_state.pop("event_df", None)
 
-    if st.button("📰 Predict from Earnings + News + Orders", type="primary", key="btn_event_predictor"):
+    _event_click_cb = globals().get("_set_top_status_for_next_run")
+    _event_btn_kwargs = {}
+    if callable(_event_click_cb):
+        _event_btn_kwargs = {
+            "on_click": _event_click_cb,
+            "args": (f"Predicting {ev_market} event/news/order setups for {len(dict.fromkeys(ev_base))} tickers...", "Event Predictor", "📰", "running"),
+        }
+    if st.button("📰 Predict from Earnings + News + Orders", type="primary", key="btn_event_predictor", **_event_btn_kwargs):
+        _top_status = globals().get("_show_top_status")
+        if callable(_top_status):
+            _top_status(f"Predicting {ev_market} event/news/order setups for {len(dict.fromkeys(ev_base))} tickers...", stage="Event Predictor", icon="📰")
         st.session_state["event_df"] = fetch_event_predictions(tuple(dict.fromkeys(ev_base)), ev_days)
         st.session_state["event_df_market"] = ev_market
+        if callable(_top_status):
+            _top_status(f"Event Predictor loaded {len(st.session_state.get('event_df', pd.DataFrame()))} {ev_market} rows.", stage="Done", icon="✅", status="done")
 
     event_df = st.session_state.get("event_df", pd.DataFrame())
     _df_event_market = st.session_state.get("event_df_market", "")

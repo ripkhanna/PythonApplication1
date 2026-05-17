@@ -572,9 +572,27 @@ def render_top_movers(g: dict) -> None:
     prepost = market_key == "US"
     tickers = _tickers_for_market(g, market_key)
 
+    # v13.98: shared top banner helpers.  These update the page-level
+    # status only when this tab's Refresh button created the movers context.
+    # This avoids hidden tabs overwriting the banner, while still giving
+    # immediate/complete feedback when the user runs Movers.
+    def _movers_top_running(msg: str) -> None:
+        _top_status = g.get("_show_top_status") or globals().get("_show_top_status")
+        if callable(_top_status) and st.session_state.get("_top_status_context") == "movers":
+            _top_status(msg, stage="Movers", icon="🚀", status="running")
+
+    def _movers_top_done(msg: str, icon: str = "✅", status: str = "done") -> None:
+        _top_status = g.get("_show_top_status") or globals().get("_show_top_status")
+        if callable(_top_status) and st.session_state.get("_top_status_context") == "movers":
+            _top_status(msg, stage="Done", icon=icon, status=status)
+
+
     b1, b2 = st.columns([1, 5])
     with b1:
         if st.button("🔄 Refresh movers", key="refresh_top_movers"):
+            _set_next = g.get("_set_top_status_for_next_run") or globals().get("_set_top_status_for_next_run")
+            if callable(_set_next):
+                _set_next(f"Refreshing {market_key} movers...", stage="Movers", icon="🚀")
             _download_market_movers_feed_cached.clear()
             _download_top_movers_cached.clear()
             _download_nonUS_movers_cached.clear()
@@ -594,9 +612,13 @@ def render_top_movers(g: dict) -> None:
         # For SGX/HK/India use daily bars (reliable) + fast_info fallback.
         if not tickers:
             st.warning(f"No tickers found for **{market_key}**. Add tickers via the scanner sidebar.")
+            _movers_top_done(f"No {market_key} tickers found for Movers.", icon="⚠️")
             return
-        with st.spinner(f"Loading {market_key} movers ({min(len(tickers), mover_count)} tickers)…"):
-            df, meta = _download_nonUS_movers_cached(tuple(tickers), market_key, int(mover_count))
+        _mv_status = st.empty()
+        _movers_top_running(f"Fetching {market_key} movers for {min(len(tickers), mover_count)} tickers...")
+        _mv_status.info(f"📈 Fetching {market_key} movers for {min(len(tickers), mover_count)} tickers…")
+        df, meta = _download_nonUS_movers_cached(tuple(tickers), market_key, int(mover_count))
+        _mv_status.empty()
         if df.empty:
             st.warning(
                 f"No movers data returned for **{market_key}**. "
@@ -606,11 +628,15 @@ def render_top_movers(g: dict) -> None:
             if meta.get("errors"):
                 with st.expander("Errors"):
                     st.write(meta["errors"])
+            _movers_top_done(f"No {market_key} mover rows returned. Try Refresh or a smaller universe.", icon="⚠️")
             return
 
     elif use_market_feed:
-        with st.spinner(f"Loading {market_key} movers from Yahoo feed..."):
-            df, meta = _download_market_movers_feed_cached(market_key, int(mover_count))
+        _mv_status = st.empty()
+        _movers_top_running(f"Fetching {market_key} movers from Yahoo feed...")
+        _mv_status.info(f"📈 Fetching {market_key} movers from Yahoo feed…")
+        df, meta = _download_market_movers_feed_cached(market_key, int(mover_count))
+        _mv_status.empty()
         if df.empty:
             st.warning("Yahoo market movers feed returned no rows. Falling back to universe scan.")
             use_market_feed = False
@@ -618,12 +644,17 @@ def render_top_movers(g: dict) -> None:
     if market_key == "US" and not use_market_feed:
         if not tickers:
             st.warning(f"No ticker universe for {market_key}.")
+            _movers_top_done(f"No {market_key} ticker universe found for Movers.", icon="⚠️")
             return
-        with st.spinner(f"Loading {market_key} movers from universe..."):
-            df, meta = _download_top_movers_cached(
-                tuple(tickers), market_key, period, interval, prepost, int(mover_count)
-            )
+        _mv_status = st.empty()
+        _movers_top_running(f"Fetching {market_key} movers from scanner universe...")
+        _mv_status.info(f"📈 Fetching {market_key} movers from scanner universe…")
+        df, meta = _download_top_movers_cached(
+            tuple(tickers), market_key, period, interval, prepost, int(mover_count)
+        )
+        _mv_status.empty()
 
+    _movers_top_done(f"Loaded {meta.get('rows', 0)} {market_key} mover rows.")
     source_label = meta.get("source") or "Scanner universe fallback"
     loaded_against = meta.get("tickers_requested", "Yahoo feed")
     st.success(
@@ -641,6 +672,7 @@ def render_top_movers(g: dict) -> None:
 
     if df.empty:
         st.info("No movers data returned. Try smaller universe size, another interval, or Refresh movers.")
+        _movers_top_done(f"No {market_key} mover rows after filters/search.", icon="⚠️")
         return
 
     gainers, losers, volume = st.tabs(["Top Gainers", "Top Losers", "Volume Leaders"])

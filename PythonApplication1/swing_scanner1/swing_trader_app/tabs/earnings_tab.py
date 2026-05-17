@@ -87,7 +87,14 @@ def render_earnings(ctx: dict) -> None:
         )
 
     # ── Fetch button ──────────────────────────────────────────────────────────
-    if st.button("📅 Fetch Earnings Calendar", type="primary", key="btn_earnings"):
+    _earn_click_cb = globals().get("_set_top_status_for_next_run")
+    _earn_btn_kwargs = {}
+    if callable(_earn_click_cb):
+        _earn_btn_kwargs = {
+            "on_click": _earn_click_cb,
+            "args": (f"Fetching {earn_market} earnings for up to {earn_max} tickers...", "Earnings", "📅", "running"),
+        }
+    if st.button("📅 Fetch Earnings Calendar", type="primary", key="btn_earnings", **_earn_btn_kwargs):
         # Scoped clear — see ETF holdings note. Only invalidate the
         # earnings-calendar function's own cache; leave other cached data
         # (sector heatmaps, dividends, prices) intact. This also avoids
@@ -109,8 +116,15 @@ def render_earnings(ctx: dict) -> None:
                     _fn.clear()
             except Exception:
                 pass
-        with st.spinner(f"Scanning earnings for up to {earn_max} tickers…"):
-            earn_df = fetch_earnings_calendar(tuple(earn_base), earn_days, int(earn_max))
+        _earn_status = st.empty()
+        _top_status = globals().get("_show_top_status")
+        if callable(_top_status):
+            _top_status(f"Fetching {earn_market} earnings for up to {earn_max} tickers...", stage="Earnings", icon="📅")
+        _earn_status.info(f"📅 Fetching {earn_market} earnings for up to {earn_max} tickers…")
+        earn_df = fetch_earnings_calendar(tuple(earn_base), earn_days, int(earn_max))
+        _earn_status.empty()
+        if callable(_top_status):
+            _top_status(f"Loaded {len(earn_df)} {earn_market} earnings rows.", stage="Done", icon="✅", status="done")
         st.session_state["earn_df"] = earn_df
         st.session_state["earn_df_market"] = earn_market           # ← market tag
         st.session_state["earn_last_scan_count"] = min(len(earn_base), int(earn_max))

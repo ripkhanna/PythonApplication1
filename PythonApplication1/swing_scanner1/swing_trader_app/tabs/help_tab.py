@@ -15,12 +15,26 @@ def render_help(ctx: dict) -> None:
         st.markdown("""
 ### Latest build — v13 Accuracy Gate
 
-#### 🌍 v13.97 Market selector fix
+#### 🟦 v13.98 Status banner fixes for Movers + stale tab messages
+The top banner now updates correctly when **Refresh movers** is clicked. Movers writes a running message while it fetches data, then writes a final **Done** or **No rows returned** message when the process finishes. Completed/error messages now clear their tab context, so old messages do not block the next tab/button action and do not remain stale when you move around the app.
+
+#### 🟦 v16.7.12 Immediate button status + auto-clear
+Slow buttons now set the top banner **before** the long fetch begins, so actions such as **Fetch Earnings Calendar**, **Event Predictor**, **Build Swing Picks**, and **Long Term scans** show a message immediately. Completed/error messages now fade out and expire on the next rerun, so old tab messages do not stay around when you continue using the app.
+
+#### 🟦 v16.7.11 Top status banner completion + flashing
+The native Streamlit top-right running indicator remains visible. The top banner now **flashes only while work is running** and changes to a static **Done** / **Error** message when the process finishes. This prevents stale messages such as **Render: Applying selected strategy and preparing grids...** from staying on screen after the scan has completed.
+
+#### 🟦 v16.7.10 Top status banner fixes
+The top banner persists the latest button action correctly across `st.rerun()`. This fixes stale/misleading messages when you move between tabs and click buttons such as **Refresh Movers**, **Run Scanner**, **Fetch Earnings Calendar**, **Event Predictor**, **Build Swing Picks**, or **Pre-Market Refresh**. Hidden tabs no longer overwrite the banner during normal page reruns.
+
+#### 🌍 v16.7.6 Market selector fix
 The top market radio is now the single source of truth for market-aware tabs. Pre-Market changes title/universe for US, SGX, India and HK; Breakouts, Earnings and Event Predictor follow the top selector and no longer need separate market controls. The Test Cases tab includes **Market selector: all tabs follow top radio** to catch hardcoded US labels before deployment.
 
 
+#### 🟦 v16.7.7 Visible running status
+The app now shows a short status message above the tabs instead of a custom spinning indicator. During scans you should see messages such as **Fetch: Fetching SGX stock universe**, **Analyze: Downloading prices and computing signals**, and **Render: Applying selected strategy and preparing grids**. Pre-Market, Movers, Breakouts, Earnings and Swing Picks also show short inline status messages while they fetch data.
 
-#### 🧭 Professional tab layout — v13.97
+#### 🧭 Professional tab layout — v13.98
 Tabs are now ordered by the way a trader normally works during the day:
 
 ```text
@@ -59,7 +73,7 @@ New columns added to Long Setups / Swing Picks:
 | **Trigger** | Safer follow-through condition before buying an explosive event mover |
 
 
-#### 🧪 Test Cases tab restored — v13.97
+#### 🧪 Test Cases tab restored — v13.98
 The **Test Cases** tab is now included again in the professional layout as tab **⑱**.
 Use it after deployment to validate key scenarios without changing live scan results:
 - Strategy dropdown scenarios: Strict, Balanced, Discovery, Support Entry, Premarket Momentum, High Volume, High Conviction, PSM.

@@ -1,5 +1,5 @@
 """
-Swing Scanner v13.97 — Bayesian Ensemble
+Swing Scanner v13.98 — Bayesian Ensemble
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -16,7 +16,7 @@ v12 add-ons  : options-derived signals — call/put unusual flow, IV term
 Install:
   pip install financedatabase ta streamlit yfinance pandas numpy nsepython requests streamlit-autorefresh
 """
-# v13.97: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
+# v13.98: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
 # NotImplementedError from __annotate__ when @st.cache_data wraps functions
 # with bare unsubscripted generics like `-> tuple`. This `from __future__`
 # downgrades all annotations in this module to strings at parse time,
@@ -36,6 +36,7 @@ from zoneinfo import ZoneInfo
 import os
 import stat
 import shutil
+import time
 from pathlib import Path
 import streamlit as st
 
@@ -43,7 +44,7 @@ import streamlit as st
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v13.97",
+    page_title="Swing Scanner v13.98",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -183,40 +184,80 @@ div[data-testid="stVerticalBlock"] > div {
 
 
 
-/* ── Top scan-status spinner ───────────────────────────────────── */
+/* ── Top scan-status message bar ─────────────────────────────────
+   v16.7.12: Keep Streamlit's native top-right running indicator visible,
+   show a flashing banner while work is running, then fade completed messages
+   so old tab/button messages do not remain when the user moves around. */
 .top-scan-box {
+    position: sticky;
+    top: 0;
+    z-index: 1000;
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 8px 10px;
+    padding: 9px 12px;
     margin: 4px 0 8px 0;
-    border-radius: 8px;
-    background: rgba(49, 130, 206, 0.12);
-    border: 1px solid rgba(49, 130, 206, 0.35);
+    border-radius: 10px;
+    background: rgba(49, 130, 206, 0.14);
+    border: 1px solid rgba(49, 130, 206, 0.38);
     color: inherit;
     font-size: 12px;
     line-height: 1.35;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
 }
-.top-scan-spinner {
-    width: 15px;
-    height: 15px;
-    min-width: 15px;
-    border: 2px solid rgba(49, 130, 206, 0.25);
-    border-top-color: #3182ce;
-    border-radius: 50%;
-    animation: topScanSpin 0.8s linear infinite;
+.top-scan-box.top-scan-running {
+    animation: topStatusPulse 1.05s ease-in-out infinite;
+    border-color: rgba(49, 130, 206, 0.75);
 }
-@keyframes topScanSpin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
+.top-scan-box.top-scan-done {
+    background: rgba(34, 197, 94, 0.14);
+    border-color: rgba(34, 197, 94, 0.45);
+    animation: topStatusFadeOut 8s ease-in forwards;
+}
+.top-scan-box.top-scan-error {
+    background: rgba(239, 68, 68, 0.14);
+    border-color: rgba(239, 68, 68, 0.50);
+    animation: topStatusFadeOut 12s ease-in forwards;
+}
+.top-scan-box.top-scan-idle {
+    background: rgba(100, 116, 139, 0.10);
+    border-color: rgba(100, 116, 139, 0.28);
+}
+@keyframes topStatusPulse {
+    0%   { opacity: 0.72; box-shadow: 0 0 0 0 rgba(49,130,206,0.28); }
+    50%  { opacity: 1.00; box-shadow: 0 0 0 4px rgba(49,130,206,0.10); }
+    100% { opacity: 0.72; box-shadow: 0 0 0 0 rgba(49,130,206,0.00); }
+}
+@keyframes topStatusFadeOut {
+    0%   { opacity: 1; max-height: 60px; margin-top: 4px; margin-bottom: 8px; padding-top: 9px; padding-bottom: 9px; }
+    70%  { opacity: 1; max-height: 60px; margin-top: 4px; margin-bottom: 8px; padding-top: 9px; padding-bottom: 9px; }
+    100% { opacity: 0; max-height: 0; margin-top: 0; margin-bottom: 0; padding-top: 0; padding-bottom: 0; overflow: hidden; }
+}
+.top-scan-icon {
+    width: 22px;
+    height: 22px;
+    min-width: 22px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(49, 130, 206, 0.18);
+    font-size: 13px;
+}
+.top-scan-stage {
+    font-weight: 800;
+    margin-right: 4px;
+}
+.top-scan-message {
+    font-weight: 500;
 }
 @media (max-width: 768px) {
     .top-scan-box {
-        position: sticky;
         top: 0;
-        z-index: 999;
+        z-index: 1000;
         font-size: 11px;
-        padding: 7px 8px;
+        padding: 8px 9px;
+        border-radius: 8px;
     }
 }
 
@@ -225,9 +266,134 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v13.97")
+st.title("📈 Swing/Long Term Scanner v13.98")
 
-# v13.97: COMPACT SELF-STAMP
+# ─────────────────────────────────────────────────────────────────────────────
+# TOP-OF-PAGE STATUS BANNER
+# Keep this immediately below the title so long-running scans always explain
+# what the app is doing. This is intentionally not an animated spinner.
+# ─────────────────────────────────────────────────────────────────────────────
+_top_scan_status = st.empty()
+
+def _infer_top_status_state(stage: str = "", icon: str = "", status: str | None = None) -> str:
+    """Return banner state: running flashes; done/error/idle stay static."""
+    if status in {"running", "done", "error", "idle"}:
+        return status
+    _stage = str(stage or "").strip().lower()
+    _icon = str(icon or "").strip()
+    if _icon in {"❌", "🚫"} or "fail" in _stage or "error" in _stage:
+        return "error"
+    if _icon == "✅" or _stage in {"done", "complete", "completed", "ready", "idle", "cache"}:
+        return "done" if _stage != "idle" else "idle"
+    return "running"
+
+def _show_top_status(message: str, stage: str = "Working", icon: str = "ℹ️", persist: bool = True, status: str | None = None):
+    """Render a short, visible status message at the top of the page.
+
+    v16.7.11: running statuses flash, and completed actions overwrite the
+    previous running message so the banner does not remain stuck on Render.
+    """
+    state = _infer_top_status_state(stage, icon, status)
+    try:
+        if persist:
+            st.session_state["_top_status_message"] = str(message)
+            st.session_state["_top_status_stage"] = str(stage)
+            st.session_state["_top_status_icon"] = str(icon)
+            st.session_state["_top_status_state"] = state
+            st.session_state["_top_status_updated_at"] = pd.Timestamp.now(tz="Asia/Singapore").strftime("%H:%M:%S SGT")
+            st.session_state["_top_status_ts_epoch"] = time.time()
+            # v13.98: completed/failed messages must not keep an old tab context.
+            # Otherwise a later rerun can either show a stale action or block the
+            # next tab from writing a correct status.
+            if state in {"done", "error", "idle"}:
+                st.session_state.pop("_top_status_context", None)
+    except Exception:
+        pass
+    try:
+        _top_scan_status.markdown(
+            f"""
+            <div class="top-scan-box top-scan-{state}">
+                <span class="top-scan-icon">{icon}</span>
+                <span class="top-scan-message"><span class="top-scan-stage">{stage}</span> {message}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    except Exception:
+        if state == "error":
+            _top_scan_status.error(f"{stage}: {message}")
+        elif state == "done":
+            _top_scan_status.success(f"{stage}: {message}")
+        else:
+            _top_scan_status.info(f"{stage}: {message}")
+
+def _set_top_status_for_next_run(message: str, stage: str = "Working", icon: str = "ℹ️", status: str | None = "running"):
+    """Store a status before st.rerun(); the next run renders it immediately.
+
+    A small context marker prevents hidden Streamlit tabs from overwriting the
+    top banner during normal page reruns. Only the tab whose button was clicked
+    should update the banner on the next run.
+    """
+    try:
+        state = _infer_top_status_state(stage, icon, status)
+        st.session_state["_top_status_message"] = str(message)
+        st.session_state["_top_status_stage"] = str(stage)
+        st.session_state["_top_status_icon"] = str(icon)
+        st.session_state["_top_status_state"] = state
+        st.session_state["_top_status_context"] = str(stage).lower().replace(" ", "_").replace("-", "_")
+        st.session_state["_top_status_updated_at"] = pd.Timestamp.now(tz="Asia/Singapore").strftime("%H:%M:%S SGT")
+        st.session_state["_top_status_ts_epoch"] = time.time()
+    except Exception:
+        pass
+
+# Backward-compatible alias used by older call sites. It shows a flashing running banner.
+def _show_top_spinner(message: str):
+    _show_top_status(message, stage="Working", icon="🔄", status="running")
+
+def _top_status_payload_for_render():
+    """Return status payload for the top banner, expiring old completed messages.
+
+    Streamlit tabs do not emit a Python event when the user just switches tabs.
+    So completed/error messages are both CSS-faded in the browser and treated
+    as expired on the next rerun. Running messages remain visible until the
+    action explicitly writes Done/Error.
+    """
+    state = st.session_state.get("_top_status_state", "idle")
+    ts = float(st.session_state.get("_top_status_ts_epoch", 0) or 0)
+    age = time.time() - ts if ts else 999999
+    if state in {"done", "error"} and age > 8:
+        # v13.98: expire completed/error messages cleanly so old tab messages
+        # disappear when the user moves around the app.
+        try:
+            for _k in ("_top_status_context", "_top_status_message", "_top_status_stage", "_top_status_icon"):
+                st.session_state.pop(_k, None)
+            st.session_state["_top_status_state"] = "idle"
+        except Exception:
+            pass
+        return {
+            "message": "Ready — choose a market and click Scan to start.",
+            "stage": "Idle",
+            "icon": "✅",
+            "status": "idle",
+        }
+    return {
+        "message": st.session_state.get("_top_status_message", "Ready — choose a market and click Scan to start."),
+        "stage": st.session_state.get("_top_status_stage", "Idle"),
+        "icon": st.session_state.get("_top_status_icon", "✅"),
+        "status": state,
+    }
+
+# Default idle message, unless a tab/button stored a status immediately before rerun.
+_top_payload = _top_status_payload_for_render()
+_show_top_status(
+    _top_payload["message"],
+    stage=_top_payload["stage"],
+    icon=_top_payload["icon"],
+    persist=False,
+    status=_top_payload["status"],
+)
+
+# v13.98: COMPACT SELF-STAMP
 # The build identity (path, mtime, hash, size) is still computed so it can
 # self-prove the running file, but only the short hash and mtime are visible
 # in the caption. The full path and size are tucked into the tooltip — hover
@@ -1582,31 +1748,6 @@ if st.session_state.get("scan_cache_warning"):
 
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TOP SCAN STATUS PLACEHOLDER
-# Shows loading / scan progress near the top of the page, before tab content.
-# ─────────────────────────────────────────────────────────────────────────────
-_top_scan_status = st.empty()
-
-
-def _show_top_spinner(message: str):
-    """Render a lightweight spinner in the top scan-status placeholder.
-    This stays visible above the tabs, unlike normal st.spinner lower in the page.
-    """
-    try:
-        _top_scan_status.markdown(
-            f"""
-            <div class="top-scan-box">
-                <span class="top-scan-spinner"></span>
-                <span>{message}</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    except Exception:
-        _top_scan_status.info(message)
-
-
 # Professional workflow layout v16.7
 # Market prep and catalyst tabs are intentionally placed together:
 # Pre-Market → Movers/Breakouts → Earnings → Event Predictor.
@@ -1939,7 +2080,12 @@ def _safe_sector_df_for_market(_market_sel: str, _context: str = "sector") -> pd
 col_btn, col_info = st.columns([1, 3])
 
 with col_btn:
-    _manual_scan = st.button(f"🚀 Scan {market_sel} Stocks", type="primary")
+    _manual_scan = st.button(
+        f"🚀 Scan {market_sel} Stocks",
+        type="primary",
+        on_click=_set_top_status_for_next_run,
+        args=(f"Starting {market_sel} scan — preparing universe...", "Scan", "🔎", "running"),
+    )
 _strategy_auto_refresh = bool(st.session_state.pop("_force_strategy_rescan", False))
 
 # If the CSV cache is due, first do a cheap Yahoo latest-bar probe.
@@ -1988,12 +2134,16 @@ if _cache_refresh_due and not _manual_scan and not _strategy_auto_refresh:
         run = False
         st.session_state["scan_cache_refresh_due"] = False
 if _strategy_auto_refresh:
-    _show_top_spinner(st.session_state.get("_strategy_changed_notice", "🔄 Strategy changed — refreshing scan/grid..."))
+    _show_top_status(st.session_state.get("_strategy_changed_notice", "Strategy changed — refreshing scan/grid..."), stage="Refreshing", icon="♻️")
 elif _cache_due_no_new_data:
-    _top_scan_status.info(st.session_state.get("_cache_no_new_data_notice", "Cache checked — no newer Yahoo data available."))
+    _show_top_status(
+        st.session_state.get("_cache_no_new_data_notice", "Cache checked — no newer Yahoo data available."),
+        stage="Done", icon="✅", status="done"
+    )
 elif _cache_refresh_due and not _manual_scan:
-    _show_top_spinner(
-        f"⏱️ Cached CSV is older than {effective_refresh_minutes} min and Yahoo has a newer bar — refreshing scan and updating CSV files..."
+    _show_top_status(
+        f"Cached CSV is older than {effective_refresh_minutes} min and Yahoo has a newer bar — refreshing scan and updating CSV files...",
+        stage="Refresh", icon="⏱️"
     )
 with col_info:
     # Show sector preview for the active market; never let Cloud/yfinance errors blank the UI
@@ -2049,7 +2199,7 @@ if run:
         # Fetch live ETF holdings only for US (India/SGX/HK use static ticker lists)
         live_sectors = {}
         if market_sel == "🇺🇸 US":
-            _show_top_spinner("📡 Fetching live US ETF holdings...")
+            _show_top_status("Fetching live US ETF holdings...", stage="Fetch", icon="📥")
             live_sectors = fetch_sector_constituents(target_per_sector=25)
             if extra_tickers and green_sectors:
                 first_green = green_sectors[0]
@@ -2071,12 +2221,11 @@ if run:
         # Then forced tickers are added on top. This prevents existing names
         # such as UUUU or APP from disappearing from the scan/Diagnostics tab.
         if use_live_universe:
-            _show_top_spinner("🌐 Fetching Yahoo/live market universe...")
-            with st.spinner("🌐 Fetching Yahoo/live market universe..."):
-                live_tickers, live_source = fetch_live_market_universe(
-                    market_sel, max_symbols=max_live_universe,
-                    enable_slow_enrichment=enable_slow_universe_enrichment,
-                )
+            _show_top_status(f"Fetching {market_sel} stock universe from Yahoo/live sources...", stage="Fetch", icon="📥")
+            live_tickers, live_source = fetch_live_market_universe(
+                market_sel, max_symbols=max_live_universe,
+                enable_slow_enrichment=enable_slow_universe_enrichment,
+            )
             # Merge live + curated, then apply combined cap.
             # Do NOT hard-code a priority watchlist here. Activity-based names
             # should enter through the live universe/movers/earnings-gapper feeds,
@@ -2099,66 +2248,75 @@ if run:
             active_tickers = _unique_keep_order(forced_tickers + active_tickers)
             universe_source = f"{universe_source} + always-include/extra tickers"
 
-        _show_top_spinner(
-            f"📊 Scanning <b>{len(active_tickers)} {market_sel} stocks</b> for signals... "
+        _show_top_status(
+            f"Scanning <b>{len(active_tickers)} {market_sel} stocks</b> for signals · "
             f"Universe: <b>{universe_source}</b> · "
-            f"Live: <b>{len(live_tickers)}</b> · Existing: <b>{len(_active_tickers)}</b>"
+            f"Live: <b>{len(live_tickers)}</b> · Existing: <b>{len(_active_tickers)}</b>",
+            stage="Scan", icon="🔎"
         )
 
         try:
-            with st.spinner(f"Scanning {len(active_tickers)} stocks..."):
-                # v15.9: check if the in-memory master scan is still valid for this
-                # exact ticker set + sector context before calling fetch_analysis.
-                # fetch_analysis HAS @st.cache_data(ttl=3600) but _cache_refresh_due
-                # (disk CSV age check) fires on every rerender, causing unnecessary
-                # rescans even when Streamlit's own cache has valid data.
-                # Guard: if ticker list, market, and freshness bucket are unchanged
-                # AND df_long_master is already populated, skip the re-scan.
-                _scan_signature = (
-                    tuple(sorted(active_tickers)),
+            # v15.9: check if the in-memory master scan is still valid for this
+            # exact ticker set + sector context before calling fetch_analysis.
+            # fetch_analysis HAS @st.cache_data(ttl=3600) but _cache_refresh_due
+            # (disk CSV age check) fires on every rerender, causing unnecessary
+            # rescans even when Streamlit's own cache has valid data.
+            # Guard: if ticker list, market, and freshness bucket are unchanged
+            # AND df_long_master is already populated, skip the re-scan.
+            _scan_signature = (
+                tuple(sorted(active_tickers)),
+                market_sel,
+                str(freshness_cache_bucket),
+                str(regime),
+            )
+            _cached_sig = st.session_state.get("_last_scan_signature")
+            _has_master  = (
+                not st.session_state.get("df_long_master", pd.DataFrame()).empty
+                or not st.session_state.get("df_short_master", pd.DataFrame()).empty
+            )
+            _skip_rescan = (
+                not _manual_scan            # not a user-triggered scan
+                and _has_master             # already have results
+                and _cached_sig == _scan_signature  # same context
+            )
+            if _skip_rescan:
+                _show_top_status("Reusing cached scan results — market and universe unchanged.", stage="Cache", icon="💾")
+                # Reuse existing master without hitting Yahoo/yfinance
+                df_long    = st.session_state.get("df_long_master",    pd.DataFrame())
+                df_short   = st.session_state.get("df_short_master",   pd.DataFrame())
+                df_operator= st.session_state.get("df_operator_master",pd.DataFrame())
+                st.session_state["_cache_no_new_data_notice"] = (
+                    "✅ Reusing cached scan results — ticker universe and market unchanged."
+                )
+            else:
+                _show_top_status(
+                    f"Downloading prices and computing signals for <b>{len(active_tickers)} {market_sel} stocks</b>...",
+                    stage="Analyze", icon="🧮"
+                )
+                df_long, df_short, df_operator = fetch_analysis(
+                    tuple(green_sectors), tuple(red_sectors),
+                    regime, skip_earnings, top_n_sectors,
+                    strategy_mode="Discovery",
+                    live_sectors=live_sectors if live_sectors else None,
+                    market_tickers=tuple(active_tickers),
+                    enable_options=enable_options,
+                    data_freshness_bucket=freshness_cache_bucket,
+                )
+                st.session_state["_last_scan_signature"] = _scan_signature
+                st.session_state["_last_scan_sig_short"] = (
                     market_sel,
                     str(freshness_cache_bucket),
-                    str(regime),
                 )
-                _cached_sig = st.session_state.get("_last_scan_signature")
-                _has_master  = (
-                    not st.session_state.get("df_long_master", pd.DataFrame()).empty
-                    or not st.session_state.get("df_short_master", pd.DataFrame()).empty
-                )
-                _skip_rescan = (
-                    not _manual_scan            # not a user-triggered scan
-                    and _has_master             # already have results
-                    and _cached_sig == _scan_signature  # same context
-                )
-                if _skip_rescan:
-                    # Reuse existing master without hitting Yahoo/yfinance
-                    df_long    = st.session_state.get("df_long_master",    pd.DataFrame())
-                    df_short   = st.session_state.get("df_short_master",   pd.DataFrame())
-                    df_operator= st.session_state.get("df_operator_master",pd.DataFrame())
-                    st.session_state["_cache_no_new_data_notice"] = (
-                        "✅ Reusing cached scan results — ticker universe and market unchanged."
-                    )
-                else:
-                    df_long, df_short, df_operator = fetch_analysis(
-                        tuple(green_sectors), tuple(red_sectors),
-                        regime, skip_earnings, top_n_sectors,
-                        strategy_mode="Discovery",
-                        live_sectors=live_sectors if live_sectors else None,
-                        market_tickers=tuple(active_tickers),
-                        enable_options=enable_options,
-                        data_freshness_bucket=freshness_cache_bucket,
-                    )
-                    st.session_state["_last_scan_signature"] = _scan_signature
-                    st.session_state["_last_scan_sig_short"] = (
-                        market_sel,
-                        str(freshness_cache_bucket),
-                    )
+                _show_top_status("Applying selected strategy and preparing grids...", stage="Render", icon="📊")
         except Exception as _scan_e:
             try:
                 _record_app_error("fetch_analysis_call", _scan_e, extra={"market": market_sel, "ticker_count": len(active_tickers)})
             except Exception:
                 pass
-            _top_scan_status.error(f"❌ Scan failed: {type(_scan_e).__name__}: {_scan_e}. Open 🔍 Diagnostics → App errors for details.")
+            _show_top_status(
+                f"Scan failed: {type(_scan_e).__name__}: {_scan_e}. Open 🔍 Diagnostics → App errors for details.",
+                stage="Error", icon="❌", status="error"
+            )
             df_long, df_short, df_operator = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
         # Store the broad Yahoo scan as MASTER, then apply the selected strategy
@@ -2180,12 +2338,13 @@ if run:
         _probe_latest = _fresh_probe.get("latest_available_bar_time") if _fresh_probe.get("ok") else ""
         _latest_bar_for_cache = _newer_bar_time_value(_latest_bar_from_scan, _probe_latest)
         _latest_bar_for_status = format_latest_bar_time(_latest_bar_for_cache)
-        _top_scan_status.success(
-            f"✅ Yahoo master scan refreshed for **{len(active_tickers)} {market_sel} stocks** · "
-            f"Latest bar: **{_latest_bar_display_value(_latest_bar_for_status)}** · "
-            f"Displaying **{swing_mode}** from cache · "
-            f"Long: **{len(df_long)}** / master {len(df_long_master)} · "
-            f"Short: **{len(df_short)}** / master {len(df_short_master)} · Operator: **{len(df_operator)}**"
+        _show_top_status(
+            f"Scan complete for <b>{len(active_tickers)} {market_sel} stocks</b> · "
+            f"Latest bar: <b>{_latest_bar_display_value(_latest_bar_for_status)}</b> · "
+            f"Displaying <b>{swing_mode}</b> · "
+            f"Long: <b>{len(df_long)}</b> / master {len(df_long_master)} · "
+            f"Short: <b>{len(df_short)}</b> / master {len(df_short_master)} · Operator: <b>{len(df_operator)}</b>",
+            stage="Done", icon="✅", status="done"
         )
         st.session_state["last_scan_strategy"] = swing_mode
         if _strategy_auto_refresh:
