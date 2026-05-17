@@ -16,7 +16,7 @@ def render_help(ctx: dict) -> None:
 ### Latest build — v16 Accuracy Gate
 
 
-#### 🧭 Professional tab layout — v16.7.1
+#### 🧭 Professional tab layout — v13.96
 Tabs are now ordered by the way a trader normally works during the day:
 
 ```text
@@ -55,7 +55,7 @@ New columns added to Long Setups / Swing Picks:
 | **Trigger** | Safer follow-through condition before buying an explosive event mover |
 
 
-#### 🧪 Test Cases tab restored — v16.7.1
+#### 🧪 Test Cases tab restored — v13.96
 The **Test Cases** tab is now included again in the professional layout as tab **⑱**.
 Use it after deployment to validate key scenarios without changing live scan results:
 - Strategy dropdown scenarios: Strict, Balanced, Discovery, Support Entry, Premarket Momentum, High Volume, High Conviction, PSM.
