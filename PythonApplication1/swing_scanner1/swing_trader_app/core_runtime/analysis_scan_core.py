@@ -1257,6 +1257,19 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             high_vol_live = bool(raw.get("high_volatility", atr_pct_live >= 4.0))
             low_vol_exception = bool(post_earnings_gap and vr >= 2.5 and _today_chg_abs >= 5.0)
 
+            # v16.5 fix: define earnings/post-event momentum BEFORE the v16
+            # accuracy gate uses it for risk/reward and valid setup checks.
+            # Previously this was assigned later in the function, causing
+            # UnboundLocalError for tickers such as SEDG/ENPH during scan.
+            _earn_momentum_long = bool(
+                post_earnings_gap
+                and vr >= 2.0
+                and 8.0 <= _today_chg_abs <= 70.0
+                and l_prob >= 0.45
+                and not false_breakout
+                and not distribution_risk
+            )
+
             setup_family_ok = bool(
                 pullback_setup or breakout_setup or continuation_setup
                 or raw.get("failed_breakdown", False)
