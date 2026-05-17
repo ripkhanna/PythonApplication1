@@ -6,7 +6,7 @@ def render_help(ctx: dict) -> None:
 
     st.markdown("## ❓ Swing Scanner — Complete Guide")
     st.caption(
-        "19 tabs · 8 strategies · US + SGX + India + HK · "
+        "20 tabs · 8 strategies · US + SGX + India + HK · "
         "Breakout Scanner · Bayesian engine · Operator layer · Options signals"
     )
 
@@ -14,6 +14,18 @@ def render_help(ctx: dict) -> None:
     with st.expander("🆕 What changed recently", expanded=True):
         st.markdown("""
 ### Latest build — v16 Accuracy Gate
+
+
+#### 🧭 Professional tab layout — v16.7.1
+Tabs are now ordered by the way a trader normally works during the day:
+
+```text
+Market Map → Pre-Market → Movers → Breakouts → Earnings → Event Predictor
+    → Swing Picks → Long/Short Setups → Operator Activity → Trade Desk
+    → Research / Strategy / Accuracy / Test Cases / Diagnostics / Help
+```
+
+Premarket, Earnings, and Event Predictor are placed close together so catalyst-driven stocks such as SEDG-style movers are easier to review before checking final Swing Picks. The Test Cases tab is restored near the end for QA before Diagnostics/Help.
 
 
 #### 🎯 Accuracy Gate for 5–10% in 5–7 days
@@ -41,6 +53,16 @@ New columns added to Long Setups / Swing Picks:
 | **Post-Event Score** | Event Predictor score for SEDG-style post-catalyst momentum |
 | **SEDG-Type** | Watchlist label: Squeeze Watch, Event Reversal Watch, or Post-Event Momentum |
 | **Trigger** | Safer follow-through condition before buying an explosive event mover |
+
+
+#### 🧪 Test Cases tab restored — v16.7.1
+The **Test Cases** tab is now included again in the professional layout as tab **⑱**.
+Use it after deployment to validate key scenarios without changing live scan results:
+- Strategy dropdown scenarios: Strict, Balanced, Discovery, Support Entry, Premarket Momentum, High Volume, High Conviction, PSM.
+- Column/logic checks: Tradeable Buy gate, Next-Day Rating vs Entry Quality, Event Predictor fallback, Accuracy Lab target-before-stop.
+- Tab smoke checks: imports/renderers for the major tabs.
+
+Recommended deployment QA flow: run a fresh scan, check Swing Picks/Long Setups, then open **⑱ Test Cases** and run the core set before checking Diagnostics.
 
 #### 🔥 SEDG-Type Event Reversal / Squeeze scanner
 The **Event Predictor** tab now includes a separate watchlist layer for explosive SEDG-style moves.
@@ -99,11 +121,14 @@ All ticker lists are now defined in a single file (`tabs/universe_data.py`) and 
 2. Choose a **Swing strategy** from the dropdown.
 3. Add must-scan names in **Always include tickers** — e.g. `UUUU, APP, NVDA, S58.SI, 0700.HK`.
 4. Click **🚀 Scan**.
-5. Review tabs in this order:
+5. Review tabs in this professional workflow order:
 
 ```
-🚀 Movers/Losers → 🗂️ Sector Heatmap → ⚡ Breakout Scanner
-    → 📈 Long Setups → 🎯 Swing Picks → 📋 Trade Desk → 🔬 Stock Analysis
+① Market Map → ② Pre-Market → ③ Movers → ④ Breakouts
+    → ⑤ Earnings → ⑥ Event Predictor
+    → ⑦ Swing Picks → ⑧ Long Setups / ⑨ Short Setups
+    → ⑩ Operator Activity → ⑪ Trade Desk → ⑬ Stock Analysis
+    → ⑱ Test Cases → ⑲ Diagnostics → ⑳ Help
 ```
 
 **Best strategy by time of day:**

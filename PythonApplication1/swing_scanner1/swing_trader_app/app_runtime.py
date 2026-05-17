@@ -1607,26 +1607,34 @@ def _show_top_spinner(message: str):
         _top_scan_status.info(message)
 
 
-tab_sectors, tab_trade_desk, tab_long, tab_swing_picks, tab_top_movers, tab_premarket, tab_short, tab_operator, tab_breakout, tab_both, tab_etf, tab_stock, tab_earn, tab_event, tab_lt, tab_diag, tab_backtest, tab_strategy, tab_help = st.tabs([
-    "🗂️ Sector Heatmap",
-    "📋 Trade Desk",
-    "📈 Long Setups",
-    "🎯 Swing Picks",
-    "🚀 Movers/Losers",
-    "🌅 Pre-Market",
-    "📉 Short Setups",
-    "🪤 Operator Activity",
-    "⚡ Breakout Scanner",
-    "🔄 Side by Side",
-    "📊 ETF Holdings",
-    "🔬 Stock Analysis",
-    "📅 Earnings",
-    "📰 Event Predictor",
-    "🌱 Long Term",
-    "🔍 Diagnostics",
-    "🧪 Accuracy Lab",
-    "🧠 Strategy Lab",
-    "❓ Help",
+# Professional workflow layout v16.7
+# Market prep and catalyst tabs are intentionally placed together:
+# Pre-Market → Movers/Breakouts → Earnings → Event Predictor.
+st.caption(
+    "Workflow: Market Prep → Catalyst/Event Watch → Swing Setups → Execution → Research/QA"
+)
+
+tab_sectors, tab_premarket, tab_top_movers, tab_breakout, tab_earn, tab_event, tab_swing_picks, tab_long, tab_short, tab_operator, tab_trade_desk, tab_both, tab_stock, tab_strategy, tab_backtest, tab_lt, tab_etf, tab_tests, tab_diag, tab_help = st.tabs([
+    "① 🗂️ Market Map",
+    "② 🌅 Pre-Market",
+    "③ 🚀 Movers",
+    "④ ⚡ Breakouts",
+    "⑤ 📅 Earnings",
+    "⑥ 📰 Event Predictor",
+    "⑦ 🎯 Swing Picks",
+    "⑧ 📈 Long Setups",
+    "⑨ 📉 Short Setups",
+    "⑩ 🪤 Operator Activity",
+    "⑪ 📋 Trade Desk",
+    "⑫ 🔄 Side by Side",
+    "⑬ 🔬 Stock Analysis",
+    "⑭ 🧠 Strategy Lab",
+    "⑮ 🧪 Accuracy Lab",
+    "⑯ 🌱 Long Term",
+    "⑰ 📊 ETF Holdings",
+    "⑱ 🧪 Test Cases",
+    "⑲ 🔍 Diagnostics",
+    "⑳ ❓ Help",
 ])
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1650,6 +1658,7 @@ from swing_trader_app.tabs.scan_results_tabs import render_long, render_short, r
 from swing_trader_app.tabs.sectors_tab import render_sectors
 from swing_trader_app.tabs.stock_analysis_tab import render_stock_analysis
 from swing_trader_app.tabs.strategy_lab_tab import render_strategy_lab
+from swing_trader_app.tabs.test_cases_tab import render_test_cases
 from swing_trader_app.tabs.swing_picks_tab import render_swing_picks
 from swing_trader_app.tabs.trade_desk_tab import render_trade_desk
 from swing_trader_app.tabs.top_movers_tab import render_top_movers
@@ -2538,6 +2547,14 @@ with tab_lt:
 
 
 CACHE_DIR = Path("scanner_cache")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB — TEST CASES / QA
+# Read-only deployment checks for tabs, strategies, and accuracy-gate scenarios.
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_tests:
+    _safe_render_tab('test_cases', render_test_cases)
+
 
 with tab_diag:
     _safe_render_tab('diag', render_diagnostics)
