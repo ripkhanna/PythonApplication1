@@ -15,8 +15,12 @@ def render_help(ctx: dict) -> None:
         st.markdown("""
 ### Latest build — v13 Accuracy Gate
 
+#### 🌍 v13.97 Market selector fix
+The top market radio is now the single source of truth for market-aware tabs. Pre-Market changes title/universe for US, SGX, India and HK; Breakouts, Earnings and Event Predictor follow the top selector and no longer need separate market controls. The Test Cases tab includes **Market selector: all tabs follow top radio** to catch hardcoded US labels before deployment.
 
-#### 🧭 Professional tab layout — v13.96
+
+
+#### 🧭 Professional tab layout — v13.97
 Tabs are now ordered by the way a trader normally works during the day:
 
 ```text
@@ -55,7 +59,7 @@ New columns added to Long Setups / Swing Picks:
 | **Trigger** | Safer follow-through condition before buying an explosive event mover |
 
 
-#### 🧪 Test Cases tab restored — v13.96
+#### 🧪 Test Cases tab restored — v13.97
 The **Test Cases** tab is now included again in the professional layout as tab **⑱**.
 Use it after deployment to validate key scenarios without changing live scan results:
 - Strategy dropdown scenarios: Strict, Balanced, Discovery, Support Entry, Premarket Momentum, High Volume, High Conviction, PSM.

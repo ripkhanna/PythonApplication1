@@ -408,21 +408,16 @@ def _fmt_df(df: pd.DataFrame) -> pd.DataFrame:
 
 def render_breakout_scanner(g: dict) -> None:
     st.subheader("Breakout Scanner")
+    market_sel = str(st.session_state.get("market_selector") or g.get("market_sel") or "🇺🇸 US")
+    market_key = "Hong Kong" if ("HK" in market_sel or "Hong Kong" in market_sel) else ("SGX" if "SGX" in market_sel else ("India" if "India" in market_sel else "US"))
     st.caption(
         "Unified scanner: finds movers/breakouts, then adds a Next-Day Score to separate buyable swing setups "
-        "from stocks that already moved too far. Market dropdown filters the universe."
+        "from stocks that already moved too far. The top market selector controls this tab's universe."
     )
+    st.info(f"🌍 Breakout market: **{market_key}** — controlled by the top market selector.")
     st.markdown("---")
 
-    r1, r2 = st.columns([1.1, 2.4])
-    with r1:
-        market_key = st.selectbox(
-            "Market",
-            ["US", "SGX", "India", "Hong Kong"],
-            index=0,
-            key="bk_market",
-            help="Selects which market's stock pool to scan.",
-        )
+    r2 = st.container()
 
     uni_options = universe_options_for_market(market_key)
     uni_ids     = [u[0] for u in uni_options]
@@ -435,7 +430,7 @@ def render_breakout_scanner(g: dict) -> None:
             format_func=lambda i: uni_labels[i],
             index=0,
             key="bk_uni_" + market_key,
-            help="S&P 500 scans all ~500 components. All US combines S&P500 + NDX + Growth (~650 stocks).",
+            help="Universe choices are rebuilt from the top selected market.",
         )
     universe_id  = uni_ids[uni_idx]
     universe_lbl = uni_labels[uni_idx]
@@ -572,7 +567,7 @@ def render_breakout_scanner(g: dict) -> None:
                  "Next-Day Why","Score","Signals","Price","Chg %","Vol Ratio","Today Vol",
                  "vs 52W %","In Range %","Breakout %","ATR %","3M Return %","Last Bar"]
     cols_show = [c for c in cols_show if c in view.columns]
-    st.dataframe(_fmt_df(view[cols_show]), use_container_width=True, hide_index=True)
+    st.dataframe(_fmt_df(view[cols_show]), width="stretch", hide_index=True)
 
     st.markdown("---")
     st.markdown("#### Signal Breakdown")

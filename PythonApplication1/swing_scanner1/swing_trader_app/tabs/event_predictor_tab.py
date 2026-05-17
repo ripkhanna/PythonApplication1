@@ -13,13 +13,21 @@ def render_event_predictor(ctx: dict) -> None:
     _bind_runtime(ctx)
     st.caption("📰 Event Predictor · combines earnings risk, recent news sentiment, order/contract keywords and trend confirmation")
 
-    ev1, ev2, ev3 = st.columns([1, 1, 2])
+    ev_market = str(st.session_state.get("market_selector") or globals().get("market_sel") or "🇺🇸 US")
+    st.info(f"🌍 Event Predictor market: **{ev_market}** — controlled by the top market selector.")
+    _ev_placeholder = "UUUU, NVDA, SEDG"
+    if "SGX" in ev_market:
+        _ev_placeholder = "D05.SI, O39.SI, U11.SI"
+    elif "India" in ev_market:
+        _ev_placeholder = "RELIANCE.NS, TCS.NS, INFY.NS"
+    elif "HK" in ev_market or "Hong Kong" in ev_market:
+        _ev_placeholder = "0700.HK, 9988.HK, 3690.HK"
+
+    ev1, ev3 = st.columns([1, 2])
     with ev1:
         ev_days = st.slider("Earnings window", 7, 60, 30, key="event_days")
-    with ev2:
-        ev_market = st.radio("Market", ["🇺🇸 US", "🇸🇬 SGX", "🇮🇳 India", "🇭🇰 HK"], horizontal=True, key="event_market")
     with ev3:
-        ev_extra = st.text_input("Tickers to check", placeholder="AIY.SI, OYY.SI, UUUU, NVDA", key="event_extra").strip().upper()
+        ev_extra = st.text_input("Tickers to check", placeholder=_ev_placeholder, key="event_extra").strip().upper()
 
     if ev_market == "🇺🇸 US":
         ev_base = list(US_TICKERS[:120])
@@ -40,10 +48,18 @@ def render_event_predictor(ctx: dict) -> None:
     with f2:
         ev_verdict_filter = st.multiselect("Filter verdict", ["✅ BUY", "👀 WATCH", "⏳ WAIT", "🚫 AVOID"], default=[], key="event_verdict_filter", placeholder="All verdicts")
 
+    _prev_event_market = st.session_state.get("event_df_market", "")
+    if _prev_event_market and _prev_event_market != ev_market:
+        st.session_state.pop("event_df", None)
+
     if st.button("📰 Predict from Earnings + News + Orders", type="primary", key="btn_event_predictor"):
         st.session_state["event_df"] = fetch_event_predictions(tuple(dict.fromkeys(ev_base)), ev_days)
+        st.session_state["event_df_market"] = ev_market
 
     event_df = st.session_state.get("event_df", pd.DataFrame())
+    _df_event_market = st.session_state.get("event_df_market", "")
+    if isinstance(event_df, pd.DataFrame) and not event_df.empty and _df_event_market and _df_event_market != ev_market:
+        st.warning(f"⚠️ Showing **{_df_event_market}** event rows — click Predict to load **{ev_market}**.")
 
     if event_df.empty:
         st.info("Enter tickers or select a market, then click 📰 Predict from Earnings + News + Orders.")

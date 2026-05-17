@@ -233,6 +233,40 @@ def _operator(globals_dict: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+
+def _market_single_source(_: dict[str, Any]) -> list[dict[str, Any]]:
+    checks = []
+    files = {
+        "Pre-Market": Path(__file__).with_name("premarket_tab.py"),
+        "Breakout": Path(__file__).with_name("breakout_scanner_tab.py"),
+        "Earnings": Path(__file__).with_name("earnings_tab.py"),
+        "Event Predictor": Path(__file__).with_name("event_predictor_tab.py"),
+    }
+    for name, path in files.items():
+        txt = path.read_text(encoding="utf-8", errors="ignore") if path.exists() else ""
+        checks.append(_result(
+            f"{name}: uses top market_selector",
+            "market_selector" in txt,
+            "Tab reads st.session_state['market_selector']." if "market_selector" in txt else "Tab does not read the top market selector.",
+            "Make the top market radio the single source of truth."
+        ))
+    pm_txt = files["Pre-Market"].read_text(encoding="utf-8", errors="ignore")
+    checks.append(_result(
+        "Pre-Market: no hardcoded US-only title",
+        "Pre-Market Scanner — US Stocks" not in pm_txt and "US only" not in pm_txt[:250],
+        "Title is dynamic by selected market." if "Pre-Market Scanner — US Stocks" not in pm_txt else "Still contains hardcoded US title.",
+        "Use selected market in the subheader."
+    ))
+    checks.append(_result(
+        "Catalyst tabs: no inner market widgets",
+        'st.radio("Market"' not in files["Earnings"].read_text(encoding="utf-8", errors="ignore")
+        and 'st.radio("Market"' not in files["Event Predictor"].read_text(encoding="utf-8", errors="ignore")
+        and 'key="bk_market"' not in files["Breakout"].read_text(encoding="utf-8", errors="ignore"),
+        "Breakout/Earnings/Event Predictor follow the top selector only.",
+        "Remove inner market controls that can drift from the top selector."
+    ))
+    return checks
+
 def _scenario_results(globals_dict: dict[str, Any], scenario: str) -> list[dict[str, Any]]:
     if scenario == "All tabs import smoke test":
         return _all_tab_imports(globals_dict)
@@ -256,6 +290,8 @@ def _scenario_results(globals_dict: dict[str, Any], scenario: str) -> list[dict[
         return _earnings(globals_dict)
     if scenario == "Operator Activity: dataframe checks":
         return _operator(globals_dict)
+    if scenario == "Market selector: all tabs follow top radio":
+        return _market_single_source(globals_dict)
     return [_result("Unknown scenario", False, scenario)]
 
 
@@ -277,6 +313,7 @@ def render_test_cases(globals_dict: dict[str, Any]) -> None:
         "Breakout Scanner: high volume / 52W / movers",
         "Earnings: offset / fallback checks",
         "Operator Activity: dataframe checks",
+        "Market selector: all tabs follow top radio",
     ] + [f"Strategy: {s}" for s in STRATEGIES]
 
     scenario = st.selectbox(
@@ -315,7 +352,8 @@ def render_test_cases(globals_dict: dict[str, Any]) -> None:
 - **Tradeable Buy gate tests**: catches contradictions like `A+ NEXT-DAY BUY` while `Entry Quality = WAIT`.
 - **Strategy tests**: checks every strategy dropdown mode has a code path.
 - **Event Predictor tests**: checks SEDG-style squeeze/event labels and Streamlit Cloud fallback code.
-- **Pre-Market tests**: checks manual ticker flow and avoids hardcoded priority lists.
+- **Pre-Market tests**: checks manual ticker flow, dynamic selected-market title, and avoids hardcoded priority lists.
+- **Market selector tests**: checks Pre-Market, Breakout, Earnings, and Event Predictor follow the top radio.
 - **Accuracy Lab tests**: checks target-before-stop validation for the 5–7 day objective.
                 """
             )
@@ -331,7 +369,7 @@ def render_test_cases(globals_dict: dict[str, Any]) -> None:
     out = pd.DataFrame(all_rows)
     if not out.empty:
         out = out[["Scenario", "Test", "Status", "Detail", "Fix / Notes"]]
-        st.dataframe(out, use_container_width=True, hide_index=True)
+        st.dataframe(out, width="stretch", hide_index=True)
         pass_count = int(out["Status"].astype(str).str.contains("PASS", na=False).sum())
         fail_count = int(out["Status"].astype(str).str.contains("FAIL", na=False).sum())
         na_count = int(out["Status"].astype(str).str.contains("N/A", na=False).sum())

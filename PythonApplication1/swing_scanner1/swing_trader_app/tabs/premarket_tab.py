@@ -1,9 +1,7 @@
-"""Pre-Market Scanner tab — US stocks only, 4:00am–9:30am ET (4pm–9:30pm SGT).
+"""Pre-Market / Live Momentum tab.
 
-Shows:
-  • Live pre-market gappers with price, PM%, volume, sector, catalyst context
-  • PM leaders sorted by absolute gap size
-  • Warning banner when outside pre-market window
+Market-aware scanner controlled by the top market selector.
+For US it shows pre-market/live movers. For SGX/HK/India it shows live/day-change momentum using that market's ticker universe.
 """
 from __future__ import annotations
 
@@ -17,6 +15,11 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import yfinance as yf
+
+try:
+    from swing_trader_app.tabs.universe_data import get_tickers_for_market
+except Exception:
+    get_tickers_for_market = None
 
 # ── Market window helpers ──────────────────────────────────────────────────────
 
@@ -72,9 +75,15 @@ def _session_label() -> str:
 
 # ── Data fetch ─────────────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=3 * 60, show_spinner=False)   # 3-min cache — PM moves fast
-def _fetch_premarket_data(tickers_tuple: tuple, min_gap_pct: float) -> pd.DataFrame:
-    """Fetch pre-market and post-market data for all US tickers using fast_info + 1-min bars."""
+@st.cache_data(ttl=3 * 60, show_spinner=False)   # 3-min cache — PM/live moves fast
+def _fetch_premarket_data(tickers_tuple: tuple, min_gap_pct: float, market_label: str = "US") -> pd.DataFrame:
+    """Fetch pre-market/live momentum data using Yahoo fast_info.
+
+    The function is market-agnostic; the caller supplies the selected market
+    ticker universe.  For non-US markets Yahoo generally returns regular/live
+    quotes rather than true pre-market quotes, so the percentage move is best
+    interpreted as live/day change.
+    """
     tickers  = list(tickers_tuple)
     rows: list[dict] = []
 
@@ -154,8 +163,46 @@ def _fetch_premarket_data(tickers_tuple: tuple, min_gap_pct: float) -> pd.DataFr
 
 # ── Render ────────────────────────────────────────────────────────────────────
 
+def _selected_market_label(g: dict) -> str:
+    return str(st.session_state.get("market_selector") or g.get("market_sel") or "🇺🇸 US")
+
+
+def _plain_market_name(market_sel: str) -> str:
+    if "SGX" in market_sel:
+        return "SGX"
+    if "India" in market_sel:
+        return "India"
+    if "HK" in market_sel or "Hong Kong" in market_sel:
+        return "HK"
+    return "US"
+
+
+def _market_placeholder(market_sel: str) -> str:
+    if "SGX" in market_sel:
+        return "D05.SI, O39.SI, U11.SI"
+    if "India" in market_sel:
+        return "RELIANCE.NS, TCS.NS, INFY.NS"
+    if "HK" in market_sel or "Hong Kong" in market_sel:
+        return "0700.HK, 9988.HK, 3690.HK"
+    return "IREN, NVDA, TSLA"
+
+
+def _fallback_tickers_from_globals(g: dict, market_sel: str) -> list[str]:
+    if "SGX" in market_sel:
+        return list(g.get("SG_TICKERS", []))
+    if "India" in market_sel:
+        return list(g.get("INDIA_TICKERS", []))
+    if "HK" in market_sel or "Hong Kong" in market_sel:
+        return list(g.get("HK_TICKERS", []))
+    return list(g.get("US_TICKERS", []))
+
+
 def render_premarket(g: dict) -> None:
-    st.subheader("🌅 Pre-Market Scanner — US Stocks")
+    market_sel = _selected_market_label(g)
+    market_name = _plain_market_name(market_sel)
+    title_kind = "Pre-Market / Live Momentum" if market_name == "US" else "Live Momentum"
+    st.subheader(f"🌅 {title_kind} Scanner — {market_name} Stocks")
+    st.caption(f"🌍 Market controlled by top selector: **{market_sel}**")
 
     # ── Session status banner ──────────────────────────────────────────────
     session_label, session_icon = _session_label()
@@ -180,12 +227,17 @@ def render_premarket(g: dict) -> None:
             else:
                 st.info("🌙 After-hours session. Last pre-market data shown below may be stale.")
 
-    st.caption(
-        "Pre-market data from Yahoo Finance via `fast_info`. "
-        "Available **4:00am–9:30am ET** (4:00pm–9:30pm SGT) on weekdays. "
-        "During regular session: shows live intraday % instead. "
-        "Refresh every 3 minutes automatically — click 🔄 to force refresh."
-    )
+    if market_name == "US":
+        st.caption(
+            "US pre-market/live data from Yahoo Finance via `fast_info`. "
+            "Pre-market is normally available **4:00am–9:30am ET** (4:00pm–9:30pm SGT) on weekdays. "
+            "During regular session this shows live/day-change momentum. Refresh cache is 3 minutes."
+        )
+    else:
+        st.caption(
+            f"{market_name} live/day-change momentum from Yahoo Finance via `fast_info`. "
+            "Non-US markets do not have a US-style pre-market feed here, so this tab uses the selected market universe and shows live/latest available moves."
+        )
 
     st.divider()
 
@@ -207,44 +259,46 @@ def render_premarket(g: dict) -> None:
             _fetch_premarket_data.clear()
             st.rerun()
 
-    # ── Ticker universe — US only ─────────────────────────────────────────
-    us_tickers = [
-        t for t in g.get("US_TICKERS", [])
-        if t and not str(t).endswith((".SI", ".HK", ".NS", ".BO"))
-    ]
-    # Add any always-include tickers
+    # ── Ticker universe — selected market only ────────────────────────────
+    if get_tickers_for_market is not None:
+        selected_tickers = list(get_tickers_for_market(market_sel))
+    else:
+        selected_tickers = _fallback_tickers_from_globals(g, market_sel)
+
+    selected_tickers = [str(t).strip().upper() for t in selected_tickers if str(t).strip()]
+    selected_tickers = list(dict.fromkeys(selected_tickers))
+
     extra_raw = st.text_input(
         "➕ Add tickers (comma-separated)",
-        placeholder="IREN, NVDA, TSLA",
+        placeholder=_market_placeholder(market_sel),
         key="pm_extra_tickers",
     ).strip().upper()
     if extra_raw:
         extra_list = [t.strip() for t in extra_raw.split(",") if t.strip()]
-        us_tickers = list(dict.fromkeys(extra_list + us_tickers))
+        selected_tickers = list(dict.fromkeys(extra_list + selected_tickers))
 
-    # Keep this tab data-driven: no hard-coded priority watchlist.
-    # Use the Add tickers box above for a specific symbol, or raise the cap to
-    # scan deeper into the curated US universe.
-    max_scan = st.slider("Max tickers to scan", 50, 500, 250, 50, key="pm_max_scan",
-                         help="More tickers = more complete results but slower fetch (~8s per 100). Use Add tickers for any specific symbol you always want checked.")
+    max_scan = st.slider(
+        "Max tickers to scan", 50, 500, 250, 50, key="pm_max_scan",
+        help="More tickers = more complete results but slower fetch. Use Add tickers for any specific symbol you always want checked."
+    )
 
-    us_tickers = us_tickers[:max_scan]
+    selected_tickers = selected_tickers[:max_scan]
 
     # ── Fetch ─────────────────────────────────────────────────────────────
-    with st.spinner(f"Scanning {len(us_tickers)} US tickers for pre-market data…"):
-        df = _fetch_premarket_data(tuple(us_tickers), float(min_gap))
+    with st.spinner(f"Scanning {len(selected_tickers)} {market_name} tickers for live momentum data…"):
+        df = _fetch_premarket_data(tuple(selected_tickers), float(min_gap), market_name)
 
     if df.empty:
         if is_pm:
             st.warning(
-                f"No pre-market gaps found ≥ {min_gap}% in {len(us_tickers)} tickers. "
+                f"No moves found ≥ {min_gap}% in {len(selected_tickers)} {market_name} tickers. "
                 "Market may be very quiet or Yahoo data is loading. Try 🔄 Refresh or lower Min gap %."
             )
         else:
             st.info(
                 f"Outside pre-market window. Showing any available live data. "
-                f"No moves ≥ {min_gap}% found in {len(us_tickers)} tickers. "
-                "Pre-market data is available 4:00am–9:30am ET (4pm–9:30pm SGT)."
+                f"No moves ≥ {min_gap}% found in {len(selected_tickers)} {market_name} tickers. "
+                "US pre-market data is available 4:00am–9:30am ET (4pm–9:30pm SGT); non-US markets use latest available live/day data."
             )
         return
 

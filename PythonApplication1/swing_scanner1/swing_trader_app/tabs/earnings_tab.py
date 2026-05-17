@@ -14,19 +14,26 @@ def render_earnings(ctx: dict) -> None:
     st.caption("📅 Upcoming Earnings · Verdict: price vs MAs + analyst target + EPS trend")
 
     # ── Controls ──────────────────────────────────────────────────────────────
-    ec1, ec2, ec3, ec4 = st.columns([1, 1, 1, 2])
+    earn_market = str(st.session_state.get("market_selector") or globals().get("market_sel") or "🇺🇸 US")
+    st.info(f"🌍 Earnings market: **{earn_market}** — controlled by the top market selector.")
+    _earn_placeholder = "UUUU, NVDA, AAPL"
+    if "SGX" in earn_market:
+        _earn_placeholder = "D05.SI, O39.SI, U11.SI"
+    elif "India" in earn_market:
+        _earn_placeholder = "RELIANCE.NS, TCS.NS, INFY.NS"
+    elif "HK" in earn_market or "Hong Kong" in earn_market:
+        _earn_placeholder = "0700.HK, 9988.HK, 3690.HK"
+
+    ec1, ec3, ec4 = st.columns([1, 1, 2])
     with ec1:
         earn_days = st.slider("Days ahead", 5, 30, 15, key="earn_days")
-    with ec2:
-        earn_market = st.radio("Market", ["🇺🇸 US", "🇸🇬 SGX", "🇮🇳 India", "🇭🇰 HK"],
-                               horizontal=True, key="earn_market_sel")
     with ec3:
         earn_max = st.selectbox("Max scan", [50, 100, 150, 250, 500, 1000],
                                 index=1, key="earn_max_scan",
                                 help="Keeps Earnings Calendar fast. Extra tickers are always scanned first.")
     with ec4:
         extra_earn = st.text_input("➕ Add tickers",
-            placeholder="UUUU, NVDA, AAPL", key="earn_extra").strip().upper()
+            placeholder=_earn_placeholder, key="earn_extra").strip().upper()
 
     # ── Market-aware state: clear earn_df when user switches market ───────────
     _prev_earn_market = st.session_state.get("earn_df_market", "")
