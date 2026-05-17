@@ -220,10 +220,10 @@ def render_earnings(ctx: dict) -> None:
                 return ""
 
             disp_cols = [c for c in [
-                "Ticker","Earnings Date","Days Out","Price",
+                "Ticker","Verdict","Earnings Date","Days Out","Price",
                 "EPS Est","EPS Last","EPS Trend","Fwd PE",
                 "Analyst Target","Upside","Above MA50","Above MA200",
-                "Analyst Rec","Data","Verdict",
+                "Analyst Rec","Data",
             ] if c in df_filtered.columns]
 
             df_show = df_filtered[disp_cols].copy()
