@@ -1286,7 +1286,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
 
             p_raw = float(raw.get("p", 0) or p)
 
-            # ── v16 accuracy gate: can it realistically make +5–10% in 5–7 days?
+            # ── v13 accuracy gate: can it realistically make +5–10% in 5–7 days?
             # The old score could mark a stock A+ even when entry quality later said
             # WAIT/AVOID. These gates align the whole scanner around the practical
             # swing target: target before stop, room to resistance, and enough ATR.

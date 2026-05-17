@@ -13,7 +13,7 @@ def render_help(ctx: dict) -> None:
     # ── What's new ────────────────────────────────────────────────────────────
     with st.expander("🆕 What changed recently", expanded=True):
         st.markdown("""
-### Latest build — v16 Accuracy Gate
+### Latest build — v13 Accuracy Gate
 
 
 #### 🧭 Professional tab layout — v13.96
@@ -713,7 +713,7 @@ Key packages: `streamlit` · `yfinance` · `pandas` · `numpy` · `ta` ·
 
     st.markdown("---")
     st.caption(
-        "Swing Scanner v16 Accuracy Gate · 19 tabs · 8 strategies · US + SGX + India + HK · "
+        "Swing Scanner v13 Accuracy Gate · 19 tabs · 8 strategies · US + SGX + India + HK · "
         "⚡ Breakout Scanner · Bayesian engine · Operator layer · Options signals · "
         "Not financial advice"
     )

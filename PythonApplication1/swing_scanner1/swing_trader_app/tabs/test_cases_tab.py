@@ -140,7 +140,7 @@ def _tradeable_buy_gate(globals_dict: dict[str, Any]) -> list[dict[str, Any]]:
     if bad.empty:
         return [_result("Tradeable Buy requires BUY + minimum scores", True, "No gate violations found in current scan.")]
     sample = ", ".join(bad.get("Ticker", pd.Series(dtype=str)).astype(str).head(8).tolist())
-    return [_result("Tradeable Buy requires BUY + minimum scores", False, f"Gate violations: {len(bad)}. Sample: {sample}", "Check v16 accuracy gate thresholds in analysis_scan_core.")]
+    return [_result("Tradeable Buy requires BUY + minimum scores", False, f"Gate violations: {len(bad)}. Sample: {sample}", "Check v13 accuracy gate thresholds in analysis_scan_core.")]
 
 
 def _strategy_static(strategy: str) -> list[dict[str, Any]]:
