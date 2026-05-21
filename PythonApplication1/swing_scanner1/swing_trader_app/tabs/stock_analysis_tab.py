@@ -9,6 +9,26 @@ def _bind_runtime(ctx: dict) -> None:
     """Expose original app globals to this module for monolith-compatible tab code."""
     globals().update(ctx)
 
+
+def _normalize_ticker(raw: str) -> str:
+    """Normalize a user-entered ticker to the format yfinance expects.
+
+    Key rules:
+      HK stocks  — HKEX uses 5-digit codes with leading zeros (e.g. 02951, 00700).
+                   Yahoo Finance expects 4-digit codes (e.g. 2951.HK, 0700.HK).
+                   Formula: strip the leading zero → int(code), pad to 4 digits.
+                   02951.HK → 2951.HK   |   00700.HK → 0700.HK   |   700.HK → 0700.HK
+      SGX stocks — already correct (.SI suffix, no leading-zero issue).
+      US stocks  — already correct (no suffix or .US/.NYSE etc — pass through).
+    """
+    t = raw.strip().upper()
+    if t.endswith(".HK"):
+        code = t[:-3]
+        if code.isdigit():
+            # Normalize to exactly 4 digits: int() drops leading zeros, :04d pads short codes
+            t = f"{int(code):04d}.HK"
+    return t
+
 def render_stock_analysis(ctx: dict) -> None:
     _bind_runtime(ctx)
     st.caption("🔬 Stock Analysis")
@@ -17,9 +37,12 @@ def render_stock_analysis(ctx: dict) -> None:
     col_inp, col_per = st.columns([2, 1])
     with col_inp:
         stock_ticker = st.text_input(
-            "Ticker symbol", placeholder="e.g. NVDA, D05.SI, TSLA",
+            "Ticker symbol", placeholder="e.g. NVDA, D05.SI, 0700.HK, TSLA",
             key="stock_analysis_ticker"
         ).strip().upper()
+    # v14-patch: normalize ticker format (HK leading-zero fix, etc.)
+    if stock_ticker:
+        stock_ticker = _normalize_ticker(stock_ticker)
     with col_per:
         analysis_period = st.selectbox(
             "Chart period", ["3mo", "6mo", "1y", "2y"], index=1,
@@ -27,18 +50,68 @@ def render_stock_analysis(ctx: dict) -> None:
         )
 
     if not stock_ticker:
-        st.info("Enter a ticker above to analyse any stock — US, SGX (.SI), or any yfinance-supported symbol.")
+        st.info(
+            "Enter any ticker to analyse it.  \n"
+            "**US:** NVDA, TSLA, AAPL  ·  "
+            "**SGX:** D05.SI, Z74.SI  ·  "
+            "**HK:** 0700.HK, 0005.HK *(use 4-digit Yahoo format — "
+            "HKEX 5-digit codes like 02951 become 2951.HK)*  ·  "
+            "**Any yfinance-supported symbol** works."
+        )
     else:
         with st.spinner(f"Fetching {stock_ticker}..."):
             try:
-                # ── Fetch data ────────────────────────────────────────────────
-                raw_sa = yf.download(stock_ticker, period=analysis_period,
-                                     interval="1d", progress=False, auto_adjust=True)
-                if isinstance(raw_sa.columns, pd.MultiIndex):
-                    raw_sa.columns = raw_sa.columns.get_level_values(0)
+                # ── Fetch data — robust HK/multi-version yfinance handling ──
+                def _fetch_ohlcv(tkr, period):
+                    """Download OHLCV and normalise columns for any yfinance version."""
+                    df = yf.download(tkr, period=period, interval="1d",
+                                     progress=False, auto_adjust=True)
+                    if df.empty:
+                        return df
+                    if isinstance(df.columns, pd.MultiIndex):
+                        # yfinance column order varies by version:
+                        # v0.1.x: flat columns
+                        # v0.2.x: MultiIndex (price_type, ticker) → level 0 = price ✓
+                        # some builds: MultiIndex (ticker, price_type) → level 1 = price
+                        PRICE_NAMES = {"open","high","low","close","volume","adj close","adjclose"}
+                        lvl0 = [str(v).lower() for v in df.columns.get_level_values(0)]
+                        if any(v in PRICE_NAMES for v in lvl0):
+                            df.columns = df.columns.get_level_values(0)
+                        else:
+                            # Level 0 is ticker names — use level 1 for price names
+                            df.columns = df.columns.get_level_values(1)
+                    # Rename "Adj Close" → "Close" if auto_adjust was skipped
+                    if "Adj Close" in df.columns and "Close" not in df.columns:
+                        df = df.rename(columns={"Adj Close": "Close"})
+                    return df
 
-                if raw_sa.empty or len(raw_sa) < 30:
-                    st.error(f"Not enough data for {stock_ticker}. Check the ticker symbol.")
+                raw_sa = _fetch_ohlcv(stock_ticker, analysis_period)
+
+                # Fallback: if selected period has too few bars, try 1y
+                _is_asia = stock_ticker.endswith((".HK", ".SI", ".NS", ".BO"))
+                _min_bars = 20 if _is_asia else 30
+                if not raw_sa.empty and len(raw_sa) < _min_bars and analysis_period in ("3mo", "6mo"):
+                    _fallback = yf.download(stock_ticker, period="1y", interval="1d",
+                                            progress=False, auto_adjust=True)
+                    if not _fallback.empty and len(_fallback) >= _min_bars:
+                        raw_sa = _fallback
+                        if isinstance(raw_sa.columns, pd.MultiIndex):
+                            raw_sa.columns = raw_sa.columns.get_level_values(0)
+                        st.caption(f"_Note: switched to 1-year period — {analysis_period} had insufficient data._")
+
+                if raw_sa.empty or len(raw_sa) < _min_bars:
+                    _hint = ""
+                    if stock_ticker.endswith(".HK"):
+                        _hint = (
+                            f"  \n\n**HK ticker tip:** Yahoo Finance uses 4-digit codes. "
+                            f"Try **{_normalize_ticker(stock_ticker)}** if you entered a 5-digit HKEX code. "
+                            f"Example: HKEX code 02951 → enter **2951.HK**."
+                        )
+                    elif stock_ticker.endswith(".SI"):
+                        _hint = "  \n\nFor SGX stocks make sure to include the `.SI` suffix, e.g. `D05.SI`."
+                    _bars = len(raw_sa) if not raw_sa.empty else 0
+                    _reason = f"Only {_bars} trading bars returned (need ≥ {_min_bars})" if _bars > 0 else "Yahoo Finance returned no data"
+                    st.error(f"**{stock_ticker}** — {_reason}. {_hint if _hint else 'Check the ticker symbol and try again.'}")
                 else:
                     close_sa = raw_sa["Close"].squeeze().ffill()
                     high_sa  = raw_sa["High"].squeeze().ffill()

@@ -1054,27 +1054,116 @@ def render_long(ctx: dict) -> None:
             )
 
     else:
-        # Standard modes — unchanged behaviour
+        # Standard modes — v14-patch: includes Discovery Buy + Near-Miss tiers
         entry_s = df_long.get("Entry Quality", pd.Series([""] * len(df_long))).astype(str)
-        actionable_l = df_long[(entry_s.str.contains("✅", na=False)) | (action_s.str.contains("STRONG BUY", na=False))]
-        watch_hql    = df_long[(action_s == "WATCH – HIGH QUALITY") & (~df_long.index.isin(actionable_l.index))]
-        watch_dvl    = df_long[df_long["Action"] == "WATCH – DEVELOPING"]
-        watch_early  = df_long[df_long["Action"] == "WATCH – EARLY"]
+        actionable_l  = df_long[(entry_s.str.contains("✅", na=False)) | (action_s.str.contains("STRONG BUY", na=False))]
+        discovery_l   = df_long[entry_s.str.contains("🔍 DISCOVERY BUY", na=False)]
+        near_miss_l   = df_long[entry_s.str.contains("⚡ NEAR-MISS BUY", na=False)]
+        watch_hql     = df_long[(action_s == "WATCH – HIGH QUALITY") & (~df_long.index.isin(actionable_l.index))]
+        watch_dvl     = df_long[df_long["Action"] == "WATCH – DEVELOPING"]
+        watch_early   = df_long[df_long["Action"] == "WATCH – EARLY"]
+
+        # ── v14-patch: Top-5 Best Setups panel ─────────────────────────────
+        _combined_best = pd.concat([actionable_l, discovery_l, near_miss_l]).drop_duplicates()
+        if not _combined_best.empty:
+            # Score = Quality Score + Next-Day Score/2; pick top 5
+            def _num(s, default=0):
+                try:
+                    return pd.to_numeric(s.astype(str).str.extract(r"([-\d.]+)")[0], errors="coerce").fillna(default)
+                except Exception:
+                    return pd.Series([default]*len(s), index=s.index)
+            _qs = _num(_combined_best.get("Quality Score", pd.Series([0]*len(_combined_best))))
+            _nd = _num(_combined_best.get("Next-Day Score", pd.Series([0]*len(_combined_best))))
+            _rr = _num(_combined_best.get("RR Est", pd.Series(["1:0"]*len(_combined_best))).astype(str).str.replace("1:", "", regex=False))
+            _best_score = (_qs + _nd * 0.5 + _rr.clip(0, 3) * 2).round(1)
+            _combined_best = _combined_best.copy()
+            _combined_best.insert(0, "★ Score", _best_score.values)
+            _top5 = _combined_best.nlargest(5, "★ Score")
+            st.markdown("### 🏆 Top 5 Best Setups Right Now")
+            st.caption(
+                "Ranked by Quality Score + Next-Day Score + Risk-Reward. "
+                "✅ = full buy  ·  🔍 = Discovery (size down 50%)  ·  ⚡ = Near-Miss (size down 30%)"
+            )
+            _cols = ["★ Score", "Ticker", "Entry Quality", "RR Est", "Rise Prob",
+                     "Quality Score", "Next-Day Score", "Best Stop", "TP1 +10%", "Signals"]
+            _show_cols = [c for c in _cols if c in _top5.columns]
+            st.dataframe(_top5[_show_cols], use_container_width=True, hide_index=True)
+            st.divider()
+
+        # ── Blocked-by helper: surface the single gate stopping each WATCH stock ──
+        def _blocked_by(row):
+            try:
+                rr_num = float(str(row.get("RR Est","1:0")).replace("1:",""))
+            except Exception:
+                rr_num = 0
+            try:
+                qs = int(row.get("Quality Score", 0))
+            except Exception:
+                qs = 0
+            try:
+                nds = int(row.get("Next-Day Score", 0))
+            except Exception:
+                nds = 0
+            vq = str(row.get("Vol Quality",""))
+            eq = str(row.get("Entry Quality",""))
+            if "AVOID" in eq:           return "⛔ Trend broken"
+            if rr_num < 2.0:            return f"📐 RR too low ({rr_num:.1f})"
+            if nds < 5:                 return f"📊 NDS low ({nds})"
+            if qs < 7:                  return f"🔢 QS low ({qs})"
+            if "Low" in vq:             return "📉 Vol too low"
+            return "⏳ Forming"
 
         st.caption(
-            f"✅ **{len(actionable_l)}** Actionable Buy · "
-            f"👀 **{len(watch_hql)}** High Quality · "
-            f"📋 **{len(watch_dvl)}** Developing · "
-            f"🌱 **{len(watch_early)}** Early · "
-            f"🗂️ **{df_long['Sector'].nunique()}** Sectors · "
-            f"Top: **{df_long['Rise Prob'].iloc[0]}**"
+            f"✅ **{len(actionable_l)}** Buy  ·  "
+            f"🔍 **{len(discovery_l)}** Discovery  ·  "
+            f"⚡ **{len(near_miss_l)}** Near-Miss  ·  "
+            f"👀 **{len(watch_hql)}** High-Q Watch  ·  "
+            f"📋 **{len(watch_dvl)}** Developing  ·  "
+            f"🗂️ **{df_long['Sector'].nunique()}** Sectors"
         )
-        st.caption("✅ Actionable Buy / Best Setups")
-        show_table(actionable_l, "actionable buy", "Rise Prob")
-        st.caption("👀 High Quality Watch")
-        show_table(watch_hql, "high quality", "Rise Prob")
-        st.caption("📋 Developing")
-        show_table(watch_dvl, "developing", "Rise Prob")
+
+        if not actionable_l.empty:
+            st.markdown("#### ✅ Actionable Buy")
+            st.caption("Full-confidence entries — standard position size.")
+            show_table(actionable_l, "actionable buy", "Rise Prob")
+
+        if not discovery_l.empty:
+            st.markdown("#### 🔍 Discovery Buy *(size down 50%)*")
+            st.caption(
+                "Rise Prob ≥ 82% + strong quality but narrowly missed the full BUY gate. "
+                "Valid trades — use half normal position size and tighter stop."
+            )
+            show_table(discovery_l, "discovery buy", "Rise Prob")
+
+        if not near_miss_l.empty:
+            with st.expander(f"⚡ Near-Miss Buy — {len(near_miss_l)} pullback/continuation setups *(size down 30%)*", expanded=True):
+                st.caption(
+                    "Pullback or continuation setups just below the full Buy gate. "
+                    "Good R:R with clean structure. Confirm volume at entry before trading."
+                )
+                show_table(near_miss_l, "near miss buy", "Quality Score")
+
+        # ── High-Quality Watch with Blocked-By column ───────────────────────
+        if not watch_hql.empty:
+            st.markdown("#### 👀 High Quality Watch")
+            _hql_show = watch_hql.copy()
+            _hql_show.insert(0, "Blocked By", watch_hql.apply(_blocked_by, axis=1))
+            show_table(_hql_show, "high quality", "Rise Prob")
+
+        if not watch_dvl.empty:
+            # Split watch developing: those close to actionable vs noise
+            _qs_dvl = pd.to_numeric(watch_dvl.get("Quality Score", pd.Series([0]*len(watch_dvl))), errors="coerce").fillna(0)
+            _watch_good = watch_dvl[_qs_dvl >= 8]
+            _watch_rest = watch_dvl[_qs_dvl < 8]
+            if not _watch_good.empty:
+                st.markdown("#### 📋 Developing — Close to Buy Gate (QS ≥ 8)")
+                _wg_show = _watch_good.copy()
+                _wg_show.insert(0, "Blocked By", _watch_good.apply(_blocked_by, axis=1))
+                show_table(_wg_show, "developing_good", "Quality Score")
+            if not _watch_rest.empty:
+                with st.expander(f"📋 Developing — Early Stage ({len(_watch_rest)} stocks)", expanded=False):
+                    show_table(_watch_rest, "developing", "Rise Prob")
+
         with st.expander(f"🌱 Early watchlist ({len(watch_early)})", expanded=False):
             show_table(watch_early, "early long", "Rise Prob")
 
