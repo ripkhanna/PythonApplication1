@@ -456,6 +456,33 @@ def render_diagnostics(ctx: dict) -> None:
                    ) if _always_now else "")
             )
 
+        _diag_upper = [t.upper() for t in _diag_tickers]
+        if "SGX" in str(_diag_market_now).upper():
+            if "PCT.SI" in _diag_upper:
+                st.success(f"âœ… **PCT.SI** is in the scanned SGX ticker list at position **{_diag_upper.index('PCT.SI') + 1}**.")
+            else:
+                st.warning(
+                    "âš ï¸ **PCT.SI is not in the last scanned SGX ticker list shown here.** "
+                    "This usually means Diagnostics is showing an older SGX cache, live universe was OFF for that scan, "
+                    "or the scan has not been rerun since the active-universe patch."
+                )
+                try:
+                    _probe_live, _probe_src = fetch_live_market_universe(_diag_market_now, max_symbols=50)
+                    _probe_upper = [t.upper() for t in (_probe_live or [])]
+                    if "PCT.SI" in _probe_upper:
+                        st.info(
+                            f"Live SGX universe probe now finds **PCT.SI** at position "
+                            f"**{_probe_upper.index('PCT.SI') + 1}** in the first 50. "
+                            "Click **Scan SGX Stocks** to refresh the scanned ticker list."
+                        )
+                    elif _probe_live:
+                        st.error(
+                            "Live SGX universe probe also did not return PCT.SI in the first 50. "
+                            f"Probe source: {_probe_src}"
+                        )
+                except Exception as _pct_probe_e:
+                    st.caption(f"PCT live-universe probe failed: {type(_pct_probe_e).__name__}: {_pct_probe_e}")
+
         if _diag_always_scanned:
             st.markdown("**📌 Always-include tickers from selected-market scan:**")
             st.code(", ".join(_diag_always_scanned))
@@ -464,7 +491,7 @@ def render_diagnostics(ctx: dict) -> None:
             f"All scanned tickers for {_diag_market_now} (comma-separated)",
             value=_diag_tickers_csv,
             height=120,
-            key=f"diag_scanned_tickers_csv_{_diag_market_now}",
+            key=f"diag_scanned_tickers_csv_{_diag_market_now}_{len(_diag_tickers)}_{'PCT.SI' in _diag_upper}",
             disabled=True,
         )
 
@@ -508,7 +535,7 @@ def render_diagnostics(ctx: dict) -> None:
         diag_logs.append(f"Auto refresh interval: {_lt.get('refresh_interval', 'Off')}")
         diag_logs.append(f"Next refresh/check: {_lt.get('next_refresh_in', 'Auto refresh off')} at {_lt.get('next_refresh_at', 'Auto refresh off')}")
         diag_logs.append(f"Bucket-cap Bayesian: {'ON' if st.session_state.get('use_bucket_cap', True) else 'OFF'}")
-        diag_logs.append("Trade Journal: removed from Trade Desk in v13.46; current build v13.98")
+        diag_logs.append("Trade Journal: removed from Trade Desk in v13.46; current build v14.00")
     except Exception as e:
         diag_logs.append(f"Diagnostics log build error: {e}")
     st.text_area(

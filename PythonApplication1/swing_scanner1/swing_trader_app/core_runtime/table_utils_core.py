@@ -288,21 +288,6 @@ def _display_score_series(df: pd.DataFrame, prob_col: str) -> pd.Series:
         setup_bonus
     ).fillna(0)
 
-    # Practical display-only symbol/risk taxonomy. This keeps Rank aligned with
-    # the manual swing decision style: actionable clean names first, aggressive
-    # momentum after quality names, then confirmation/watch/extended names.
-    ticker = _col("Ticker", "").astype(str).str.upper()
-    base_score = base_score.mask(ticker.eq("GRND"), base_score + 28)
-    base_score = base_score.mask(ticker.eq("WMG"), base_score + 24)
-    base_score = base_score.mask(ticker.eq("QCOM"), base_score + 22)
-    base_score = base_score.mask(ticker.eq("IREN"), base_score + 34)
-    base_score = base_score.mask(ticker.eq("DDOG"), base_score + 8)
-    base_score = base_score.mask(ticker.eq("ATLC"), base_score - 4)
-    base_score = base_score.mask(ticker.eq("VPG"), base_score - 8)
-    base_score = base_score.mask(ticker.eq("ROAD"), base_score - 34)
-    base_score = base_score.mask(ticker.eq("GLW"), base_score - 38)
-    base_score = base_score.mask(ticker.isin({"NVAX", "ARCT", "KALV", "TNYA", "VERV"}), base_score - 50)
-    base_score = base_score.mask(ticker.isin({"LEGH", "XPER", "PRKS", "WEN", "KOP"}), base_score - 18)
     return base_score.fillna(0)
 
 def _fmt_price_value(value) -> str:
@@ -339,34 +324,11 @@ def _build_swing_view(row: pd.Series) -> str:
     # not change scan/filter logic. It helps the grid match the practical swing
     # notes: high-event-risk biotech should not be labelled "Best balanced", and
     # crypto/AI miners should be labelled aggressive momentum, not balanced.
-    aggressive_tickers = {"IREN", "MARA", "RIOT", "CLSK", "CIFR", "BTBT", "BITF", "WULF", "HUT", "CORZ", "HIVE"}
-    event_biotech_tickers = {"NVAX", "ARCT", "KALV", "TNYA", "VERV", "ABEO", "RIGL", "OPK", "STOK", "TNGX", "MRX", "PRCT", "MYGN", "ALKS"}
-    low_liq_watch_tickers = {"LEGH", "XPER", "PRKS", "WEN", "KOP"}
-    quality_swing_tickers = {"WMG", "GLW", "DDOG", "QCOM"}
-    momentum_trade_tickers = {"BB", "RKT", "GRND"}
 
     # High-priority symbol-specific display labels used to match the manual
     # swing-trading view. These are display-only; they do not change scan logic.
-    if ticker in event_biotech_tickers:
-        return "Avoid unless very aggressive"
-    if ticker == "GRND" and "BUY" in action:
-        return "Best balanced swing"
-    if ticker == "WMG" and "BUY" in action:
-        return "Good quality swing"
-    if ticker == "QCOM" and "BUY" in action:
-        return "Quality momentum buy on pullback"
-    if ticker == "IREN" and "BUY" in action:
-        return "Best aggressive momentum"
-    if ticker == "DDOG" and "BUY" in action:
-        return "Good stock, wait"
-    if ticker == "GLW" and "BUY" in action:
-        return "Wait"
-    if ticker == "ROAD" and "BUY" in action:
+    if False:
         return "Strong but extended — wait"
-    if ticker == "ATLC" and "BUY" in action:
-        return "Small-size only"
-    if ticker == "VPG" and "BUY" in action:
-        return "Watch only"
 
     _is_earn_gap = "EARNINGS GAP" in str(row.get("Signals","")) or "PEAD" in str(row.get("Signals",""))
     if not _is_earn_gap and ("WAIT" in action or "EXTENDED" in entry or today > 15):
@@ -379,22 +341,10 @@ def _build_swing_view(row: pd.Series) -> str:
 
     aggressive_keywords = ("CRYPTO", "BITCOIN", "MINER", "HIGH VOLUME", "EXTREME", "MOMENTUM")
     is_aggressive = (
-        ticker in aggressive_tickers
-        or any(k in f"{ticker} {sector} {setup}" for k in aggressive_keywords)
+        any(k in f"{sector} {setup}" for k in aggressive_keywords)
         or atr > 9
         or today > 10
     )
-
-    if ticker in aggressive_tickers and prob >= 55 and vol_ratio >= 1.2 and 3 <= today <= 12:
-        return "Best aggressive momentum"
-    if ticker in quality_swing_tickers and "BUY" in action:
-        return "Good quality swing"
-    if ticker in momentum_trade_tickers and "BUY" in action:
-        return "Best balanced swing" if ticker == "GRND" else "Momentum trade"
-    if ticker == "LEGH" and "BUY" in action:
-        return "Small-size watch"
-    if ticker in low_liq_watch_tickers and "BUY" in action:
-        return "Watch only"
 
     if prob >= 60 and vol_ratio >= 1.5 and is_aggressive and 3 <= today <= 12:
         return "Best aggressive momentum"
@@ -433,23 +383,23 @@ def _build_buy_condition(row: pd.Series) -> str:
 
     # Symbol-specific display conditions to match practical manual swing notes.
     # These are display-only; they do not change the strategy calculation.
-    if ticker == "GRND" and price_v > 0:
+    if False and ticker == "GRND" and price_v > 0:
         return f"Buy only if it holds {_fmt_price_value(price_v*0.960)}–{_fmt_price_value(price_v*0.975)} or breaks above {_fmt_price_value(price_v*1.008)} with volume · stop below {_fmt_price_value(price_v*0.948)}"
-    if ticker == "WMG" and price_v > 0:
+    if False and ticker == "WMG" and price_v > 0:
         return f"Buy if it holds {_fmt_price_value(price_v*0.968)}–{_fmt_price_value(price_v*0.976)} or breaks above {_fmt_price_value(price_v*1.010)} with volume · stop below {_fmt_price_value(price_v*0.951)}"
-    if ticker == "QCOM" and price_v > 0:
+    if False and ticker == "QCOM" and price_v > 0:
         return f"Better near {_fmt_price_value(price_v*0.960)}–{_fmt_price_value(price_v*0.978)}, or breakout above {_fmt_price_value(price_v*1.040)}"
-    if ticker == "IREN" and price_v > 0:
+    if False and ticker == "IREN" and price_v > 0:
         return f"Only above {_fmt_price_value(price_v*1.030)}–{_fmt_price_value(price_v*1.046)}, or pullback near {_fmt_price_value(price_v*0.948)}–{_fmt_price_value(price_v*0.980)} holds"
-    if ticker == "DDOG" and price_v > 0:
+    if False and ticker == "DDOG" and price_v > 0:
         return f"Wait near {_fmt_price_value(price_v*0.965)}–{_fmt_price_value(price_v*0.980)}, or breakout above {_fmt_price_value(price_v*1.005)}"
-    if ticker == "ATLC" and price_v > 0:
+    if False and ticker == "ATLC" and price_v > 0:
         return f"Small size only if it holds above {_fmt_price_value(price_v*0.945)}–{_fmt_price_value(price_v*0.967)}"
-    if ticker == "VPG" and price_v > 0:
+    if False and ticker == "VPG" and price_v > 0:
         return "Watch only — avoid chasing unless fresh breakout confirms with volume"
-    if ticker == "ROAD":
+    if False and ticker == "ROAD":
         return "Do not chase — wait for pullback/support"
-    if ticker == "GLW":
+    if False and ticker == "GLW":
         return "Wait — not clean for immediate entry after sharp pullback"
 
     if "WAIT" in action.upper() or "EXTENDED" in entry.upper() or today > 10 or (price_v > 100 and today >= 5):
@@ -634,7 +584,7 @@ def show_table(df, label, prob_col="Rise Prob"):
     else:
         wanted = [
             "Rank", "Ticker", "Action", "View", "Buy Condition",
-            "Entry Quality", "Tradeable Buy", "Quality Score", "Next-Day Score", "Next-Day Rating", "Next-Day Move", "7D Move Est", "Upside to Res", "RR Est", "Setup Type", "Today %", "Rise Prob", "Swing Rank Score", "Pro Score", "PI Proxy", "Tier", "Why Buy",
+            "Entry Quality", "Tradeable Buy", "Trade Tier", "Quality Score", "Next-Day Score", "Next-Day Rating", "Next-Day Move", "7D Move Est", "Upside to Res", "RR Est", "Setup Type", "Today %", "Rise Prob", "Swing Rank Score", "Pro Score", "PI Proxy", "Tier", "Why Buy",
             "Operator", "VWAP", "Trap Risk", "Price", "MA60 Stop", "Best Stop",
             "TP1 +10%", "TP2 +15%", "TP3 +20%", "Target Est.", "Hold Est.",
             "Vol Ratio", "ATR%", "Vol Quality", "PSM Quality", "PSS Score", "PSS Label", "Op Score", "Score",
@@ -659,6 +609,7 @@ def show_table(df, label, prob_col="Rise Prob"):
         "Next-Day Move": st.column_config.TextColumn("Next-Day Move", width=110),
         "Quality Score": st.column_config.NumberColumn("Quality",      width=65),
         "Tradeable Buy": st.column_config.TextColumn("Tradeable",      width=75),
+        "Trade Tier":    st.column_config.TextColumn("Tier",           width=80),
         "7D Move Est": st.column_config.TextColumn("7D Move",          width=70),
         "Upside to Res": st.column_config.TextColumn("Room",           width=60),
         "RR Est": st.column_config.TextColumn("R:R",                   width=55),
@@ -799,5 +750,3 @@ def _safe_today_change_pct(close: pd.Series) -> float:
         return float((last - prev) / prev * 100.0)
     except Exception:
         return 0.0
-
-

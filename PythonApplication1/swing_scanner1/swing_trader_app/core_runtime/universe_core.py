@@ -11,12 +11,14 @@ if str(_app_root) not in _sys_uc.path if hasattr(_sys_uc, 'path') else True:
     _sys_uc.path.insert(0, str(_app_root))
 try:
     from swing_trader_app.tabs.universe_data import (
+        US_TICKERS as _UD_US_TICKERS,
         HK_TICKERS as _UD_HK_TICKERS,
         SG_TICKERS as _UD_SG_TICKERS,
         INDIA_TICKERS as _UD_INDIA_TICKERS,
     )
     _universe_data_available = True
 except ImportError:
+    _UD_US_TICKERS = []
     _UD_HK_TICKERS = []
     _UD_SG_TICKERS = []
     _UD_INDIA_TICKERS = []
@@ -72,6 +74,169 @@ def _score_stocks_batch(symbols: list) -> dict:
     except Exception:
         pass
     return scored
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_active_from_universe(symbols_tuple, market_name: str = "", max_active: int = 120) -> list:
+    """Return active symbols from a known universe by move, volume, and ATR.
+
+    This avoids missing SGX/HK/India names simply because they are not in a
+    hand-picked watchlist. The caller still merges these with the full universe
+    and user-added tickers before scanning.
+    """
+    symbols = _unique_keep_order([str(s).strip().upper() for s in list(symbols_tuple or []) if str(s).strip()])
+    if not symbols:
+        return []
+
+    is_asia = any(x in str(market_name).upper() for x in ("SGX", "HK", "INDIA", "NSE"))
+    min_move = 1.2 if is_asia else 2.0
+    min_vr = 1.25 if is_asia else 1.5
+    min_atr = 1.5 if is_asia else 2.5
+    scored = []
+
+    def _field(raw, sym, field, n):
+        try:
+            if n == 1:
+                return raw[field].squeeze().ffill().dropna()
+            if isinstance(raw.columns, pd.MultiIndex):
+                lvl1 = raw.columns.get_level_values(1)
+                lvl0 = raw.columns.get_level_values(0)
+                if sym in lvl1:
+                    return raw.xs(sym, axis=1, level=1)[field].squeeze().ffill().dropna()
+                if sym in lvl0:
+                    return raw[sym][field].squeeze().ffill().dropna()
+            if sym in raw.columns:
+                return raw[sym][field].squeeze().ffill().dropna()
+            return raw[field].squeeze().ffill().dropna()
+        except Exception:
+            return pd.Series(dtype=float)
+
+    # Keep batches moderate; Yahoo often returns partial failures on very large
+    # non-US requests.
+    for start in range(0, len(symbols), 80):
+        chunk = symbols[start:start + 80]
+        try:
+            raw = yf.download(
+                chunk, period="3mo", interval="1d",
+                progress=False, group_by="ticker",
+                threads=True, auto_adjust=True,
+            )
+            if raw is None or raw.empty:
+                continue
+        except Exception:
+            continue
+
+        for sym in chunk:
+            try:
+                c = _field(raw, sym, "Close", len(chunk))
+                h = _field(raw, sym, "High", len(chunk))
+                lo = _field(raw, sym, "Low", len(chunk))
+                v = _field(raw, sym, "Volume", len(chunk))
+                if len(c) < 22 or len(h) < 22 or len(lo) < 22:
+                    continue
+                price = float(c.iloc[-1])
+                prev = float(c.iloc[-2])
+                if price <= 0 or prev <= 0:
+                    continue
+                today_pct = abs((price / prev - 1.0) * 100.0)
+                five_pct = abs((price / float(c.iloc[-6]) - 1.0) * 100.0) if len(c) >= 6 and float(c.iloc[-6]) > 0 else 0.0
+                twenty_pct = abs((price / float(c.iloc[-21]) - 1.0) * 100.0) if len(c) >= 21 and float(c.iloc[-21]) > 0 else 0.0
+                sixty_pct = abs((price / float(c.iloc[-61]) - 1.0) * 100.0) if len(c) >= 61 and float(c.iloc[-61]) > 0 else 0.0
+                vol_last = float(v.iloc[-1]) if len(v) else 0.0
+                vol_avg = float(v.tail(21).iloc[:-1].mean()) if len(v) >= 21 else float(v.mean() or 0.0)
+                vr = vol_last / vol_avg if vol_avg > 0 else 0.0
+                atr = float(ta.volatility.average_true_range(h, lo, c, window=14).iloc[-1])
+                atr_pct = atr / price * 100.0 if price > 0 else 0.0
+                if today_pct < min_move and five_pct < 3.0 and twenty_pct < 6.0 and sixty_pct < 12.0 and vr < min_vr and atr_pct < min_atr:
+                    continue
+                dollar_vol = price * max(vol_last, vol_avg, 0.0)
+                liquidity = np.log10(max(dollar_vol, vol_last, 1.0))
+                activity_score = (
+                    min(today_pct, 20.0) * 3.0 +
+                    min(five_pct, 30.0) * 0.8 +
+                    min(twenty_pct, 50.0) * 0.45 +
+                    min(sixty_pct, 80.0) * 0.25 +
+                    min(vr, 6.0) * 6.0 +
+                    min(atr_pct, 15.0) * 2.5 +
+                    liquidity
+                )
+                scored.append((sym, activity_score))
+            except Exception:
+                continue
+
+    scored.sort(key=lambda x: -x[1])
+    return [s for s, _ in scored[:max_active]]
+
+
+@st.cache_data(ttl=10 * 60, show_spinner=False)
+def fetch_quote_activity_from_universe(symbols_tuple, market_name: str = "", max_active: int = 120) -> list:
+    """Rank a known universe by today's live quote move and traded value.
+
+    This is the cross-market equivalent of the SGX active-first patch: if a
+    ticker is moving today, it should be promoted before max_symbols trimming
+    even when it is deep in the curated/index universe.
+    """
+    symbols = _unique_keep_order([str(s).strip().upper() for s in list(symbols_tuple or []) if str(s).strip()])
+    if not symbols:
+        return []
+
+    import json as _json_quote
+    import concurrent.futures as _fut_quote
+    import urllib.parse as _urlparse_quote
+    import urllib.request as _urlreq_quote
+
+    m = str(market_name or "").upper()
+    if "US" in m:
+        min_dollar_vol = 1_000_000
+    elif "HK" in m:
+        min_dollar_vol = 500_000
+    elif "INDIA" in m or "NSE" in m:
+        min_dollar_vol = 5_000_000
+    elif "SGX" in m:
+        min_dollar_vol = 120_000
+    else:
+        min_dollar_vol = 250_000
+
+    scored = []
+    headers = {"User-Agent": "Mozilla/5.0"}
+
+    def _chart_score(sym):
+        try:
+            safe_sym = _urlparse_quote.quote(sym, safe="")
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{safe_sym}?range=5d&interval=1d"
+            req = _urlreq_quote.Request(url, headers=headers)
+            with _urlreq_quote.urlopen(req, timeout=12) as resp:
+                payload = _json_quote.loads(resp.read().decode("utf-8", errors="replace"))
+            result = (payload.get("chart", {}).get("result", []) or [{}])[0]
+            meta = result.get("meta", {}) or {}
+            quote = (result.get("indicators", {}).get("quote", []) or [{}])[0]
+            closes = [float(x) for x in (quote.get("close") or []) if x is not None]
+            volumes = [float(x) for x in (quote.get("volume") or []) if x is not None]
+            price = float(meta.get("regularMarketPrice") or (closes[-1] if closes else 0.0) or 0.0)
+            prev = float(meta.get("chartPreviousClose") or meta.get("previousClose") or 0.0)
+            if prev <= 0 and len(closes) >= 2:
+                prev = float(closes[-2])
+            volume = float(volumes[-1] if volumes else 0.0)
+            if price <= 0 or prev <= 0:
+                return None
+            pct = abs((price / prev - 1.0) * 100.0)
+            dollar_vol = price * volume
+            if pct <= 0 or dollar_vol < min_dollar_vol:
+                return None
+            score = min(pct, 25.0) * 25.0 + np.log10(max(dollar_vol, 1.0)) * 8.0
+            return (sym, score)
+        except Exception:
+            return None
+
+    with _fut_quote.ThreadPoolExecutor(max_workers=12) as ex:
+        for item in ex.map(_chart_score, symbols):
+            if item:
+                scored.append(item)
+
+    score_map = {}
+    for sym, score in scored:
+        score_map[sym] = max(score_map.get(sym, 0.0), score)
+    return [s for s, _ in sorted(score_map.items(), key=lambda kv: -kv[1])[:max_active]]
 
 
 @st.cache_data(ttl=21600)   # 6-hour cache
@@ -278,6 +443,51 @@ def fetch_yahoo_market_movers(max_per_screener: int = 250) -> list:
     return _unique_keep_order(yf_tickers + yahoo_tickers)
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_yahoo_region_movers(region: str, suffix: str = "", max_per_screener: int = 100) -> list:
+    """Fetch active regional movers from Yahoo predefined screeners."""
+    import concurrent.futures as _fut
+    import requests as _req
+
+    region = str(region or "").upper()
+    screen_names = ("most_actives", "day_gainers", "day_losers", "small_cap_gainers")
+    url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved"
+    headers = {"User-Agent": "Mozilla/5.0 (compatible)"}
+    per_page = min(max(int(max_per_screener), 25), 100)
+
+    def _screen(scr):
+        out = []
+        try:
+            params = {
+                "scrIds": scr, "count": per_page, "start": 0,
+                "formatted": "false", "lang": "en-US", "region": region,
+            }
+            r = _req.get(url, params=params, headers=headers, timeout=10)
+            if not r.ok:
+                return out
+            quotes = ((r.json().get("finance", {})
+                                .get("result", [{}])[0])
+                                .get("quotes", []) or [])
+            for q in quotes:
+                sym = _clean_symbol(q.get("symbol", ""), suffix)
+                if suffix and not str(sym).upper().endswith(str(suffix).upper()):
+                    continue
+                if sym:
+                    out.append(sym)
+        except Exception:
+            pass
+        return out
+
+    found = []
+    try:
+        with _fut.ThreadPoolExecutor(max_workers=len(screen_names)) as ex:
+            for batch in ex.map(_screen, screen_names):
+                found.extend(batch)
+    except Exception:
+        pass
+    return _unique_keep_order(found)
+
+
 @st.cache_data(ttl=12 * 60 * 60, show_spinner=False)
 def fetch_us_index_universe(max_symbols: int = 450) -> list:
     """Fetch current US index constituents from public index tables."""
@@ -308,27 +518,79 @@ def fetch_sgx_market_universe(max_symbols: int = 180) -> list:
     Primary source: SGX securities API. Fallback: current STI constituents table.
     """
     tickers = []
+    scored_tickers = []
 
     # SGX public securities endpoint changes occasionally; keep it best-effort.
     try:
-        import requests
-        url = "https://api2.sgx.com/securities/v1.1"
-        params = {"excludetypes": "bonds", "params": "nc,cn,code"}
-        headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get(url, params=params, headers=headers, timeout=12)
-        if r.ok:
-            data = r.json()
-            rows = data.get("data", data if isinstance(data, list) else [])
-            for row in rows:
-                if isinstance(row, dict):
-                    code = row.get("code") or row.get("nc") or row.get("symbol") or row.get("ticker")
-                elif isinstance(row, (list, tuple)) and row:
-                    code = row[0]
-                else:
-                    code = None
-                sym = _clean_symbol(code, ".SI")
-                if sym:
-                    tickers.append(sym)
+        import json as _json_sgx
+        import urllib.parse as _urlparse_sgx
+        import urllib.request as _urlreq_sgx
+        try:
+            import requests as _requests_sgx
+        except Exception:
+            _requests_sgx = None
+        urls = (
+            "https://api.sgx.com/securities/v1.1",
+            "https://api2.sgx.com/securities/v1.1",
+        )
+        params = {
+            "excludetypes": "bonds",
+            "params": "nc,cn,c,v,lt",
+        }
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json,text/plain,*/*",
+            "Referer": "https://www.sgx.com/",
+        }
+
+        def _fetch_sgx_json(url):
+            if _requests_sgx is not None:
+                r = _requests_sgx.get(url, params=params, headers=headers, timeout=15)
+                if not r.ok:
+                    return None
+                return r.json()
+            query = _urlparse_sgx.urlencode(params)
+            req = _urlreq_sgx.Request(f"{url}?{query}", headers=headers)
+            with _urlreq_sgx.urlopen(req, timeout=15) as resp:
+                return _json_sgx.loads(resp.read().decode("utf-8", errors="replace"))
+
+        for url in urls:
+            try:
+                data = _fetch_sgx_json(url)
+                if not data:
+                    continue
+                payload = data.get("data", data if isinstance(data, list) else [])
+                rows = payload.get("prices", []) if isinstance(payload, dict) else payload
+                for row in rows:
+                    if isinstance(row, dict):
+                        code = row.get("code") or row.get("nc") or row.get("symbol") or row.get("ticker")
+                        sec_type = str(row.get("type", "")).lower()
+                        if sec_type and sec_type not in ("stocks", "reits", "business trusts", "stapled securities", "etfs"):
+                            continue
+                    elif isinstance(row, (list, tuple)) and row:
+                        code = row[0]
+                    else:
+                        code = None
+                    sym = _clean_symbol(code, ".SI")
+                    if sym:
+                        tickers.append(sym)
+                        if isinstance(row, dict):
+                            try:
+                                last_price = float(row.get("lt") or row.get("l") or row.get("last") or 0.0)
+                                change_abs = abs(float(row.get("c") or row.get("change_vs_pc") or 0.0))
+                                volume = float(row.get("v") or row.get("volume") or 0.0)
+                                prev_price = last_price - change_abs if last_price > change_abs else 0.0
+                                move_pct = (change_abs / prev_price * 100.0) if prev_price > 0 else 0.0
+                                dollar_vol = last_price * volume
+                                activity_score = min(move_pct, 25.0) * 25.0 + np.log10(max(dollar_vol, 1.0)) * 8.0
+                                if activity_score > 0 and dollar_vol >= 120_000:
+                                    scored_tickers.append((sym, activity_score))
+                            except Exception:
+                                pass
+                if tickers:
+                    break
+            except Exception:
+                continue
     except Exception:
         pass
 
@@ -356,6 +618,13 @@ def fetch_sgx_market_universe(max_symbols: int = 180) -> list:
     except Exception:
         pass
 
+    if scored_tickers:
+        score_map = {}
+        for sym, score in scored_tickers:
+            score_map[sym] = max(score_map.get(sym, 0.0), score)
+        active_first = [sym for sym, _ in sorted(score_map.items(), key=lambda kv: -kv[1])]
+        tickers = active_first + tickers
+
     return _unique_keep_order(tickers)[:max_symbols]
 
 
@@ -363,6 +632,7 @@ def fetch_sgx_market_universe(max_symbols: int = 180) -> list:
 def fetch_nse_market_universe(max_symbols: int = 220) -> list:
     """Fetch current NSE index constituents from NSE's live index API."""
     tickers = []
+    scored_tickers = []
     indices = ["NIFTY 50", "NIFTY NEXT 50", "NIFTY MIDCAP 50", "NIFTY SMALLCAP 50"]
     try:
         import requests
@@ -387,14 +657,30 @@ def fetch_nse_market_universe(max_symbols: int = 220) -> list:
                 data = r.json().get("data", [])
                 for row in data:
                     sym = row.get("symbol")
-                    if sym and sym not in ("NIFTY 50", "NIFTY NEXT 50"):
+                    if sym and "NIFTY" not in str(sym).upper():
                         t = _clean_symbol(sym, ".NS")
                         if t:
                             tickers.append(t)
+                            try:
+                                pct = abs(float(row.get("pChange") or row.get("perChange365d") or 0.0))
+                                price = float(row.get("lastPrice") or row.get("previousClose") or 0.0)
+                                volume = float(row.get("totalTradedVolume") or row.get("quantityTraded") or 0.0)
+                                traded_value = price * volume
+                                score = min(pct, 25.0) * 25.0 + np.log10(max(traded_value, 1.0)) * 8.0
+                                if pct > 0 and traded_value >= 5_000_000:
+                                    scored_tickers.append((t, score))
+                            except Exception:
+                                pass
             except Exception:
                 continue
     except Exception:
         pass
+    if scored_tickers:
+        score_map = {}
+        for sym, score in scored_tickers:
+            score_map[sym] = max(score_map.get(sym, 0.0), score)
+        active_first = [sym for sym, _ in sorted(score_map.items(), key=lambda kv: -kv[1])]
+        tickers = active_first + tickers
     return _unique_keep_order(tickers)[:max_symbols]
 
 
@@ -820,8 +1106,14 @@ def fetch_live_market_universe(market_name: str, max_symbols: int = 350,
     """
     if market_name == "🇺🇸 US":
         movers       = fetch_yahoo_market_movers(100)
-        index_names  = fetch_us_index_universe(max_symbols=max_symbols)
-        base_pool    = _unique_keep_order(movers + index_names)
+        index_names  = fetch_us_index_universe(max_symbols=max(max_symbols, 600))
+        base_pool    = _unique_keep_order(movers + index_names + list(_UD_US_TICKERS or []))
+        quote_active = fetch_quote_activity_from_universe(
+            tuple(base_pool), market_name, max_active=min(160, max_symbols)
+        )
+        active_from_universe = fetch_active_from_universe(
+            tuple(base_pool), market_name, max_active=min(160, max_symbols)
+        )
 
         # ── v15.6: enhancement sources ────────────────────────────────────────
         # NOTE: These are called sequentially here, but fetch_live_market_universe
@@ -892,23 +1184,53 @@ def fetch_live_market_universe(market_name: str, max_symbols: int = 350,
             pass
 
         tickers = _unique_keep_order(
-            _earn_gappers + _52w + _pm_gappers + _fviz + _earn_tickers + _opt_unusual + _sector_stocks + base_pool
+            _earn_gappers + _52w + _pm_gappers + quote_active + active_from_universe + _fviz + _earn_tickers + _opt_unusual + _sector_stocks + base_pool
         )
         source = (
-            "v15.10: 52w breakouts + PreMkt gappers + Top sectors + Yahoo"
+            "v15.11: live quote activity + active universe movers/volatility + 52w breakouts + PreMkt gappers + Top sectors + Yahoo"
             + (" + Finviz + Earnings + Unusual options" if enable_slow_enrichment else "")
             + " (all cached)"
         )
 
     elif market_name == "🇸🇬 SGX":
-        tickers = fetch_sgx_market_universe(max_symbols=max_symbols)
-        source = "SGX securities feed + STI/current curated SGX fallback"
+        regional_movers = fetch_yahoo_region_movers("SG", ".SI", max_per_screener=100)
+        base_pool = _unique_keep_order(
+            regional_movers + fetch_sgx_market_universe(max_symbols=max(max_symbols, 5000))
+        )
+        quote_active = fetch_quote_activity_from_universe(
+            tuple(base_pool), market_name, max_active=min(120, max_symbols)
+        )
+        active_from_universe = fetch_active_from_universe(
+            tuple(base_pool), market_name, max_active=min(120, max_symbols)
+        )
+        tickers = _unique_keep_order(regional_movers + quote_active + active_from_universe + base_pool)
+        source = "SGX live quote activity + active volume/volatility + securities feed + curated fallback"
     elif market_name == "🇭🇰 HK":
-        tickers = fetch_hk_market_universe(max_symbols=max_symbols)
-        source = "Hong Kong expanded curated high-beta/liquid .HK watchlist"
+        regional_movers = fetch_yahoo_region_movers("HK", ".HK", max_per_screener=100)
+        base_pool = _unique_keep_order(
+            regional_movers + fetch_hk_market_universe(max_symbols=max(max_symbols, 500))
+        )
+        quote_active = fetch_quote_activity_from_universe(
+            tuple(base_pool), market_name, max_active=min(120, max_symbols)
+        )
+        active_from_universe = fetch_active_from_universe(
+            tuple(base_pool), market_name, max_active=min(120, max_symbols)
+        )
+        tickers = _unique_keep_order(regional_movers + quote_active + active_from_universe + base_pool)
+        source = "Hong Kong live quote activity + active volume/volatility + expanded .HK watchlist"
     else:
-        tickers = fetch_nse_market_universe(max_symbols=max_symbols)
-        source = "NSE live index constituents"
+        regional_movers = fetch_yahoo_region_movers("IN", ".NS", max_per_screener=100)
+        base_pool = _unique_keep_order(
+            regional_movers + fetch_nse_market_universe(max_symbols=max(max_symbols, 500))
+        )
+        quote_active = fetch_quote_activity_from_universe(
+            tuple(base_pool), market_name, max_active=min(120, max_symbols)
+        )
+        active_from_universe = fetch_active_from_universe(
+            tuple(base_pool), market_name, max_active=min(120, max_symbols)
+        )
+        tickers = _unique_keep_order(regional_movers + quote_active + active_from_universe + base_pool)
+        source = "NSE live quote activity + active volume/volatility + live index constituents"
 
     tickers = _unique_keep_order(tickers)[:max_symbols]
     if len(tickers) < 10:

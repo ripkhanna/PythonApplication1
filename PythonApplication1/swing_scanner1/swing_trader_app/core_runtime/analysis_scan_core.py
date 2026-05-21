@@ -303,20 +303,28 @@ def fetch_analysis(green_sectors, red_sectors, regime,
     # ── Pre-fetch SPY for relative strength ───────────────────────────────────
     spy_close_global = None
     try:
-        spy_raw = yf.download("SPY", period="1mo", interval="1d",
-                              progress=False, auto_adjust=True)
+        import contextlib as _cl_spy, io as _io_spy
+        with _cl_spy.redirect_stderr(_io_spy.StringIO()), _cl_spy.redirect_stdout(_io_spy.StringIO()):
+            spy_raw = yf.download("SPY", period="1mo", interval="1d",
+                                  progress=False, auto_adjust=True)
         if isinstance(spy_raw.columns, pd.MultiIndex):
             spy_raw.columns = spy_raw.columns.get_level_values(0)
-        spy_close_global = spy_raw["Close"].squeeze().ffill()
-    except Exception:
-        pass
+        if spy_raw is not None and not spy_raw.empty and "Close" in spy_raw.columns:
+            spy_close_global = spy_raw["Close"].squeeze().ffill()
+    except Exception as e:
+        try:
+            _record_app_warning("spy_relative_strength_fetch", f"{type(e).__name__}: {e}")
+        except Exception:
+            pass
 
     # ── Pre-fetch sector ETF closes for sector leader signal ─────────────────
     sector_etf_closes = {}
     try:
         etf_list = list(SECTOR_ETFS.values())
-        etf_raw  = yf.download(etf_list, period="1mo", interval="1d",
-                               progress=False, auto_adjust=True, group_by="ticker")
+        import contextlib as _cl_etf, io as _io_etf
+        with _cl_etf.redirect_stderr(_io_etf.StringIO()), _cl_etf.redirect_stdout(_io_etf.StringIO()):
+            etf_raw  = yf.download(etf_list, period="1mo", interval="1d",
+                                   progress=False, auto_adjust=True, group_by="ticker")
         for etf in etf_list:
             try:
                 c = _extract_closes(etf_raw, etf, len(etf_list))
@@ -934,10 +942,15 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             sec_etf    = SECTOR_ETFS.get(sec_name, "")
             sec_close  = sector_etf_closes.get(sec_etf, None)
 
+            try:
+                open_for_signals = df["Open"].squeeze().ffill()
+            except Exception:
+                open_for_signals = None
             long_sig, short_sig, raw = compute_all_signals(
                 close, high, low, vol,
                 spy_close=spy_close_global,
                 sector_close=sec_close,
+                open_=open_for_signals,
             )
             p    = raw["p"]
             atrv = raw["atr"]
@@ -1333,11 +1346,12 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             stop_risk_pct = round(max((p_raw - approx_stop) / max(p_raw, 0.01) * 100.0, 0.5), 2)
             # v14-patch: dynamic target = max(fixed, upside-to-resistance, 2×risk)
             _fixed_target = 8.0 if atr_pct_live >= 4.0 else 6.0
-            _dynamic_target = max(
-                _fixed_target,
-                upside_to_resistance if 0 < upside_to_resistance < 50 else _fixed_target,
-                stop_risk_pct * 2.0,
-            )
+            _atr_target = expected_7d_move if expected_7d_move > 0 else _fixed_target
+            _dynamic_target = min(max(4.0, min(_fixed_target, _atr_target)), 12.0)
+            if 0 < upside_to_resistance < 50 and not confirmed_breakout:
+                _dynamic_target = min(_dynamic_target, upside_to_resistance)
+            elif confirmed_breakout and 0 < upside_to_resistance < 50:
+                _dynamic_target = max(_dynamic_target, min(upside_to_resistance, 12.0))
             rr_est = round(min(_dynamic_target / max(stop_risk_pct, 0.5), 5.0), 2)
             risk_reward_ok = bool(
                 rr_est >= 2.0 or
@@ -2001,7 +2015,24 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 else:
                     entry_quality = "SKIP"
                     next_day_rating = "SKIP"
-                tradeable_buy = bool(tradeable_buy or discovery_buy or near_miss_buy)
+                if a_plus_buy:
+                    trade_tier = "A+"
+                elif tradeable_buy:
+                    trade_tier = "Full"
+                elif discovery_buy:
+                    trade_tier = "Discovery"
+                elif near_miss_buy:
+                    trade_tier = "Near-Miss"
+                else:
+                    trade_tier = "Watch"
+
+                display_pos_size_note = pos_size_note
+                if discovery_buy:
+                    display_pos_size_note = "Half - discovery"
+                elif near_miss_buy:
+                    display_pos_size_note = "Small - near miss"
+                elif not tradeable_buy:
+                    display_pos_size_note = "Watch only"
 
                 if l_action and "STRONG BUY" in str(l_action) and not tradeable_buy:
                     if is_chasing:
@@ -2108,6 +2139,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "Next-Day Score": int(next_day_score),
                     "Quality Score": int(quality_score),
                     "Tradeable Buy": "YES" if tradeable_buy else "NO",
+                    "Trade Tier": trade_tier,
                     "Next-Day Rating": next_day_rating,
                     "Next-Day Move": f"{expected_7d_move:.1f}%",
                     "7D Move Est": f"{expected_7d_move:.1f}%",
@@ -2149,7 +2181,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     # ── v14.1: Fundamental context ────────────────────────────
                     "Cash/MCap":      cash_floor_str,
                     "Analyst":        analyst_label,
-                    "Pos Size":       pos_size_note,
+                    "Pos Size":       display_pos_size_note,
                     "PSM Gate":       str(psm_min_score),
                     # ── v15.2: ATR% volatility quality ────────────────────────
                     "ATR%":           atr_pct_str,
@@ -2304,7 +2336,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "RSI":            round(raw["rsi0"], 1),
                     "Vol Ratio":      round(vr, 2),
                     "Last Bar":       last_bar_ts,
-                    "Signals":        " | ".join(l_tags) if l_tags else "–",
+                    "Signals":        " | ".join(s_tags) if s_tags else "–",
                     "Opt Flow":       " | ".join(opt_s_tags) if opt_s_tags else "–",
                 })
 

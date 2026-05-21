@@ -572,7 +572,7 @@ def render_top_movers(g: dict) -> None:
     prepost = market_key == "US"
     tickers = _tickers_for_market(g, market_key)
 
-    # v13.98: shared top banner helpers.  These update the page-level
+    # v14.00: shared top banner helpers.  These update the page-level
     # status only when this tab's Refresh button created the movers context.
     # This avoids hidden tabs overwriting the banner, while still giving
     # immediate/complete feedback when the user runs Movers.

@@ -3,7 +3,7 @@ Loaded by app_runtime with exec(..., globals()) to preserve the original single-
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
-def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None):
+def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None, open_=None):
     """
     Computes all long and short signals.
     spy_close:    optional SPY Close series for relative strength calculation
@@ -62,12 +62,22 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
     high_252 = float(high.rolling(252).max().iloc[-1]) if len(high) >= 50 else float(high.max())
 
     # ── Weekly trend ──────────────────────────────────────────────────────────
-    weekly_ema20 = to_float(ta.trend.ema_indicator(close, window=20).iloc[-1])
-    weekly_ema50 = to_float(ta.trend.ema_indicator(close, window=50).iloc[-1])
+    weekly_trend_ok = False
+    weekly_trend_breakout = False
+    try:
+        weekly_close = close.dropna().resample("W-FRI").last().dropna()
+        if len(weekly_close) >= 12:
+            weekly_ema10 = to_float(ta.trend.ema_indicator(weekly_close, window=10).iloc[-1])
+            weekly_ema30 = to_float(ta.trend.ema_indicator(weekly_close, window=30).iloc[-1]) if len(weekly_close) >= 30 else weekly_ema10
+            weekly_trend_ok = (p > weekly_ema10) and (weekly_ema10 >= weekly_ema30)
+            weekly_trend_breakout = (p > weekly_ema10) and (vr >= 1.8)
+    except Exception:
+        weekly_ema20 = to_float(ta.trend.ema_indicator(close, window=20).iloc[-1])
+        weekly_ema50 = to_float(ta.trend.ema_indicator(close, window=50).iloc[-1])
+        weekly_trend_ok = (p > weekly_ema20) and (weekly_ema20 > weekly_ema50)
+        weekly_trend_breakout = (p > weekly_ema20) and (vr >= 1.8)
     # Standard: price > MA20 > MA60 (healthy uptrend)
-    weekly_trend_ok = (p > weekly_ema20) and (weekly_ema20 > weekly_ema50)
     # Relaxed: price just broke above MA20 on high volume (early breakout — MA60 can lag)
-    weekly_trend_breakout = (p > weekly_ema20) and (vr >= 1.8)
 
     # ── Golden cross ──────────────────────────────────────────────────────────
     gc_now     = (e50 > e200) if e200 > 0 else False
@@ -85,7 +95,14 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
     )
 
     # ── Bullish candlestick patterns ──────────────────────────────────────────
-    o_last  = float(close.iloc[-2])   # use prev close as proxy for open
+    if open_ is not None:
+        try:
+            open_s = open_.reindex(close.index).ffill().dropna()
+        except Exception:
+            open_s = open_.ffill().dropna()
+    else:
+        open_s = pd.Series(dtype=float)
+    o_last  = float(open_s.iloc[-1]) if len(open_s) >= 1 else float(close.iloc[-2])
     c_last  = float(close.iloc[-1])
     h_last  = float(high.iloc[-1])
     l_last  = float(low.iloc[-1])
@@ -96,7 +113,7 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
     # Hammer: small body, long lower wick, at or near support
     hammer = (lower_wick >= 2 * body) and (c_last >= o_last) and (body > 0)
     # Bullish engulfing: today's body fully engulfs yesterday's
-    o_prev = float(close.iloc[-3])
+    o_prev = float(open_s.iloc[-2]) if len(open_s) >= 2 else float(close.iloc[-3])
     c_prev = float(close.iloc[-2])
     bull_engulf = (c_last > o_last) and (c_prev < o_prev) and \
                   (c_last > o_prev) and (o_last < c_prev)

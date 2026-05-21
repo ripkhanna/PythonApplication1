@@ -15,7 +15,7 @@ def render_help(ctx: dict) -> None:
         st.markdown("""
 ### Latest build — v13 Accuracy Gate
 
-#### 🟦 v13.98 Status banner fixes for Movers + stale tab messages
+#### 🟦 v14.00 Status banner fixes for Movers + stale tab messages
 The top banner now updates correctly when **Refresh movers** is clicked. Movers writes a running message while it fetches data, then writes a final **Done** or **No rows returned** message when the process finishes. Completed/error messages now clear their tab context, so old messages do not block the next tab/button action and do not remain stale when you move around the app.
 
 #### 🟦 v16.7.12 Immediate button status + auto-clear
@@ -34,7 +34,7 @@ The top market radio is now the single source of truth for market-aware tabs. Pr
 #### 🟦 v16.7.7 Visible running status
 The app now shows a short status message above the tabs instead of a custom spinning indicator. During scans you should see messages such as **Fetch: Fetching SGX stock universe**, **Analyze: Downloading prices and computing signals**, and **Render: Applying selected strategy and preparing grids**. Pre-Market, Movers, Breakouts, Earnings and Swing Picks also show short inline status messages while they fetch data.
 
-#### 🧭 Professional tab layout — v13.98
+#### 🧭 Professional tab layout — v14.00
 Tabs are now ordered by the way a trader normally works during the day:
 
 ```text
@@ -73,7 +73,7 @@ New columns added to Long Setups / Swing Picks:
 | **Trigger** | Safer follow-through condition before buying an explosive event mover |
 
 
-#### 🧪 Test Cases tab restored — v13.98
+#### 🧪 Test Cases tab restored — v14.00
 The **Test Cases** tab is now included again in the professional layout as tab **⑱**.
 Use it after deployment to validate key scenarios without changing live scan results:
 - Strategy dropdown scenarios: Strict, Balanced, Discovery, Support Entry, Premarket Momentum, High Volume, High Conviction, PSM.

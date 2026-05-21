@@ -1,5 +1,5 @@
 """
-Swing Scanner v13.98 — Bayesian Ensemble
+Swing Scanner v14.00 — Bayesian Ensemble
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -16,7 +16,7 @@ v12 add-ons  : options-derived signals — call/put unusual flow, IV term
 Install:
   pip install financedatabase ta streamlit yfinance pandas numpy nsepython requests streamlit-autorefresh
 """
-# v13.98: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
+# v14.00: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
 # NotImplementedError from __annotate__ when @st.cache_data wraps functions
 # with bare unsubscripted generics like `-> tuple`. This `from __future__`
 # downgrades all annotations in this module to strings at parse time,
@@ -44,7 +44,7 @@ import streamlit as st
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v13.98",
+    page_title="Swing Scanner v14.00",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -266,7 +266,7 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v13.98")
+st.title("📈 Swing/Long Term Scanner v14.00")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TOP-OF-PAGE STATUS BANNER
@@ -302,7 +302,7 @@ def _show_top_status(message: str, stage: str = "Working", icon: str = "ℹ️",
             st.session_state["_top_status_state"] = state
             st.session_state["_top_status_updated_at"] = pd.Timestamp.now(tz="Asia/Singapore").strftime("%H:%M:%S SGT")
             st.session_state["_top_status_ts_epoch"] = time.time()
-            # v13.98: completed/failed messages must not keep an old tab context.
+            # v14.00: completed/failed messages must not keep an old tab context.
             # Otherwise a later rerun can either show a stale action or block the
             # next tab from writing a correct status.
             if state in {"done", "error", "idle"}:
@@ -362,7 +362,7 @@ def _top_status_payload_for_render():
     ts = float(st.session_state.get("_top_status_ts_epoch", 0) or 0)
     age = time.time() - ts if ts else 999999
     if state in {"done", "error"} and age > 8:
-        # v13.98: expire completed/error messages cleanly so old tab messages
+        # v14.00: expire completed/error messages cleanly so old tab messages
         # disappear when the user moves around the app.
         try:
             for _k in ("_top_status_context", "_top_status_message", "_top_status_stage", "_top_status_icon"):
@@ -393,7 +393,7 @@ _show_top_status(
     status=_top_payload["status"],
 )
 
-# v13.98: COMPACT SELF-STAMP
+# v14.00: COMPACT SELF-STAMP
 # The build identity (path, mtime, hash, size) is still computed so it can
 # self-prove the running file, but only the short hash and mtime are visible
 # in the caption. The full path and size are tucked into the tooltip — hover
@@ -2226,6 +2226,17 @@ if run:
                 market_sel, max_symbols=max_live_universe,
                 enable_slow_enrichment=enable_slow_universe_enrichment,
             )
+            if "SGX" in str(market_sel).upper():
+                try:
+                    _sgx_native_active = fetch_sgx_market_universe(max_symbols=max(150, int(max_live_universe)))
+                    if _sgx_native_active:
+                        live_tickers = _unique_keep_order(list(_sgx_native_active) + list(live_tickers))
+                        live_source = f"SGX native active feed + {live_source}"
+                except Exception as _sgx_active_e:
+                    try:
+                        _record_app_warning("sgx_native_active_feed", f"{type(_sgx_active_e).__name__}: {_sgx_active_e}")
+                    except Exception:
+                        pass
             # Merge live + curated, then apply combined cap.
             # Do NOT hard-code a priority watchlist here. Activity-based names
             # should enter through the live universe/movers/earnings-gapper feeds,
@@ -2739,4 +2750,3 @@ with tab_breakout:
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_help:
     _safe_render_tab('help', render_help)
-
