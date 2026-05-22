@@ -6,14 +6,43 @@ def render_help(ctx: dict) -> None:
 
     st.markdown("## ❓ Swing Scanner — Complete Guide")
     st.caption(
-        "22 tabs · 8 strategies · US + SGX + India + HK · "
-        "Pro Setups · Range Trader · Breakout Scanner · Bayesian engine · Operator layer · Options signals"
+        "23 tabs - 8 strategies - US + SGX + India + HK - "
+        "7-10% Swing - Pro Setups - Range Trader - Breakout Scanner - Bayesian engine - Operator layer"
     )
 
     # ── What's new ────────────────────────────────────────────────────────────
     with st.expander("🆕 What changed recently", expanded=True):
         st.markdown("""
-### Latest build - v16.9 release cleanup
+### Latest build - v17.0 fast swing workflow
+
+#### New 7-10% Swing tab
+- Added **8 7-10% Swing** after Long Setups. It ranks the latest scan for stocks that have enough upside room, short-term range, reward:risk, volume or support/breakout confirmation, and acceptable extension risk.
+- The tab does **not** run another Yahoo download. It reuses `df_long_master` first, then the visible `df_long` rows if master data is not available.
+- Tiers:
+  - **Tier A - Fresh Entry**: room/range/R:R pass and the stock is not too extended today.
+  - **Tier B - Breakout / Momentum**: active mover or volume breakout that still has room.
+  - **Tier C - Pullback Watch**: support candidate with potential, but better entry or confirmation is needed.
+  - **Avoid / Not Ready**: fails room, range, R:R, extension, or trap filters.
+- UUUU-style rows that bounced strongly from support are kept visible as **Pullback Watch** instead of being hidden.
+
+#### Tab layout refresh
+Tabs now follow the trading workflow:
+
+```text
+Market Map -> Pre-Market -> Movers -> Breakouts -> Earnings -> Event Predictor
+    -> Long Setups -> 7-10% Swing -> Swing Picks -> Pro Setups -> Range Trader
+    -> Short Setups -> Operator Activity -> Trade Desk -> Research/QA -> Help
+```
+
+Help is now the last tab.
+
+#### MA200 and live-mover fixes
+- The scanner now downloads 1 year of daily history during scans so MA200 support can be detected reliably.
+- MA200 Support Entry uses the actual 200-day simple moving average when available, falling back to EMA200 only if needed.
+- Movers and Breakouts merge added/manual tickers with live active tickers for US, SGX, HK, and India so a symbol is not missed just because it was not hardcoded.
+- SGX, HK, and India live tickers keep their native Yahoo suffixes (`.SI`, `.HK`, `.NS`) instead of converting US movers into fake regional tickers.
+
+### Previous build - v16.9 release cleanup
 
 #### Active universe fixes
 - Regional Yahoo movers no longer convert US tickers into fake non-US symbols such as `NVDA.SI`, `TSLA.SI`, or `AAPL.SI`.
@@ -29,14 +58,14 @@ def render_help(ctx: dict) -> None:
 
 #### ⭐ v14.1 Two new tabs: Pro Setups + Range Trader
 
-**㉑ ⭐ Pro Setups** — Professional confluence scoring framework.
+**10 Pro Setups** — Professional confluence scoring framework.
 Reads the scanned results and ranks every actionable stock by a **ProScore** that counts institutional confirmation signals simultaneously:
 `HIGH-ACCURACY` (+3) · `DIP-MA20/MA60` (+2 each) · `VOL-DIP` (+2) · `NR7 coil` (+2) · `Inside Day` (+2) · `BB squeeze` (+2) · `RS>SPY` (+2) · `STOCH BOUNCE` (+2) · `WKLY TREND` (+2).
 Stocks are tiered: 🏆 Elite (score ≥ 20, RR ≥ 4) · 🔥 Tier 1 (score ≥ 16) · ✅ Tier 2 (score ≥ 12).
 Each card shows entry zone, stop loss, Target 1, Target 2, and colour-coded trade levels.
 **Filter controls:** Min tier · Min R:R · Hide chasing · Min Quality Score.
 
-**㉒ 📦 Range Trader** — Scans for stocks oscillating between support and resistance and gives exact trade levels.
+**11 Range Trader** — Scans for stocks oscillating between support and resistance and gives exact trade levels.
 Market follows the **top radio button** (US · SGX · India · HK) — no separate selector needed.
 **Universe options:** Built-in blue chips & ETFs (recommended — these range naturally) · My scanned universe · Custom tickers.
 For each stock it calculates: Support (floor), Resistance (ceiling), Range width%, and current position in channel.
@@ -72,16 +101,17 @@ The top market radio is now the single source of truth for market-aware tabs. Pr
 #### 🟦 v16.7.7 Visible running status
 The app now shows a short status message above the tabs instead of a custom spinning indicator. During scans you should see messages such as **Fetch: Fetching SGX stock universe**, **Analyze: Downloading prices and computing signals**, and **Render: Applying selected strategy and preparing grids**. Pre-Market, Movers, Breakouts, Earnings and Swing Picks also show short inline status messages while they fetch data.
 
-#### 🧭 Professional tab layout — v14.01
+#### 🧭 Professional tab layout — v17.0
 Tabs are now ordered by the way a trader normally works during the day:
 
 ```text
 Market Map → Pre-Market → Movers → Breakouts → Earnings → Event Predictor
-    → Swing Picks → Long/Short Setups → Operator Activity → Trade Desk
-    → Research / Strategy / Accuracy / Test Cases / Diagnostics / Help
+    → Long Setups → 7-10% Swing → Swing Picks → Pro Setups → Range Trader
+    → Short Setups → Operator Activity → Trade Desk
+    → Research / Strategy / Accuracy / Test Cases / Diagnostics → Help
 ```
 
-Premarket, Earnings, and Event Predictor are placed close together so catalyst-driven stocks such as SEDG-style movers are easier to review before checking final Swing Picks. The Test Cases tab is restored near the end for QA before Diagnostics/Help.
+Premarket, Movers, Breakouts, Earnings, and Event Predictor are placed close together so catalyst-driven stocks are reviewed before swing-entry tabs. Help is last.
 
 
 #### 🎯 Accuracy Gate for 5–10% in 5–7 days
@@ -180,11 +210,11 @@ All ticker lists are now defined in a single file (`tabs/universe_data.py`) and 
 5. Review tabs in this professional workflow order:
 
 ```
-① Market Map → ② Pre-Market → ③ Movers → ④ Breakouts
-    → ⑤ Earnings → ⑥ Event Predictor
-    → ⑦ Swing Picks → ⑧ Long Setups / ⑨ Short Setups
-    → ⑩ Operator Activity → ⑪ Trade Desk → ⑬ Stock Analysis
-    → ⑱ Test Cases → ⑲ Diagnostics → ⑳ Help
+1 Market Map → 2 Pre-Market → 3 Movers → 4 Breakouts
+    → 5 Earnings → 6 Event Predictor
+    → 7 Long Setups → 8 7-10% Swing → 9 Swing Picks
+    → 10 Pro Setups → 11 Range Trader → 12 Short Setups
+    → 13 Operator Activity → 14 Trade Desk → 22 Diagnostics → 23 Help
 ```
 
 **Best strategy by time of day:**
@@ -307,7 +337,7 @@ Look for `HC[T+M+V+S+X](5/5)` in the Signals column to confirm all five fired.
     # ── Breakout Scanner ──────────────────────────────────────────────────────
     with st.expander("⭐ Pro Setups & 📦 Range Trader — the two new tabs"):
         st.markdown("""
-### ⭐ Pro Setups tab (㉑)
+### ⭐ Pro Setups tab (10)
 Reads your scan results and re-ranks every actionable stock by **ProScore** — a weighted count of
 institutional confluence signals. Run a scan first, then open Pro Setups to see the ranked trade cards.
 
@@ -332,7 +362,7 @@ institutional confluence signals. Run a scan first, then open Pro Setups to see 
 - **Hide chasing** — removes CHASING/LIMIT-UP flagged stocks
 - **Min Quality Score** — minimum QS threshold
 
-### 📦 Range Trader tab (㉒)
+### 📦 Range Trader tab (11)
 Scans for stocks oscillating between a support floor and a resistance ceiling.
 **Market follows the top radio button** — no separate market selector in this tab.
 
@@ -426,12 +456,11 @@ It does not use the sidebar strategy — it runs its own market-filtered scan.
 Stocks scoring ≥ 40 appear as metric cards above the table showing Price, Chg%, Score, Vol Ratio, and 52W proximity.
 
 ### Market filter note
-Yahoo's predefined screeners (day_gainers, day_losers, most_actives) return **US-listed stocks regardless of region parameter**.
-For SGX, India, and HK scans the mover feed is skipped entirely — results contain only tickers from the selected market's universe.
+Yahoo's predefined screeners can return US-listed stocks regardless of region parameter. The app now keeps only correctly suffixed regional tickers and combines them with the selected market's own universe. SGX also uses the native SGX securities feed and live activity ranking.
         """)
 
     # ── Tab guide ─────────────────────────────────────────────────────────────
-    with st.expander("🧭 Tab guide — all 19 tabs"):
+    with st.expander("🧭 Tab guide — all 23 tabs"):
         st.markdown("""
 | Tab | Purpose |
 |---|---|
@@ -440,6 +469,7 @@ For SGX, India, and HK scans the mover feed is skipped entirely — results cont
 | 🗂️ **Sector Heatmap** | Market direction first — color tiles, green/red sector summary |
 | 📋 **Trade Desk** | Execution: entry zone, stop, target, R/R, position size calculator |
 | 📈 **Long Setups** | Bullish swing candidates — strategy-aware sections and columns |
+| **7-10% Swing** | Fast-swing ranking from the latest scan: Fresh Entry, Breakout/Momentum, Pullback Watch, Avoid |
 | 🎯 **Swing Picks** | Final shortlist — Bayesian + operator + sector + news ranking |
 | 🚀 **Movers/Losers** | Top Gainers, Top Losers, and Volume Leaders across all markets |
 | 🌅 **Pre-Market** | Pre-market gappers and overnight movers before the open |
@@ -463,6 +493,7 @@ For SGX, India, and HK scans the mover feed is skipped entirely — results cont
 🗂️ Sector Heatmap  ← which sectors are leading?
 ⚡ Breakout Scanner ← which stocks are breaking out?
 📈 Long Setups      ← strategy scan results
+7-10% Swing         ← filter for 7-10% short-term potential
 🎯 Swing Picks      ← final shortlist
 ⭐ Pro Setups       ← highest-confidence picks ranked by confluence
 📦 Range Trader     ← range-bound stocks with exact buy/sell levels
@@ -831,9 +862,9 @@ Key packages: `streamlit` · `yfinance` · `pandas` · `numpy` · `ta` ·
 
     st.markdown("---")
     st.caption(
-        "Swing Scanner v15.0 · 22 tabs · 8 strategies · US + SGX + India + HK · "
-        "⭐ Pro Setups · 📦 Range Trader · ⚡ Breakout Scanner · Bayesian engine · "
-        "Operator layer · Options signals · Not financial advice"
+        "Swing Scanner v17.0 - 23 tabs - 8 strategies - US + SGX + India + HK - "
+        "7-10% Swing - Pro Setups - Range Trader - Breakout Scanner - Bayesian engine - "
+        "Operator layer - Not financial advice"
     )
 
 

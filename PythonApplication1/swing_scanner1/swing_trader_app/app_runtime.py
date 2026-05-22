@@ -1820,36 +1820,36 @@ if st.session_state.get("scan_cache_warning"):
 
 
 
-# Professional workflow layout v16.7
-# Market prep and catalyst tabs are intentionally placed together:
-# Pre-Market → Movers/Breakouts → Earnings → Event Predictor.
+# Professional workflow layout v17.0
+# Market prep and catalyst tabs are intentionally placed together.
 st.caption(
-    "Workflow: Market Prep → Catalyst/Event Watch → Swing Setups → Execution → Research/QA"
+    "Workflow: Market Prep -> Catalyst/Event Watch -> Swing Setups -> Execution -> Research/QA"
 )
 
-tab_sectors, tab_premarket, tab_top_movers, tab_breakout, tab_earn, tab_event, tab_swing_picks, tab_long, tab_short, tab_operator, tab_trade_desk, tab_both, tab_stock, tab_strategy, tab_backtest, tab_lt, tab_etf, tab_tests, tab_diag, tab_help, tab_pro_setups, tab_range_trader = st.tabs([
-    "① 🗂️ Market Map",
-    "② 🌅 Pre-Market",
-    "③ 🚀 Movers",
-    "④ ⚡ Breakouts",
-    "⑤ 📅 Earnings",
-    "⑥ 📰 Event Predictor",
-    "⑦ 🎯 Swing Picks",
-    "⑧ 📈 Long Setups",
-    "⑨ 📉 Short Setups",
-    "⑩ 🪤 Operator Activity",
-    "⑪ 📋 Trade Desk",
-    "⑫ 🔄 Side by Side",
-    "⑬ 🔬 Stock Analysis",
-    "⑭ 🧠 Strategy Lab",
-    "⑮ 🧪 Accuracy Lab",
-    "⑯ 🌱 Long Term",
-    "⑰ 📊 ETF Holdings",
-    "⑱ 🧪 Test Cases",
-    "⑲ 🔍 Diagnostics",
-    "⑳ ❓ Help",
-    "㉑ ⭐ Pro Setups",
-    "㉒ 📦 Range Trader",
+tab_sectors, tab_premarket, tab_top_movers, tab_breakout, tab_earn, tab_event, tab_long, tab_swing_710, tab_swing_picks, tab_pro_setups, tab_range_trader, tab_short, tab_operator, tab_trade_desk, tab_both, tab_stock, tab_strategy, tab_backtest, tab_lt, tab_etf, tab_tests, tab_diag, tab_help = st.tabs([
+    "1 Market Map",
+    "2 Pre-Market",
+    "3 Movers",
+    "4 Breakouts",
+    "5 Earnings",
+    "6 Event Predictor",
+    "7 Long Setups",
+    "8 7-10% Swing",
+    "9 Swing Picks",
+    "10 Pro Setups",
+    "11 Range Trader",
+    "12 Short Setups",
+    "13 Operator Activity",
+    "14 Trade Desk",
+    "15 Side by Side",
+    "16 Stock Analysis",
+    "17 Strategy Lab",
+    "18 Accuracy Lab",
+    "19 Long Term",
+    "20 ETF Holdings",
+    "21 Test Cases",
+    "22 Diagnostics",
+    "23 Help",
 ])
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1874,6 +1874,7 @@ from swing_trader_app.tabs.sectors_tab import render_sectors
 from swing_trader_app.tabs.stock_analysis_tab import render_stock_analysis
 from swing_trader_app.tabs.strategy_lab_tab import render_strategy_lab
 from swing_trader_app.tabs.test_cases_tab import render_test_cases
+from swing_trader_app.tabs.swing_710_tab import render_swing_710
 from swing_trader_app.tabs.swing_picks_tab import render_swing_picks
 from swing_trader_app.tabs.trade_desk_tab import render_trade_desk
 from swing_trader_app.tabs.top_movers_tab import render_top_movers
@@ -2618,6 +2619,9 @@ if "last_scan_opt_enabled" in st.session_state:
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_long:
     _safe_render_tab('long', render_long)
+
+with tab_swing_710:
+    _safe_render_tab('swing_710', render_swing_710)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
