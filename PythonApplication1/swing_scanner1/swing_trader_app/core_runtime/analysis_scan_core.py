@@ -483,7 +483,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         try:
             raw = yf.download(
                 chunk if len(chunk) > 1 else chunk[0],
-                period="3mo", interval="1d",  # 3mo is enough for 60d MA + all signals
+                period="1y", interval="1d",  # 1y is needed for MA200 Support Entry detection
                 progress=False, group_by="ticker", threads=True, auto_adjust=True,
             )
             if raw is None or getattr(raw, "empty", True):
@@ -795,7 +795,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     scan_debug["skipped_batch_miss_no_fallback"] += 1
                     _scan_progress(i)
                     continue
-                raw_ind = yf.download(ticker, period="6mo", interval="1d",
+                raw_ind = yf.download(ticker, period="1y", interval="1d",
                                       progress=False, auto_adjust=True)
                 if raw_ind.empty or len(raw_ind) < 60:
                     scan_debug["skipped_history"] += 1
@@ -1533,7 +1533,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             today_pct    = raw.get("today_chg_pct", 0) or 0
             ma20_now     = raw.get("ma20", 0) or 0
             ma60_now     = raw.get("ma60", 0) or 0
-            ma200_now    = raw.get("e200", 0) or 0
+            ma200_now    = raw.get("ma200", 0) or raw.get("e200", 0) or 0
             vwap_now     = raw.get("vwap", 0) or 0
             swing_lo_val = raw.get("last_swing_low", 0) or 0
 

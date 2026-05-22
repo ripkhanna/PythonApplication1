@@ -21,7 +21,7 @@ def _mode_banner(m: str) -> None:
             "📍 **Support Entry mode** — only stocks AT a known support level are shown. "
             "Stocks already up >3% today are filtered out (extended, bad R/R). "
             "**Tier 1 🔵 MA60 dip** = strongest. **Tier 2 🟢 MA20 dip**. "
-            "**Tier 3 🟡 Swing low**. **Tier 4 ⚪ VWAP dip**.  \n"
+            "**Tier 3 🟡 Swing low**. **Tier 4 ⚪ VWAP / MA200 / Near support**.  \n"
             "Stop sits just below support → tight risk, unchanged upside target."
         )
     elif m == "PREMARKET MOMENTUM":
@@ -821,8 +821,11 @@ def render_long(ctx: dict) -> None:
             with st.expander(f"⚪ Tier 4 — VWAP / MA200 / Near Support ({len(tier4)})", expanded=False):
                 st.caption("Holding near VWAP, MA200, or the nearest support area. Lower tier than MA20/MA60, but useful when structure holds.")
                 show_table(tier4, "tier4_support", "Rise Prob")
-        if tier1.empty and tier2.empty and tier3.empty and tier4.empty:
-            st.caption("Showing all Support Entry candidates.")
+            st.markdown("#### MA200 / Near Support")
+            st.caption("Visible by default so MA200 support rows such as UUUU are not missed.")
+            show_table(tier4, "tier4_support_visible", "Rise Prob")
+        with st.expander(f"All Support Entry candidates ({len(df_long)})", expanded=False):
+            st.caption("Use this full list if a ticker is not in Tier 1/2/3. MA200 and wait-pullback rows are included here.")
             show_table(df_long, "support_all_candidates", "Rise Prob")
 
     elif m == "PREMARKET MOMENTUM":

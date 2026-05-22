@@ -255,7 +255,7 @@ for that shortlist only instead of the full universe.
 | 🟣 Tier 4 — MA200 | Near 200-day MA | Long-term support, recovery play |
 | ⚪ Tier 5 — VWAP | Holding above VWAP | Intraday level, weakest |
 
-**Gate:** `today_chg_pct ≤ 5%` — stocks already up >5% are hidden.
+**Gate:** fresh BUY labels require `today_chg_pct ≤ 6%`; support names up to about 8.5% remain visible as WATCH / wait-pullback rows.
 
 ### Premarket Momentum — tiers explained
 | Tier | PM / Live condition | Action |

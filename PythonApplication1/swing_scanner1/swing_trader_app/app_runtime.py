@@ -661,7 +661,7 @@ swing_mode = st.sidebar.selectbox(
         "**Discovery** — wider watchlist for quiet markets. More results, use Trade Desk to filter.\n\n"
         "**Support Entry** ⭐ — shows ONLY stocks sitting AT a known support level "
         "(MA20/MA60/VWAP/swing low) that haven't moved much yet. Best for morning scans. "
-        "Stop is tight (just below support). Stocks already up >3% today are hidden.\n\n"
+        "Stop is tight (just below support). Stocks already up >6% today stay visible as WATCH / wait-pullback rows.\n\n"
         "**Premarket Momentum** 🚀 — shows stocks with +1%–+8% pre-market gain AND "
         "a sound technical trend. Designed for the 15–30 min before market open. "
         "Stocks without pre-market data or with broken technicals are filtered out.\n\n"
@@ -696,7 +696,7 @@ if _sm_upper == "SUPPORT ENTRY":
     st.sidebar.info(
         "📍 **Support Entry mode**\n\n"
         "Shows only stocks AT support (MA20/MA60/VWAP/swing low). "
-        "Stocks already up >3% today are hidden. "
+        "Stocks already up >6% today stay visible as WATCH / wait-pullback rows. "
         "Tier 1 = MA60 dip (strongest). Tier 4 = VWAP dip."
     )
 elif _sm_upper == "PREMARKET MOMENTUM":
@@ -1283,14 +1283,26 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
 
         elif mode == "SUPPORT ENTRY":
             mask = (supp_num > 0) | (~support_tier.isin(["–", "", "nan", "None"]))
-            mask &= (p >= 38) & (today_pct <= 6.0) & not_candidate
+            # Keep near-support names visible even if they already bounced.
+            # They are labelled as watch/pullback candidates instead of hidden
+            # just because the latest daily bar is slightly above the fresh-buy threshold.
+            mask &= (p >= 35) & (today_pct <= 8.5)
             df_long = df_long[mask].copy()
             if not df_long.empty:
                 supp_n_r = supp_num.reindex(df_long.index).fillna(0)
                 p_r      = p.reindex(df_long.index).fillna(0)
+                today_r  = today_pct.reindex(df_long.index).fillna(0)
+                candidate_r = ~not_candidate.reindex(df_long.index).fillna(True)
                 df_long["Action"] = "WATCH – SUPPORT ENTRY"
                 df_long.loc[p_r >= 58, "Action"] = "BUY – SUPPORT ENTRY"
                 df_long.loc[(supp_n_r <= 2) & (p_r >= 60), "Action"] = "BUY – MA60/MA20 SUPPORT"
+                fresh_buy = (today_r <= 6.0) & (~candidate_r)
+                df_long.loc[(today_r > 6.0) | candidate_r, "Action"] = "WATCH â€“ SUPPORT / WAIT PULLBACK"
+                df_long.loc[(p_r >= 58) & fresh_buy, "Action"] = "BUY â€“ SUPPORT ENTRY"
+                df_long.loc[(supp_n_r <= 2) & (p_r >= 60) & fresh_buy, "Action"] = "BUY â€“ MA60/MA20 SUPPORT"
+                df_long.loc[(today_r > 6.0) | candidate_r, "Action"] = "WATCH - SUPPORT / WAIT PULLBACK"
+                df_long.loc[(p_r >= 58) & fresh_buy, "Action"] = "BUY - SUPPORT ENTRY"
+                df_long.loc[(supp_n_r <= 2) & (p_r >= 60) & fresh_buy, "Action"] = "BUY - MA60/MA20 SUPPORT"
                 df_long["Setup Type"] = df_long["Support Tier"].astype(str)
                 df_long = df_long.sort_values(by=["Supp#", "Rise Prob"], ascending=[True, False], kind="stable") if "Supp#" in df_long.columns else df_long
 

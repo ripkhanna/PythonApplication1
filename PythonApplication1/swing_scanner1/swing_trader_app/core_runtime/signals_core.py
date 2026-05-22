@@ -32,6 +32,7 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
     e21  = to_float(ema21.iloc[-1])
     e50  = to_float(ema50.iloc[-1])
     e200 = to_float(ema200.iloc[-1]) if len(close) >= 200 else 0
+    ma200_val = to_float(close.rolling(200).mean().iloc[-1]) if len(close) >= 200 else 0
     rsi0 = to_float(rsi.iloc[-1]);   rsi1 = to_float(rsi.iloc[-2]); rsi2 = to_float(rsi.iloc[-3])
     k0   = to_float(srsi_k.iloc[-1]); k1  = to_float(srsi_k.iloc[-2]); k2 = to_float(srsi_k.iloc[-3])
     d0   = to_float(srsi_d.iloc[-1])
@@ -741,7 +742,7 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
     }
 
     raw = {
-        "p": p, "e8": e8, "e21": e21, "e50": e50, "e200": e200,
+        "p": p, "e8": e8, "e21": e21, "e50": e50, "e200": e200, "ma200": ma200_val,
         "rsi0": rsi0, "rsi1": rsi1, "rsi2": rsi2,
         "k0": k0, "k1": k1, "k2": k2, "d0": d0,
         "ml": ml, "ms": ms, "mh0": mh0, "mh1": mh1, "mh2": mh2,
