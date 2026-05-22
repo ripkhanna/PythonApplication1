@@ -25,6 +25,33 @@ def _parse_score_num(v, default=0.0):
         return default
 
 
+def _live_activity_for_buy(row):
+    """Final BUY gate: avoid promoting flat/no-participation rows.
+
+    Swing Picks can rank quiet support candidates, but a BUY label should need
+    at least one sign that the market is participating today.
+    """
+    today = _parse_score_num(row.get("Today %", 0), 0.0)
+    pm_chg = _parse_score_num(row.get("PM Chg%", 0), 0.0)
+    vol_ratio = _parse_score_num(row.get("Vol Ratio", 0), 0.0)
+    joined = " ".join([
+        str(row.get("Signals", "")),
+        str(row.get("Action", "")),
+        str(row.get("Setup Type", "")),
+        str(row.get("Vol Quality", "")),
+    ]).upper()
+    signal_ok = any(k in joined for k in [
+        "LIVE MOMENTUM", "PM MOMENTUM", "VOL BREAKOUT", "VOLUME BREAKOUT",
+        "POCKET PIVOT", "UNUSUAL VOLUME", "EXTREME VOLUME", "EARNINGS GAP",
+        "PEAD", "OBV ACCUM",
+    ])
+    active = (abs(today) >= 0.25) or (abs(pm_chg) >= 0.50) or (vol_ratio >= 1.15) or signal_ok
+    reason = ""
+    if not active:
+        reason = "No live move/volume today"
+    return active, reason
+
+
 def _sector_tailwind_score(sector_value):
     """Small ranking boost for sectors already showing green momentum.
     Works with sector text or numeric strings and safely returns 0 when unknown."""
@@ -177,7 +204,7 @@ def _make_swing_picks_from_scan(df_long_in: pd.DataFrame, max_candidates: int = 
         # Still return technical shortlist when Yahoo earnings/news fetch fails.
         out = tech_pref[[c for c in [
             "Ticker", "Setup Type", "Entry Quality", "Tradeable Buy", "Quality Score", "Next-Day Score", "Next-Day Rating", "Next-Day Move", "7D Move Est", "Upside to Res", "RR Est", "Rise Prob", "Score", "Operator", "Op Score",
-            "VWAP", "Trap Risk", "Today %", "Price", "Sector", "Action",
+            "VWAP", "Trap Risk", "Today %", "Vol Ratio", "PM Chg%", "Price", "Sector", "Action", "Signals", "Vol Quality",
             "MA60 Stop", "TP1 +10%", "TP2 +15%", "TP3 +20%"
         ] if c in tech_pref.columns]].copy()
         out["Earnings"] = "–"
@@ -197,11 +224,14 @@ def _make_swing_picks_from_scan(df_long_in: pd.DataFrame, max_candidates: int = 
             final_s = _parse_score_num(rr.get("Final Swing Score", 0), 0)
             tradeable_s = str(rr.get("Tradeable Buy", "")).upper() == "YES"
             quality_s = _parse_score_num(rr.get("Quality Score", 0), 0)
+            activity_ok, activity_reason = _live_activity_for_buy(rr)
             if trap_s in ("FALSE BO", "GAP CHASE", "DISTRIB"):
                 return f"⏳ WAIT — {trap_s} risk"
-            if tradeable_s and quality_s >= 9 and "BUY" in entry_s:
+            if not activity_ok and ((tradeable_s and quality_s >= 9) or ("BUY" in entry_s and rise >= 66)):
+                return f"👀 WATCH — {activity_reason}"
+            if tradeable_s and quality_s >= 9 and "BUY" in entry_s and activity_ok:
                 return "✅ BUY / WATCH ENTRY"
-            if "BUY" in entry_s and rise >= 66 and final_s >= 48:
+            if "BUY" in entry_s and rise >= 66 and final_s >= 48 and activity_ok:
                 return "✅ BUY / WATCH ENTRY"
             if rise >= 62 and final_s >= 42:
                 return "👀 WATCH"
@@ -247,6 +277,7 @@ def _make_swing_picks_from_scan(df_long_in: pd.DataFrame, max_candidates: int = 
         final_score = rank_bits["Final Swing Score"]
 
         event_missing = event_v in ("", "–", "nan", "None") or pd.isna(r.get("Verdict", np.nan))
+        activity_ok, activity_reason = _live_activity_for_buy(r)
         strong_technical = (
             (tradeable_s or ("BUY" in entry_s and quality_s >= 9) or rise >= 72) and
             final_score >= 50 and
@@ -259,12 +290,16 @@ def _make_swing_picks_from_scan(df_long_in: pd.DataFrame, max_candidates: int = 
             swing_verdict = "🚫 AVOID — earnings ≤7d"
         elif trap_risk in ("FALSE BO", "GAP CHASE", "DISTRIB"):
             swing_verdict = f"⏳ WAIT — {trap_risk} risk"
-        elif tradeable_s and strong_technical and (event_rank >= 1 or event_missing):
+        elif tradeable_s and strong_technical and activity_ok and (event_rank >= 1 or event_missing):
             swing_verdict = "✅ BUY / WATCH ENTRY"
+        elif strong_technical and not activity_ok and (event_rank >= 1 or event_missing):
+            swing_verdict = f"👀 WATCH — {activity_reason}"
         elif strong_technical and (event_rank >= 1 or event_missing):
             swing_verdict = "👀 WATCH"
-        elif tech_ok and event_rank >= 2 and final_score >= 48:
+        elif tech_ok and event_rank >= 2 and final_score >= 48 and activity_ok:
             swing_verdict = "✅ BUY / WATCH ENTRY"
+        elif tech_ok and event_rank >= 2 and final_score >= 48 and not activity_ok:
+            swing_verdict = f"👀 WATCH — {activity_reason}"
         elif good_watch:
             swing_verdict = "👀 WATCH"
         elif watch_ok and final_score >= 36:
@@ -279,6 +314,7 @@ def _make_swing_picks_from_scan(df_long_in: pd.DataFrame, max_candidates: int = 
         if earnings and earnings != "nan": why_parts.append(f"Earnings {earnings}")
         if news and news != "nan": why_parts.append(f"News {news}")
         if r.get("Orders", "–") not in ("–", "nan", None): why_parts.append(str(r.get("Orders")))
+        if not activity_ok: why_parts.append(activity_reason)
 
         item = r.to_dict()
         item.update(rank_bits)
@@ -306,5 +342,3 @@ def _make_swing_picks_from_scan(df_long_in: pd.DataFrame, max_candidates: int = 
     out["_rank_f"] = out["_swing_rank"].apply(lambda x: x[5])
     out = out.sort_values(["_rank_a", "_rank_b", "_rank_c", "_rank_d", "_rank_e", "_rank_f"], ascending=False)
     return out.drop(columns=[c for c in ["_swing_rank", "_rank_a", "_rank_b", "_rank_c", "_rank_d", "_rank_e", "_rank_f", "_rise", "_quality", "_tradeable", "_score", "_vcol"] if c in out.columns])
-
-

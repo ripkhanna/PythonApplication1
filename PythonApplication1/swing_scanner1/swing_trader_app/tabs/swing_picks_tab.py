@@ -76,7 +76,7 @@ def render_swing_picks(ctx: dict) -> None:
                 "Ticker", "Swing Verdict",
                 "Final Swing Score", "Bayes Score", "Operator Score", "News Score", "Sector Score", "Earnings Risk",
                 "Trap Risk Score", "Setup Type", "Entry Quality", "Rise Prob", "Action",
-                "Operator", "Op Score", "VWAP", "Trap Risk", "Today %", "Price",
+                "Operator", "Op Score", "VWAP", "Trap Risk", "Today %", "Vol Ratio", "PM Chg%", "Price",
                 "Sector", "Earnings", "Days Out", "EPS Trend", "News", "Orders",
                 "Event Score", "Event Verdict", "Why", "Top News",
                 "MA60 Stop", "TP1 +10%", "TP2 +15%", "TP3 +20%"
@@ -92,4 +92,3 @@ def render_swing_picks(ctx: dict) -> None:
                 for label, prefix in [("BUY/WATCH ENTRY", "✅"), ("WATCH", "👀"), ("WAIT", "⏳"), ("AVOID", "🚫")]:
                     tickers_txt = ", ".join(swing_df[swing_df["Swing Verdict"].astype(str).str.startswith(prefix)]["Ticker"].astype(str).tolist()) if "Ticker" in swing_df.columns else ""
                     st.text_area(label, value=tickers_txt or "–", height=70, key=f"swing_copy_{prefix}")
-

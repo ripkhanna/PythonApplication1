@@ -25,6 +25,10 @@ def render_help(ctx: dict) -> None:
   - **Avoid / Not Ready**: fails room, range, R:R, extension, or trap filters.
 - UUUU-style rows that bounced strongly from support are kept visible as **Pullback Watch** instead of being hidden.
 
+#### Swing Picks BUY gate
+- Swing Picks no longer promotes a quiet/flat stock to **BUY / WATCH ENTRY** only because older probability, support, or event scores are high.
+- A BUY label now needs live participation: at least a small daily move, pre-market move, unusual volume, or an explicit momentum/volume signal. Flat names such as `5NF.SI` / `5LY.SI` should fall back to **WATCH** or **WAIT** with **No live move/volume today** in the reason.
+
 #### Tab layout refresh
 Tabs now follow the trading workflow:
 
