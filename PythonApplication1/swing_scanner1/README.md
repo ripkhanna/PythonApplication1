@@ -1,6 +1,6 @@
-# Swing Scanner v14.0 — Patched Build
+# Swing Scanner v15.0 — Patched Build
 
-## What Changed in v14.0 (from v14.00)
+## What Changed in v14.1 (from v14.01)
 
 ### Core Scanner Fixes (`analysis_scan_core.py`)
 
@@ -75,3 +75,7 @@ streamlit run main.py
 - `swing_trader_app/app_runtime.py` — UI orchestration and sidebar
 - `swing_trader_app/tabs/` — tab renderers (scan_results_tabs.py patched)
 - `swing_trader_app/core_runtime/` — scanner engine (analysis_scan_core.py patched)
+
+## v15.0 additions
+- ㉑ ⭐ Pro Setups tab: professional confluence scoring, ranked trade cards
+- ㉒ 📦 Range Trader tab: detects oscillating stocks with exact buy/sell/stop levels

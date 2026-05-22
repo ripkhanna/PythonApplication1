@@ -6,16 +6,42 @@ def render_help(ctx: dict) -> None:
 
     st.markdown("## ❓ Swing Scanner — Complete Guide")
     st.caption(
-        "20 tabs · 8 strategies · US + SGX + India + HK · "
-        "Breakout Scanner · Bayesian engine · Operator layer · Options signals"
+        "22 tabs · 8 strategies · US + SGX + India + HK · "
+        "Pro Setups · Range Trader · Breakout Scanner · Bayesian engine · Operator layer · Options signals"
     )
 
     # ── What's new ────────────────────────────────────────────────────────────
     with st.expander("🆕 What changed recently", expanded=True):
         st.markdown("""
-### Latest build — v13 Accuracy Gate
+### Latest build — v14.1
 
-#### 🟦 v14.00 Status banner fixes for Movers + stale tab messages
+#### ⭐ v14.1 Two new tabs: Pro Setups + Range Trader
+
+**㉑ ⭐ Pro Setups** — Professional confluence scoring framework.
+Reads the scanned results and ranks every actionable stock by a **ProScore** that counts institutional confirmation signals simultaneously:
+`HIGH-ACCURACY` (+3) · `DIP-MA20/MA60` (+2 each) · `VOL-DIP` (+2) · `NR7 coil` (+2) · `Inside Day` (+2) · `BB squeeze` (+2) · `RS>SPY` (+2) · `STOCH BOUNCE` (+2) · `WKLY TREND` (+2).
+Stocks are tiered: 🏆 Elite (score ≥ 20, RR ≥ 4) · 🔥 Tier 1 (score ≥ 16) · ✅ Tier 2 (score ≥ 12).
+Each card shows entry zone, stop loss, Target 1, Target 2, and colour-coded trade levels.
+**Filter controls:** Min tier · Min R:R · Hide chasing · Min Quality Score.
+
+**㉒ 📦 Range Trader** — Scans for stocks oscillating between support and resistance and gives exact trade levels.
+Market follows the **top radio button** (US · SGX · India · HK) — no separate selector needed.
+**Universe options:** Built-in blue chips & ETFs (recommended — these range naturally) · My scanned universe · Custom tickers.
+For each stock it calculates: Support (floor), Resistance (ceiling), Range width%, and current position in channel.
+**Signals:** 🟢 BUY (near floor, RSI < 55) · 🔴 SELL/EXIT (near ceiling, RSI > 45) · 👀 WATCH BUY · ⏳ NEAR SELL · ⏸ MID-RANGE.
+Each card shows Buy at, Sell at, Stop, R:R, and a visual position bar.
+
+#### 🔧 v14.0 Core scanner fixes (SGX + RR gate + Discovery Buy)
+- `is_sgx` / `is_asia_market` flag: SGX and HK stocks now use lighter ATR/vol thresholds (ATR min 1.5% vs 2.8%, vol floor 0.6 vs 1.0, NDS gate 4 vs 8).
+- RR gate fixed: dynamic target from `upside_to_resistance` instead of fixed 6%/8%. Extreme fake RR values (1:60) capped at 1:5.
+- **🔍 Discovery Buy** tier: Rise Prob ≥ 82% stocks that narrowly miss the full gate — shows as `🔍 DISCOVERY BUY` (was `⚠️PROB-NO-GATE`).
+- **⚡ Near-Miss Buy** tier: pullback/continuation setups just below the QS/NDS gate.
+- Pullback volume confirmation: declining volume on dip now gives +2 QS / +1 NDS bonus instead of penalty.
+- HK ticker normalization: `02951.HK` → `2951.HK` auto-corrected in Stock Analysis tab.
+
+### Previous milestones — v13 Accuracy Gate
+
+#### 🟦 v14.01 Status banner fixes for Movers + stale tab messages
 The top banner now updates correctly when **Refresh movers** is clicked. Movers writes a running message while it fetches data, then writes a final **Done** or **No rows returned** message when the process finishes. Completed/error messages now clear their tab context, so old messages do not block the next tab/button action and do not remain stale when you move around the app.
 
 #### 🟦 v16.7.12 Immediate button status + auto-clear
@@ -34,7 +60,7 @@ The top market radio is now the single source of truth for market-aware tabs. Pr
 #### 🟦 v16.7.7 Visible running status
 The app now shows a short status message above the tabs instead of a custom spinning indicator. During scans you should see messages such as **Fetch: Fetching SGX stock universe**, **Analyze: Downloading prices and computing signals**, and **Render: Applying selected strategy and preparing grids**. Pre-Market, Movers, Breakouts, Earnings and Swing Picks also show short inline status messages while they fetch data.
 
-#### 🧭 Professional tab layout — v14.00
+#### 🧭 Professional tab layout — v14.01
 Tabs are now ordered by the way a trader normally works during the day:
 
 ```text
@@ -73,7 +99,7 @@ New columns added to Long Setups / Swing Picks:
 | **Trigger** | Safer follow-through condition before buying an explosive event mover |
 
 
-#### 🧪 Test Cases tab restored — v14.00
+#### 🧪 Test Cases tab restored — v14.01
 The **Test Cases** tab is now included again in the professional layout as tab **⑱**.
 Use it after deployment to validate key scenarios without changing live scan results:
 - Strategy dropdown scenarios: Strict, Balanced, Discovery, Support Entry, Premarket Momentum, High Volume, High Conviction, PSM.
@@ -267,6 +293,64 @@ Look for `HC[T+M+V+S+X](5/5)` in the Signals column to confirm all five fired.
         """)
 
     # ── Breakout Scanner ──────────────────────────────────────────────────────
+    with st.expander("⭐ Pro Setups & 📦 Range Trader — the two new tabs"):
+        st.markdown("""
+### ⭐ Pro Setups tab (㉑)
+Reads your scan results and re-ranks every actionable stock by **ProScore** — a weighted count of
+institutional confluence signals. Run a scan first, then open Pro Setups to see the ranked trade cards.
+
+**ProScore weights:**
+| Signal | Points | Why |
+|---|---|---|
+| `HIGH-ACCURACY` | +3 | Bayesian model confirmed this pattern historically |
+| `DIP-MA20` / `DIP-MA60` | +2 | Price at real support, not random air |
+| `VOL-DIP` | +2 | Volume declining on pullback = institutions NOT distributing |
+| `NR7` / `Inside Day` | +2 | Narrowest range in 7 days = coiled spring |
+| `BB BULL SQ` | +2 | Bollinger Band squeeze = explosive move imminent |
+| `RS>SPY` | +2 | Stock stronger than market = sector tailwind |
+| `STOCH BOUNCE` | +2 | Stochastic from oversold = clean mechanical entry |
+| `WKLY TREND` | +2 | Weekly chart confirmed — never fight the higher timeframe |
+| `CHASING` | −5 | Price already ran — no edge here |
+
+**Tiers:** 🏆 Elite (ProScore ≥ 20 + RR ≥ 4) · 🔥 Tier 1 (≥ 16) · ✅ Tier 2 (≥ 12) · 👀 Tier 3 (others)
+
+**Filter controls:**
+- **Min setup tier** — BUY & Discovery only, or all actionable (includes high-quality WATCH)
+- **Min R:R** — filter by risk-reward (Any / 1:2+ / 1:3+ / 1:4+)
+- **Hide chasing** — removes CHASING/LIMIT-UP flagged stocks
+- **Min Quality Score** — minimum QS threshold
+
+### 📦 Range Trader tab (㉒)
+Scans for stocks oscillating between a support floor and a resistance ceiling.
+**Market follows the top radio button** — no separate market selector in this tab.
+
+**Universe options:**
+- **Full market universe** (default) — all tickers for the selected market, same list the main scanner uses. The slope filter naturally removes trending stocks.
+- **Scanned results only** — only the tickers from your last scan
+- **Custom tickers** — type any tickers directly
+
+**How support/resistance is calculated:**
+1. Rolling 80th/20th percentile of highs/lows over the last 45 bars (always available)
+2. Confirmed by pivot point clustering where pivots exist (2+ pivot highs/lows)
+3. Range width must be 3.5–30% (adjustable); slope must be < 1.5%/day (adjustable)
+
+**Signals:**
+| Signal | Condition | Action |
+|---|---|---|
+| 🟢 BUY | Price within 3% of support + RSI < 55 | Enter long at **Buy at** price |
+| 🔴 SELL / EXIT | Price within 3% of resistance + RSI > 45 | Close long at **Sell at** price |
+| 👀 WATCH BUY | Lower 35% of channel | Monitor — wait for RSI drop |
+| ⏳ NEAR SELL | Upper 65% of channel | Prepare to exit |
+| ⏸ MID-RANGE | Middle of channel | No edge — wait |
+
+**Each card shows:** support, resistance, range width %, visual position bar, Buy at, Sell at, Stop (2.5% below support), R:R.
+
+**Tips:**
+- If 0 results: switch to **Built-in blue chips & ETFs**, increase Max range width % to 40%, set Min touches = 0.
+- RSI and floor/ceiling touches are shown in every card so you can judge quality visually.
+- The position bar shows exactly where price sits in the channel (0% = floor, 100% = ceiling).
+        """)
+
     with st.expander("⚡ Breakout Scanner — unified breakout discovery"):
         st.markdown("""
 The **⚡ Breakout Scanner** is an independent tab that scores every stock across
@@ -339,6 +423,8 @@ For SGX, India, and HK scans the mover feed is skipped entirely — results cont
         st.markdown("""
 | Tab | Purpose |
 |---|---|
+| ⭐ **Pro Setups** | Professional confluence scoring — top picks ranked by ProScore (HIGH-ACCURACY + NR7 + VOL-DIP + RS>SPY etc.) |
+| 📦 **Range Trader** | Range-bound stocks — exact Buy at / Sell at / Stop levels; market follows top radio button |
 | 🗂️ **Sector Heatmap** | Market direction first — color tiles, green/red sector summary |
 | 📋 **Trade Desk** | Execution: entry zone, stop, target, R/R, position size calculator |
 | 📈 **Long Setups** | Bullish swing candidates — strategy-aware sections and columns |
@@ -366,6 +452,8 @@ For SGX, India, and HK scans the mover feed is skipped entirely — results cont
 ⚡ Breakout Scanner ← which stocks are breaking out?
 📈 Long Setups      ← strategy scan results
 🎯 Swing Picks      ← final shortlist
+⭐ Pro Setups       ← highest-confidence picks ranked by confluence
+📦 Range Trader     ← range-bound stocks with exact buy/sell levels
 📋 Trade Desk       ← position sizing and execution
 🔬 Stock Analysis   ← confirm your top 1–3 names
 ```
@@ -731,9 +819,9 @@ Key packages: `streamlit` · `yfinance` · `pandas` · `numpy` · `ta` ·
 
     st.markdown("---")
     st.caption(
-        "Swing Scanner v13 Accuracy Gate · 19 tabs · 8 strategies · US + SGX + India + HK · "
-        "⚡ Breakout Scanner · Bayesian engine · Operator layer · Options signals · "
-        "Not financial advice"
+        "Swing Scanner v15.0 · 22 tabs · 8 strategies · US + SGX + India + HK · "
+        "⭐ Pro Setups · 📦 Range Trader · ⚡ Breakout Scanner · Bayesian engine · "
+        "Operator layer · Options signals · Not financial advice"
     )
 
 
