@@ -469,9 +469,10 @@ def fetch_yahoo_region_movers(region: str, suffix: str = "", max_per_screener: i
                                 .get("result", [{}])[0])
                                 .get("quotes", []) or [])
             for q in quotes:
-                sym = _clean_symbol(q.get("symbol", ""), suffix)
-                if suffix and not str(sym).upper().endswith(str(suffix).upper()):
+                raw_sym = str(q.get("symbol", "") or "").strip().upper()
+                if suffix and not raw_sym.endswith(str(suffix).upper()):
                     continue
+                sym = _clean_symbol(raw_sym, suffix)
                 if sym:
                     out.append(sym)
         except Exception:

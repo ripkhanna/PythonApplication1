@@ -13,6 +13,18 @@ def render_help(ctx: dict) -> None:
     # ── What's new ────────────────────────────────────────────────────────────
     with st.expander("🆕 What changed recently", expanded=True):
         st.markdown("""
+### Latest build - v16.9 release cleanup
+
+#### Active universe fixes
+- Regional Yahoo movers no longer convert US tickers into fake non-US symbols such as `NVDA.SI`, `TSLA.SI`, or `AAPL.SI`.
+- SGX, HK, and India movers are accepted only when Yahoo already returns the correct market suffix (`.SI`, `.HK`, `.NS`).
+- SGX still uses the native SGX securities feed and live activity ranking, so active SGX movers should remain visible after a fresh SGX scan without hard-coding one symbol.
+
+#### Cache and Diagnostics fixes
+- Diagnostics now clears the script-anchored scanner cache folder used by the app.
+- Release zip should not include old `scanner_cache` files or `ui_state.json`; after install, run a fresh scan for the selected market.
+- The scan button reads the current top market radio at click time, preventing stale messages such as **Starting US scan** while SGX is selected.
+
 ### Latest build — v14.1
 
 #### ⭐ v14.1 Two new tabs: Pro Setups + Range Trader

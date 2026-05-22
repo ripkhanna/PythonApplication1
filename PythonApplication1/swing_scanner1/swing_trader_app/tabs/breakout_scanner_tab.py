@@ -45,6 +45,34 @@ YAHOO_SCREENER_IDS = {
 }
 
 
+def _unique_keep_order(items) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items or []:
+        sym = str(item or "").strip().upper()
+        if not sym or sym in seen:
+            continue
+        seen.add(sym)
+        out.append(sym)
+    return out
+
+
+def _live_tickers_for_market(g: dict, market_key: str, max_symbols: int) -> list[str]:
+    """Best-effort live universe seed for non-US breakout scans."""
+    func_name = {
+        "SGX": "fetch_sgx_market_universe",
+        "India": "fetch_nse_market_universe",
+        "Hong Kong": "fetch_hk_market_universe",
+    }.get(market_key)
+    fn = g.get(func_name) if func_name else None
+    if not callable(fn):
+        return []
+    try:
+        return _unique_keep_order(fn(max_symbols=max(int(max_symbols), 250)))
+    except Exception:
+        return []
+
+
 def _f(v) -> float:
     try:
         return float(v)
@@ -445,7 +473,9 @@ def render_breakout_scanner(g: dict) -> None:
     with p4:
         w52_within = st.slider("52W high within %", 1.0, 15.0, 5.0, 0.5, key="bk_52w")
 
-    tickers = get_universe(market_key, universe_id)
+    base_tickers = get_universe(market_key, universe_id)
+    live_tickers = _live_tickers_for_market(g, market_key, int(max_tickers)) if market_key != "US" else []
+    tickers = _unique_keep_order(live_tickers + base_tickers)
     n_scan  = min(len(tickers), max_tickers)
 
     if not tickers:
@@ -455,6 +485,7 @@ def render_breakout_scanner(g: dict) -> None:
     st.caption(
         f"{market_key} | {universe_lbl} | "
         f"{len(tickers)} tickers available | scanning up to {n_scan}"
+        + (f" | live universe first: {len(live_tickers)}" if live_tickers else "")
     )
 
     bc, nc = st.columns([1, 6])
@@ -479,8 +510,9 @@ def render_breakout_scanner(g: dict) -> None:
         _bk_status.info("📡 Fetching US live market movers…")
         mover_frz, mover_items = _get_mover_sets(YAHOO_REGION["US"], 100)
     else:
-        mover_frz   = frozenset()
-        mover_items = tuple()
+        live_movers = live_tickers[:min(len(live_tickers), 100)]
+        mover_frz   = frozenset(live_movers)
+        mover_items = tuple((sym, "Live Mover") for sym in live_movers)
 
     if callable(_top_status) and _top_active:
         _top_status(f"Scanning {n_scan} {market_key} stocks from {universe_lbl}...", stage="Breakouts", icon="⚡")
@@ -620,7 +652,7 @@ Move Score 0-100 combines all three signals:
 | 52W proximity | Within {w52_within}% of 52-week high | 25 |
 | Price breakout | Price > {breakout_days}-day high | 20 |
 | New 52W High | Price = 52-week high | 10 |
-| Market mover | Yahoo gainers/losers/active | 5 |
+| Market mover | Yahoo movers for US; live universe leaders for SGX / India / HK | 5 |
 | Momentum | Abs daily Chg % | 10 |
 
 Universe source: actual index components (S&P 500, NASDAQ 100, Nifty, Hang Seng) — not a curated watchlist.

@@ -90,6 +90,22 @@ def _tickers_for_market(g: dict, market_key: str) -> list[str]:
     return _unique_keep_order(g.get(key_map.get(market_key, "US_TICKERS"), []))
 
 
+def _live_tickers_for_market(g: dict, market_key: str, max_symbols: int) -> list[str]:
+    """Best-effort live universe seed for non-US movers."""
+    func_name = {
+        "SGX": "fetch_sgx_market_universe",
+        "India": "fetch_nse_market_universe",
+        "Hong Kong": "fetch_hk_market_universe",
+    }.get(market_key)
+    fn = g.get(func_name) if func_name else None
+    if not callable(fn):
+        return []
+    try:
+        return _unique_keep_order(fn(max_symbols=max(int(max_symbols), 250)))
+    except Exception:
+        return []
+
+
 def _fmt_sgt(ts) -> str:
     if ts is None or str(ts).strip() == "":
         return "unknown"
@@ -570,7 +586,9 @@ def render_top_movers(g: dict) -> None:
 
     period = "5d" if interval in ("5m", "15m") else "1mo"
     prepost = market_key == "US"
-    tickers = _tickers_for_market(g, market_key)
+    base_tickers = _tickers_for_market(g, market_key)
+    live_tickers = _live_tickers_for_market(g, market_key, int(mover_count)) if market_key != "US" else []
+    tickers = _unique_keep_order(live_tickers + base_tickers)
 
     # v14.01: shared top banner helpers.  These update the page-level
     # status only when this tab's Refresh button created the movers context.

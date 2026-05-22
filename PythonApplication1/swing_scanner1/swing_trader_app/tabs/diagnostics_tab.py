@@ -467,17 +467,17 @@ def render_diagnostics(ctx: dict) -> None:
                     "or the scan has not been rerun since the active-universe patch."
                 )
                 try:
-                    _probe_live, _probe_src = fetch_live_market_universe(_diag_market_now, max_symbols=50)
+                    _probe_live, _probe_src = fetch_live_market_universe(_diag_market_now, max_symbols=150)
                     _probe_upper = [t.upper() for t in (_probe_live or [])]
                     if "PCT.SI" in _probe_upper:
                         st.info(
                             f"Live SGX universe probe now finds **PCT.SI** at position "
-                            f"**{_probe_upper.index('PCT.SI') + 1}** in the first 50. "
+                            f"**{_probe_upper.index('PCT.SI') + 1}** in the first 150. "
                             "Click **Scan SGX Stocks** to refresh the scanned ticker list."
                         )
                     elif _probe_live:
                         st.error(
-                            "Live SGX universe probe also did not return PCT.SI in the first 50. "
+                            "Live SGX universe probe also did not return PCT.SI in the first 150. "
                             f"Probe source: {_probe_src}"
                         )
                 except Exception as _pct_probe_e:
@@ -491,7 +491,7 @@ def render_diagnostics(ctx: dict) -> None:
             f"All scanned tickers for {_diag_market_now} (comma-separated)",
             value=_diag_tickers_csv,
             height=120,
-            key=f"diag_scanned_tickers_csv_{_diag_market_now}_{len(_diag_tickers)}_{'PCT.SI' in _diag_upper}",
+            key=f"diag_scanned_tickers_csv_{_diag_market_now}_{len(_diag_tickers)}_{len(_always_now)}",
             disabled=True,
         )
 

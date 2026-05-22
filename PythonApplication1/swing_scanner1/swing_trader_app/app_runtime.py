@@ -346,6 +346,64 @@ def _set_top_status_for_next_run(message: str, stage: str = "Working", icon: str
     except Exception:
         pass
 
+def _market_status_token(market_value: str) -> str:
+    """Stable short market name for scan status/session guards."""
+    m = str(market_value or "")
+    if "SGX" in m:
+        return "SGX"
+    if "India" in m:
+        return "India"
+    if "HK" in m:
+        return "HK"
+    return "US"
+
+def _set_scan_start_status_for_selected_market(*_ignored_args):
+    """Button callback: read selected market at click time, not render time."""
+    try:
+        m = st.session_state.get("market_selector", "US")
+        _set_top_status_for_next_run(
+            f"Starting {m} scan - preparing universe...",
+            stage="Scan",
+            icon="SCAN",
+            status="running",
+        )
+        st.session_state["_top_status_market"] = _market_status_token(m)
+    except Exception:
+        pass
+
+def _clear_stale_scan_status_for_market(current_market: str):
+    """Clear old running scan banners that belong to another market."""
+    try:
+        current_token = _market_status_token(current_market)
+        status_market = st.session_state.get("_top_status_market", "")
+        state = st.session_state.get("_top_status_state", "")
+        context = st.session_state.get("_top_status_context", "")
+        if not status_market:
+            msg = str(st.session_state.get("_top_status_message", ""))
+            if "SGX" in msg:
+                status_market = "SGX"
+            elif "India" in msg:
+                status_market = "India"
+            elif "HK" in msg:
+                status_market = "HK"
+            elif "US" in msg:
+                status_market = "US"
+        if state == "running" and context == "scan" and status_market and status_market != current_token:
+            for k in (
+                "_top_status_context", "_top_status_message", "_top_status_stage",
+                "_top_status_icon", "_top_status_market",
+            ):
+                st.session_state.pop(k, None)
+            st.session_state["_top_status_state"] = "idle"
+            _show_top_status(
+                f"Ready for {current_market} scan.",
+                stage="Idle",
+                icon="OK",
+                status="idle",
+            )
+    except Exception:
+        pass
+
 # Backward-compatible alias used by older call sites. It shows a flashing running banner.
 def _show_top_spinner(message: str):
     _show_top_status(message, stage="Working", icon="🔄", status="running")
@@ -1065,6 +1123,8 @@ market_sel = st.radio(
     "🌍 Market", ["🇺🇸 US", "🇸🇬 SGX", "🇮🇳 India", "🇭🇰 HK"],
     horizontal=True, key="market_selector", label_visibility="collapsed"
 )
+market_sel = st.session_state.get("market_selector", market_sel)
+_clear_stale_scan_status_for_market(market_sel)
 
 # ── Single source of truth: universe_data.get_tickers_for_market() ──────────
 # All ticker lists are now merged (existing curated + index components) and
@@ -2087,7 +2147,7 @@ with col_btn:
     _manual_scan = st.button(
         f"🚀 Scan {market_sel} Stocks",
         type="primary",
-        on_click=_set_top_status_for_next_run,
+        on_click=_set_scan_start_status_for_selected_market,
         args=(f"Starting {market_sel} scan — preparing universe...", "Scan", "🔎", "running"),
     )
 _strategy_auto_refresh = bool(st.session_state.pop("_force_strategy_rescan", False))
@@ -2720,7 +2780,7 @@ with tab_lt:
     _safe_render_tab('lt', render_long_term)
 
 
-CACHE_DIR = Path("scanner_cache")
+CACHE_DIR = SCAN_CACHE_DIR
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB — TEST CASES / QA
