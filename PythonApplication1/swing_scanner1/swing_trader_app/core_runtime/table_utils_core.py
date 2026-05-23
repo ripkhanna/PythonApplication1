@@ -577,14 +577,14 @@ def show_table(df, label, prob_col="Rise Prob"):
     # decide quickly. This is display-only and does not affect strategy logic.
     if prob_col == "Fall Prob":
         wanted = [
-            "Rank", "Ticker", "Action", "View", "Entry Quality", "Setup Type", "Today %", "Fall Prob",
+            "Rank", "Ticker", "Action", "View", "Entry Quality", "Setup Type", "Today %", "5D %", "20D %", "Fall Prob",
             "Operator", "VWAP", "Trap Risk", "Price", "Cover Stop", "Target 1:1", "Target 1:2",
             "Sector", "Score", "Op Score",
         ]
     else:
         wanted = [
             "Rank", "Ticker", "Action", "View", "Buy Condition",
-            "Entry Quality", "Tradeable Buy", "Trade Tier", "Quality Score", "Next-Day Score", "Next-Day Rating", "Next-Day Move", "7D Move Est", "Upside to Res", "RR Est", "Setup Type", "Today %", "Rise Prob", "Swing Rank Score", "Pro Score", "PI Proxy", "Tier", "Why Buy",
+            "Entry Quality", "Tradeable Buy", "Trade Tier", "Explosion Score", "Explosion Tier", "Explosion Why", "Pre-Mover Score", "Pre-Mover Tier", "Pre-Mover Why", "Quality Score", "Next-Day Score", "Next-Day Rating", "Next-Day Move", "7D Move Est", "Upside to Res", "RR Est", "Setup Type", "Today %", "5D %", "20D %", "Rise Prob", "Swing Rank Score", "Pro Score", "PI Proxy", "Tier", "Why Buy",
             "Operator", "VWAP", "Trap Risk", "Price", "MA60 Stop", "Best Stop",
             "TP1 +10%", "TP2 +15%", "TP3 +20%", "Target Est.", "Hold Est.",
             "Vol Ratio", "ATR%", "Vol Quality", "PSM Quality", "PSS Score", "PSS Label", "Op Score", "Score",
@@ -603,6 +603,8 @@ def show_table(df, label, prob_col="Rise Prob"):
         "Entry Quality": st.column_config.TextColumn("Entry",         width=70),
         "Setup Type":    st.column_config.TextColumn("Setup",         width=90),
         "Today %":       st.column_config.TextColumn("Today%",        width=58),
+        "5D %":          st.column_config.TextColumn("5D%",           width=58),
+        "20D %":         st.column_config.TextColumn("20D%",          width=58),
         "Rise Prob":     st.column_config.TextColumn("Rise%",         width=55),
         "Next-Day Score": st.column_config.NumberColumn("N-Day",       width=60),
         "Next-Day Rating": st.column_config.TextColumn("Next-Day",     width=130),
@@ -610,6 +612,12 @@ def show_table(df, label, prob_col="Rise Prob"):
         "Quality Score": st.column_config.NumberColumn("Quality",      width=65),
         "Tradeable Buy": st.column_config.TextColumn("Tradeable",      width=75),
         "Trade Tier":    st.column_config.TextColumn("Tier",           width=80),
+        "Explosion Score": st.column_config.NumberColumn("Explode",     width=75),
+        "Explosion Tier": st.column_config.TextColumn("Explode Tier",   width=150),
+        "Explosion Why": st.column_config.TextColumn("Explode Why",     width=280),
+        "Pre-Mover Score": st.column_config.NumberColumn("PreMove",     width=75),
+        "Pre-Mover Tier": st.column_config.TextColumn("PreMove Tier",   width=130),
+        "Pre-Mover Why": st.column_config.TextColumn("PreMove Why",     width=260),
         "7D Move Est": st.column_config.TextColumn("7D Move",          width=70),
         "Upside to Res": st.column_config.TextColumn("Room",           width=60),
         "RR Est": st.column_config.TextColumn("R:R",                   width=55),

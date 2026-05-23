@@ -1826,30 +1826,31 @@ st.caption(
     "Workflow: Market Prep -> Catalyst/Event Watch -> Swing Setups -> Execution -> Research/QA"
 )
 
-tab_sectors, tab_premarket, tab_top_movers, tab_breakout, tab_earn, tab_event, tab_long, tab_swing_710, tab_swing_picks, tab_pro_setups, tab_range_trader, tab_short, tab_operator, tab_trade_desk, tab_both, tab_stock, tab_strategy, tab_backtest, tab_lt, tab_etf, tab_tests, tab_diag, tab_help = st.tabs([
+tab_sectors, tab_premarket, tab_top_movers, tab_pre_movers, tab_breakout, tab_earn, tab_event, tab_long, tab_swing_710, tab_swing_picks, tab_pro_setups, tab_range_trader, tab_short, tab_operator, tab_trade_desk, tab_both, tab_stock, tab_strategy, tab_backtest, tab_lt, tab_etf, tab_tests, tab_diag, tab_help = st.tabs([
     "1 Market Map",
     "2 Pre-Market",
     "3 Movers",
-    "4 Breakouts",
-    "5 Earnings",
-    "6 Event Predictor",
-    "7 Long Setups",
-    "8 7-10% Swing",
-    "9 Swing Picks",
-    "10 Pro Setups",
-    "11 Range Trader",
-    "12 Short Setups",
-    "13 Operator Activity",
-    "14 Trade Desk",
-    "15 Side by Side",
-    "16 Stock Analysis",
-    "17 Strategy Lab",
-    "18 Accuracy Lab",
-    "19 Long Term",
-    "20 ETF Holdings",
-    "21 Test Cases",
-    "22 Diagnostics",
-    "23 Help",
+    "4 Pre-Movers",
+    "5 Breakouts",
+    "6 Earnings",
+    "7 Event Predictor",
+    "8 Long Setups",
+    "9 7-10% Swing",
+    "10 Swing Picks",
+    "11 Pro Setups",
+    "12 Range Trader",
+    "13 Short Setups",
+    "14 Operator Activity",
+    "15 Trade Desk",
+    "16 Side by Side",
+    "17 Stock Analysis",
+    "18 Strategy Lab",
+    "19 Accuracy Lab",
+    "20 Long Term",
+    "21 ETF Holdings",
+    "22 Test Cases",
+    "23 Diagnostics",
+    "24 Help",
 ])
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1878,6 +1879,7 @@ from swing_trader_app.tabs.swing_710_tab import render_swing_710
 from swing_trader_app.tabs.swing_picks_tab import render_swing_picks
 from swing_trader_app.tabs.trade_desk_tab import render_trade_desk
 from swing_trader_app.tabs.top_movers_tab import render_top_movers
+from swing_trader_app.tabs.pre_movers_tab import render_pre_movers
 from swing_trader_app.tabs.premarket_tab import render_premarket
 from swing_trader_app.tabs.breakout_scanner_tab import render_breakout_scanner
 from swing_trader_app.tabs.pro_setups_tab     import render_pro_setups
@@ -2676,6 +2678,9 @@ with tab_swing_picks:
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_top_movers:
     _safe_render_tab('top_movers', render_top_movers)
+
+with tab_pre_movers:
+    _safe_render_tab('pre_movers', render_pre_movers)
 
 with tab_premarket:
     _safe_render_tab('premarket', render_premarket)

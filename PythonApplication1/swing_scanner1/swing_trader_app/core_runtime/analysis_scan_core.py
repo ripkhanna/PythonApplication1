@@ -1427,6 +1427,273 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             if atr_pct_live > 12.0 and not post_earnings_gap: quality_score -= 3
             if is_biotech and not post_earnings_gap and operator_score < 5: quality_score -= 3
 
+            # ── Pre-Mover score: designed for "tomorrow's movers" ─────────────
+            # Long Setups can include good quality stocks that are simply slow.
+            # This score is stricter: it wants compression + enough ATR + quiet
+            # accumulation/relative strength before the big daily % move.
+            _pss_breakdown = raw.get("pss_breakdown", {}) or {}
+            _compression_signals = [
+                raw.get("nr7_setup", False),
+                raw.get("inside_day", False),
+                raw.get("tight_flag", False),
+                raw.get("cup_handle", False),
+                raw.get("bb_squeeze", False),
+                raw.get("bb_very_tight", False),
+                long_sig.get("vcp_tightness", False),
+                _pss_breakdown.get("VDU", False),
+                _pss_breakdown.get("FlatBase", False),
+            ]
+            _compression_count = sum(1 for _x in _compression_signals if _x)
+            _compression_ok = _compression_count >= 1
+
+            _accumulation_count = sum(1 for _x in [
+                operator_score >= 2,
+                long_sig.get("obv_rising", False),
+                raw.get("above_vwap", False),
+                raw.get("vol_declining", False),
+                _pss_breakdown.get("InstAcc", False),
+                _pss_breakdown.get("Absorption", False),
+                long_sig.get("pocket_pivot", False),
+            ] if _x)
+            _accumulation_ok = _accumulation_count >= 1
+
+            _near_trigger = bool(
+                (raw.get("h10", 0) and p_raw >= float(raw.get("h10", 0)) * 0.970) or
+                (_swing_hi and p_raw >= float(_swing_hi) * 0.970) or
+                (raw.get("ma20", 0) and p_raw >= float(raw.get("ma20", 0)) * 0.985)
+            )
+            _relative_ok = bool(
+                long_sig.get("rel_strength", False) or
+                long_sig.get("rs_momentum", False) or
+                long_sig.get("sector_leader", False) or
+                _pss_breakdown.get("MktWeakRS", False)
+            )
+            _catalyst_ok = bool(
+                pre_earnings_run or
+                _pss_breakdown.get("PEAD-Stab", False) or
+                _pss_breakdown.get("Absorption", False) or
+                _pss_breakdown.get("CatalystNews", False)
+            )
+            _quiet_before_move = bool(-1.5 <= _today_chg_abs <= 2.5)
+            _not_yet_moved = bool(_today_chg_abs <= 3.5)
+            _pre_volatility_ok = bool((atr_pct_live >= (1.6 if is_asia_market else 2.8)) and expected_7d_move >= (4.5 if is_asia_market else 6.0))
+
+            pre_mover_score = 0
+            if core_long_trend: pre_mover_score += 10
+            if raw.get("above_ma60", False): pre_mover_score += 5
+            pre_mover_score += min(_compression_count, 3) * 10
+            pre_mover_score += min(_accumulation_count, 3) * 7
+            if _near_trigger: pre_mover_score += 12
+            if _relative_ok: pre_mover_score += 10
+            if _catalyst_ok: pre_mover_score += 8
+            if _quiet_before_move: pre_mover_score += 10
+            elif _today_chg_abs > 3.5: pre_mover_score -= 18
+            elif _today_chg_abs < -3.0: pre_mover_score -= 8
+            if _pre_volatility_ok: pre_mover_score += 12
+            else: pre_mover_score -= 16
+            if volume_confirmed and _not_yet_moved: pre_mover_score += 5
+            if major_trap_risk: pre_mover_score -= 20
+            if is_slow and not _catalyst_ok: pre_mover_score -= 10
+            if is_etf: pre_mover_score -= 12
+            if rsi_now > 74: pre_mover_score -= 8
+            if _today_chg_abs > 6.0 and not post_earnings_gap: pre_mover_score -= 15
+            pre_mover_score = int(max(0, min(100, pre_mover_score)))
+
+            # Calibration: quiet compression is useful only when close to a
+            # trigger. This prevents large/steady names from scoring 80+ while
+            # sitting 8-12% below their 10d/swing breakout area on weak volume.
+            if not _near_trigger:
+                pre_mover_score = min(pre_mover_score, 58)
+            if not _compression_ok:
+                pre_mover_score = min(pre_mover_score, 52)
+            if not _accumulation_ok:
+                pre_mover_score = min(pre_mover_score, 56)
+            if vr < (0.85 if is_asia_market else 1.0) and not _catalyst_ok and not _options_bullish:
+                pre_mover_score = min(pre_mover_score, 62)
+            if _today_chg_abs < -1.5 and not raw.get("failed_breakdown", False):
+                pre_mover_score = min(pre_mover_score, 60)
+
+            pre_mover_ready = bool(
+                pre_mover_score >= 70 and _compression_ok and _accumulation_ok
+                and _near_trigger and _pre_volatility_ok and _not_yet_moved
+                and not major_trap_risk
+            )
+            pre_mover_watch = bool(
+                pre_mover_score >= 55 and _compression_ok and _pre_volatility_ok
+                and _not_yet_moved and not major_trap_risk
+            )
+            if pre_mover_ready:
+                pre_mover_tier = "A - PRE-MOVER READY"
+            elif pre_mover_watch:
+                pre_mover_tier = "B - COIL WATCH"
+            elif pre_mover_score >= 40 and _not_yet_moved:
+                pre_mover_tier = "C - EARLY WATCH"
+            elif _today_chg_abs > 3.5:
+                pre_mover_tier = "MOVED ALREADY"
+            else:
+                pre_mover_tier = "SLOW / NOT READY"
+
+            _pm_reasons = []
+            if _compression_ok: _pm_reasons.append(f"compression x{_compression_count}")
+            if _accumulation_ok: _pm_reasons.append(f"accumulation x{_accumulation_count}")
+            if _near_trigger: _pm_reasons.append("near trigger")
+            if _relative_ok: _pm_reasons.append("relative strength")
+            if _catalyst_ok: _pm_reasons.append("catalyst/absorption")
+            if _quiet_before_move: _pm_reasons.append("quiet before move")
+            if not _pre_volatility_ok: _pm_reasons.append("low ATR/move potential")
+            if _today_chg_abs > 3.5: _pm_reasons.append("already moved today")
+            if is_slow and not _catalyst_ok: _pm_reasons.append("slow sector")
+            pre_mover_why = " | ".join(_pm_reasons[:6]) if _pm_reasons else "quality setup, but no pre-mover evidence"
+
+            # ── Explosion score: style early watch ───────────────────────────
+            # Separate from normal pre-movers. This looks for names that can
+            # realistically jump 10-20% when the trigger arrives: high ATR,
+            # smaller float/short interest, catalyst/options activity, and a
+            # coiled chart before the big daily move.
+            _short_pct_val = float(short_pct or 0.0)
+            _float_val = float(float_shares or 0.0)
+            _float_small = bool(_float_val > 0 and _float_val <= 120_000_000)
+            _float_mid = bool(_float_val > 0 and _float_val <= 300_000_000)
+            _short_squeeze_fuel = bool(_short_pct_val >= 0.10 or squeeze_flag)
+            try:
+                _recent_5d_pct = float((close.iloc[-1] / close.iloc[-6] - 1.0) * 100.0) if len(close) >= 6 else 0.0
+            except Exception:
+                _recent_5d_pct = 0.0
+            try:
+                _recent_20d_pct = float((close.iloc[-1] / close.iloc[-21] - 1.0) * 100.0) if len(close) >= 21 else 0.0
+            except Exception:
+                _recent_20d_pct = 0.0
+            _recent_run_extended = bool((_recent_5d_pct >= 25.0) or (_recent_20d_pct >= 50.0))
+            _options_bullish = bool(
+                opt_long.get("opt_unusual_call_flow")
+                or opt_long.get("opt_call_skew_bullish")
+                or opt_long.get("opt_pc_volume_low")
+            )
+            _pss_score_val = int(raw.get("pss_score", 0) or 0)
+            _explosive_breakout_trigger = bool(
+                (raw.get("h10", 0) and p_raw >= float(raw.get("h10", 0)) * 0.940) or
+                (_swing_hi and p_raw >= float(_swing_hi) * 0.940)
+            )
+            _pss_explosive_fuel = bool(
+                _pss_breakdown.get("PEAD-Up", False)
+                or _pss_breakdown.get("PEAD-Stab", False)
+                or _pss_breakdown.get("SqzProxy", False)
+                or _pss_breakdown.get("Absorption", False)
+                or _pss_breakdown.get("CatalystNews", False)
+            )
+            _style_explosive_fuel = bool(
+                _short_squeeze_fuel or _float_mid or _options_bullish or _pss_explosive_fuel
+            )
+            _explosive_vol_ok = bool(atr_pct_live >= (2.2 if is_asia_market else 4.0) and expected_7d_move >= (5.5 if is_asia_market else 8.0))
+            _explosive_catalyst = bool(_catalyst_ok or _options_bullish or pre_earnings_run or _pss_explosive_fuel)
+            _explosive_structure = bool(_compression_ok or _explosive_breakout_trigger or raw.get("failed_breakdown", False) or raw.get("tight_flag", False))
+            _explosive_flow = bool(_accumulation_ok or operator_score >= 3 or long_sig.get("pocket_pivot", False) or long_sig.get("obv_rising", False))
+
+            explosion_score = 0
+            if atr_pct_live >= 7.0: explosion_score += 24
+            elif atr_pct_live >= 5.0: explosion_score += 18
+            elif atr_pct_live >= (2.2 if is_asia_market else 4.0): explosion_score += 12
+            else: explosion_score -= 18
+            if expected_7d_move >= 12.0: explosion_score += 12
+            elif expected_7d_move >= 8.0: explosion_score += 8
+            if _short_pct_val >= 0.18: explosion_score += 16
+            elif _short_pct_val >= 0.10: explosion_score += 10
+            elif _short_pct_val >= 0.06: explosion_score += 5
+            if _float_small: explosion_score += 12
+            elif _float_mid: explosion_score += 6
+            if _compression_ok: explosion_score += 10
+            if _accumulation_ok: explosion_score += 10
+            if _near_trigger: explosion_score += 8
+            if _relative_ok: explosion_score += 8
+            if _explosive_catalyst: explosion_score += 12
+            if _options_bullish: explosion_score += 10
+            if p_raw <= 25 and atr_pct_live >= 4.0 and not is_etf: explosion_score += 4
+            if _quiet_before_move: explosion_score += 8
+            elif _today_chg_abs > 3.5: explosion_score -= 18
+            if _today_chg_abs > 8.0 and not post_earnings_gap: explosion_score -= 25
+            if major_trap_risk: explosion_score -= 22
+            if is_slow and not _explosive_catalyst: explosion_score -= 15
+            if is_etf: explosion_score -= 18
+            if rsi_now > 78: explosion_score -= 10
+            explosion_score = int(max(0, min(100, explosion_score)))
+
+            # Calibration: large-cap / low-volume names can have ATR and generic
+            # PSS structure, but they are not NVTS-style explosive candidates
+            # unless they have true fuel and are near a breakout trigger.
+            if not _style_explosive_fuel:
+                no_fuel_cap = 58
+                if not _explosive_breakout_trigger:
+                    no_fuel_cap -= 8
+                if vr < (0.85 if is_asia_market else 1.0):
+                    no_fuel_cap -= 8
+                if p_raw > 100 and not _short_squeeze_fuel:
+                    no_fuel_cap -= 6
+                if not _compression_ok:
+                    no_fuel_cap -= 6
+                explosion_score = min(explosion_score, max(25, no_fuel_cap))
+            if not _explosive_breakout_trigger and not _explosive_catalyst:
+                trigger_cap = 60
+                if vr < (0.85 if is_asia_market else 1.0):
+                    trigger_cap -= 8
+                explosion_score = min(explosion_score, trigger_cap)
+            if vr < (0.85 if is_asia_market else 1.0) and not _options_bullish and not _pss_explosive_fuel:
+                explosion_score = min(explosion_score, 54)
+            if _float_val >= 1_000_000_000 and not _short_squeeze_fuel and not _options_bullish and not _pss_explosive_fuel:
+                explosion_score = min(explosion_score, 55)
+            if _recent_run_extended and not post_earnings_gap:
+                explosion_score = min(explosion_score, 42)
+                pre_mover_score = min(pre_mover_score, 45)
+            if _today_chg_abs <= -5.0 and not raw.get("failed_breakdown", False):
+                explosion_score = min(explosion_score, 38)
+                pre_mover_score = min(pre_mover_score, 35)
+
+            explosion_ready = bool(
+                explosion_score >= 75
+                and _explosive_vol_ok
+                and _not_yet_moved
+                and _explosive_structure
+                and _explosive_flow
+                and _style_explosive_fuel
+                and (_explosive_breakout_trigger or _explosive_catalyst)
+                and not major_trap_risk
+            )
+            explosion_watch = bool(
+                explosion_score >= 55
+                and _explosive_vol_ok
+                and _not_yet_moved
+                and (_explosive_structure or _explosive_flow)
+                and _style_explosive_fuel
+                and not major_trap_risk
+            )
+            if explosion_ready:
+                explosion_tier = "X - STYLE EXPLOSIVE"
+            elif explosion_watch:
+                explosion_tier = "A - EXPLOSIVE WATCH"
+            elif explosion_score >= 45 and _not_yet_moved:
+                explosion_tier = "B - SPECULATIVE WATCH"
+            elif _recent_run_extended:
+                explosion_tier = "MOVED ALREADY"
+            elif _today_chg_abs > 3.5:
+                explosion_tier = "MOVED ALREADY"
+            else:
+                explosion_tier = "LOW EXPLOSION"
+
+            _expl_reasons = []
+            if _explosive_vol_ok: _expl_reasons.append(f"ATR {atr_pct_live:.1f}% / 7D {expected_7d_move:.1f}%")
+            else: _expl_reasons.append("not enough ATR")
+            if _short_squeeze_fuel: _expl_reasons.append(f"short {(_short_pct_val*100):.1f}%")
+            if _float_small: _expl_reasons.append("small float")
+            elif _float_mid: _expl_reasons.append("mid float")
+            if _explosive_breakout_trigger: _expl_reasons.append("near breakout trigger")
+            if _compression_ok: _expl_reasons.append("coil/compression")
+            if _accumulation_ok: _expl_reasons.append("accumulation")
+            if _explosive_catalyst: _expl_reasons.append("catalyst/options/fuel")
+            if not _style_explosive_fuel: _expl_reasons.append("no squeeze/float/catalyst fuel")
+            if _recent_run_extended: _expl_reasons.append(f"already ran 5D {_recent_5d_pct:.1f}% / 20D {_recent_20d_pct:.1f}%")
+            if _today_chg_abs > 3.5: _expl_reasons.append("already moved today")
+            if is_slow and not _explosive_catalyst: _expl_reasons.append("slow sector")
+            explosion_why = " | ".join(_expl_reasons[:7])
+
             # provisional only; final rating is recomputed after entry-quality gates
             if next_day_score >= 10 and quality_score >= 12:
                 next_day_rating = "🔥 A+ NEXT-DAY BUY"
@@ -2080,6 +2347,10 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 if next_day_score >= 9:         l_tags.append("🔥NEXT-DAY-A+")
                 elif next_day_score >= 7:       l_tags.append("✅NEXT-DAY")
                 elif next_day_score >= 5:       l_tags.append("👀NEXT-DAY-WATCH")
+                if pre_mover_ready:             l_tags.append("⏳PRE-MOVER-A")
+                elif pre_mover_watch:           l_tags.append("⏳PRE-MOVER-B")
+                if explosion_ready:             l_tags.append("💥STYLE-EXPLOSIVE")
+                elif explosion_watch:           l_tags.append("💥EXPLOSIVE-WATCH")
                 l_tags.extend(strat_tags)
                 # ── v15: High win-rate pattern tags ───────────────────────────
                 if raw.get("nr7_setup"):        l_tags.append("📐NR7")
@@ -2140,6 +2411,12 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "Quality Score": int(quality_score),
                     "Tradeable Buy": "YES" if tradeable_buy else "NO",
                     "Trade Tier": trade_tier,
+                    "Pre-Mover Score": pre_mover_score,
+                    "Pre-Mover Tier": pre_mover_tier,
+                    "Pre-Mover Why": pre_mover_why,
+                    "Explosion Score": explosion_score,
+                    "Explosion Tier": explosion_tier,
+                    "Explosion Why": explosion_why,
                     "Next-Day Rating": next_day_rating,
                     "Next-Day Move": f"{expected_7d_move:.1f}%",
                     "7D Move Est": f"{expected_7d_move:.1f}%",
@@ -2153,6 +2430,8 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "VWAP":           "ABOVE" if raw.get("above_vwap") else "BELOW",
                     "Trap Risk":      raw.get("trap_risk_label", "–"),
                     "Today %":        f"{today_chg:+.2f}%",
+                    "5D %":           f"{_recent_5d_pct:+.2f}%",
+                    "20D %":          f"{_recent_20d_pct:+.2f}%",
                     "Price":          f"${p:.2f}",
                     "MA20":           f"${raw['ma20']:.2f}",
                     "MA60 Stop":      f"${l_ma60_stop:.2f}",

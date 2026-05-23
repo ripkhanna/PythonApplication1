@@ -6,8 +6,8 @@ def render_help(ctx: dict) -> None:
 
     st.markdown("## ❓ Swing Scanner — Complete Guide")
     st.caption(
-        "23 tabs - 8 strategies - US + SGX + India + HK - "
-        "7-10% Swing - Pro Setups - Range Trader - Breakout Scanner - Bayesian engine - Operator layer"
+        "24 tabs - 8 strategies - US + SGX + India + HK - "
+        "Pre-Movers - 7-10% Swing - Pro Setups - Range Trader - Breakout Scanner - Bayesian engine"
     )
 
     # ── What's new ────────────────────────────────────────────────────────────
@@ -15,8 +15,15 @@ def render_help(ctx: dict) -> None:
         st.markdown("""
 ### Latest build - v17.0 fast swing workflow
 
+#### New Pre-Movers tab
+- Added **4 Pre-Movers** after Movers. It is built for the goal of finding tomorrow's Movers before the large daily move.
+- A good pre-mover needs compression/coiling, quiet accumulation, enough ATR/move potential, a nearby trigger, and today's move still below the chase zone.
+- The same tab now includes **Style Explosive Watch** rows for higher-risk 10-20% candidates: high ATR, squeeze/float/catalyst fuel, options or PSS evidence, coil/accumulation, and not already moved.
+- Slow quality names such as SCCO/IFF/MGM-style rows should rank lower unless they also show coil, accumulation, volatility, or catalyst evidence.
+- New columns in Long Setups: **Explosion Score**, **Explosion Tier**, **Explosion Why**, **Pre-Mover Score**, **Pre-Mover Tier**, and **Pre-Mover Why**.
+
 #### New 7-10% Swing tab
-- Added **8 7-10% Swing** after Long Setups. It ranks the latest scan for stocks that have enough upside room, short-term range, reward:risk, volume or support/breakout confirmation, and acceptable extension risk.
+- Added **9 7-10% Swing** after Long Setups. It ranks the latest scan for stocks that have enough upside room, short-term range, reward:risk, volume or support/breakout confirmation, and acceptable extension risk.
 - The tab does **not** run another Yahoo download. It reuses `df_long_master` first, then the visible `df_long` rows if master data is not available.
 - Tiers:
   - **Tier A - Fresh Entry**: room/range/R:R pass and the stock is not too extended today.
@@ -33,7 +40,7 @@ def render_help(ctx: dict) -> None:
 Tabs now follow the trading workflow:
 
 ```text
-Market Map -> Pre-Market -> Movers -> Breakouts -> Earnings -> Event Predictor
+Market Map -> Pre-Market -> Movers -> Pre-Movers -> Breakouts -> Earnings -> Event Predictor
     -> Long Setups -> 7-10% Swing -> Swing Picks -> Pro Setups -> Range Trader
     -> Short Setups -> Operator Activity -> Trade Desk -> Research/QA -> Help
 ```
@@ -109,13 +116,13 @@ The app now shows a short status message above the tabs instead of a custom spin
 Tabs are now ordered by the way a trader normally works during the day:
 
 ```text
-Market Map → Pre-Market → Movers → Breakouts → Earnings → Event Predictor
+Market Map → Pre-Market → Movers → Pre-Movers → Breakouts → Earnings → Event Predictor
     → Long Setups → 7-10% Swing → Swing Picks → Pro Setups → Range Trader
     → Short Setups → Operator Activity → Trade Desk
     → Research / Strategy / Accuracy / Test Cases / Diagnostics → Help
 ```
 
-Premarket, Movers, Breakouts, Earnings, and Event Predictor are placed close together so catalyst-driven stocks are reviewed before swing-entry tabs. Help is last.
+Premarket, Movers, Pre-Movers, Breakouts, Earnings, and Event Predictor are placed close together so catalyst-driven stocks are reviewed before swing-entry tabs. Help is last.
 
 
 #### 🎯 Accuracy Gate for 5–10% in 5–7 days
@@ -134,6 +141,12 @@ New columns added to Long Setups / Swing Picks:
 | Column | Meaning |
 |---|---|
 | **Tradeable Buy** | YES only if final 5–7 day swing gate passes |
+| **Explosion Score** | 0-100 score for high-return style explosive potential |
+| **Explosion Tier** | X/A/B/low bucket based on ATR, squeeze fuel, float, catalyst/options, coil, and extension |
+| **Explosion Why** | Short reason such as high ATR, short interest, small float, coil, catalyst/options, or already moved |
+| **Pre-Mover Score** | 0-100 score for tomorrow-mover potential before the big daily move |
+| **Pre-Mover Tier** | A/B/C/slow bucket based on coil, accumulation, ATR, trigger proximity, and extension |
+| **Pre-Mover Why** | Short reason such as compression, accumulation, near trigger, low ATR, or already moved |
 | **Quality Score** | Practical score aligned to 5–10% swing objective |
 | **7D Move Est** | ATR-based estimate of potential 7-day move |
 | **Upside to Res** | Room to nearest overhead resistance |
@@ -146,13 +159,13 @@ New columns added to Long Setups / Swing Picks:
 
 
 #### 🧪 Test Cases tab restored — v14.01
-The **Test Cases** tab is now included again in the professional layout as tab **⑱**.
+The **Test Cases** tab is included near the end of the professional layout as tab **22**.
 Use it after deployment to validate key scenarios without changing live scan results:
 - Strategy dropdown scenarios: Strict, Balanced, Discovery, Support Entry, Premarket Momentum, High Volume, High Conviction, PSM.
 - Column/logic checks: Tradeable Buy gate, Next-Day Rating vs Entry Quality, Event Predictor fallback, Accuracy Lab target-before-stop.
 - Tab smoke checks: imports/renderers for the major tabs.
 
-Recommended deployment QA flow: run a fresh scan, check Swing Picks/Long Setups, then open **⑱ Test Cases** and run the core set before checking Diagnostics.
+Recommended deployment QA flow: run a fresh scan, check Pre-Movers/Swing Picks/Long Setups, then open **22 Test Cases** and run the core set before checking Diagnostics.
 
 #### 🔥 SEDG-Type Event Reversal / Squeeze scanner
 The **Event Predictor** tab now includes a separate watchlist layer for explosive SEDG-style moves.
@@ -214,11 +227,11 @@ All ticker lists are now defined in a single file (`tabs/universe_data.py`) and 
 5. Review tabs in this professional workflow order:
 
 ```
-1 Market Map → 2 Pre-Market → 3 Movers → 4 Breakouts
-    → 5 Earnings → 6 Event Predictor
-    → 7 Long Setups → 8 7-10% Swing → 9 Swing Picks
-    → 10 Pro Setups → 11 Range Trader → 12 Short Setups
-    → 13 Operator Activity → 14 Trade Desk → 22 Diagnostics → 23 Help
+1 Market Map → 2 Pre-Market → 3 Movers → 4 Pre-Movers
+    → 5 Breakouts → 6 Earnings → 7 Event Predictor
+    → 8 Long Setups → 9 7-10% Swing → 10 Swing Picks
+    → 11 Pro Setups → 12 Range Trader → 13 Short Setups
+    → 14 Operator Activity → 15 Trade Desk → 23 Diagnostics → 24 Help
 ```
 
 **Best strategy by time of day:**
@@ -464,7 +477,7 @@ Yahoo's predefined screeners can return US-listed stocks regardless of region pa
         """)
 
     # ── Tab guide ─────────────────────────────────────────────────────────────
-    with st.expander("🧭 Tab guide — all 23 tabs"):
+    with st.expander("🧭 Tab guide — all 24 tabs"):
         st.markdown("""
 | Tab | Purpose |
 |---|---|
@@ -476,6 +489,7 @@ Yahoo's predefined screeners can return US-listed stocks regardless of region pa
 | **7-10% Swing** | Fast-swing ranking from the latest scan: Fresh Entry, Breakout/Momentum, Pullback Watch, Avoid |
 | 🎯 **Swing Picks** | Final shortlist — Bayesian + operator + sector + news ranking |
 | 🚀 **Movers/Losers** | Top Gainers, Top Losers, and Volume Leaders across all markets |
+| **Pre-Movers** | Tomorrow's mover candidates — compression + accumulation + ATR before the daily % move |
 | 🌅 **Pre-Market** | Pre-market gappers and overnight movers before the open |
 | 📉 **Short Setups** | Bearish candidates — best for liquid US names |
 | 🪤 **Operator Activity** | Smart-money footprints across scanned universe |
@@ -494,6 +508,7 @@ Yahoo's predefined screeners can return US-listed stocks regardless of region pa
 ### Recommended daily workflow order
 ```
 🚀 Movers/Losers    ← what's moving right now?
+Pre-Movers          ← what may move next
 🗂️ Sector Heatmap  ← which sectors are leading?
 ⚡ Breakout Scanner ← which stocks are breaking out?
 📈 Long Setups      ← strategy scan results
@@ -866,8 +881,8 @@ Key packages: `streamlit` · `yfinance` · `pandas` · `numpy` · `ta` ·
 
     st.markdown("---")
     st.caption(
-        "Swing Scanner v17.0 - 23 tabs - 8 strategies - US + SGX + India + HK - "
-        "7-10% Swing - Pro Setups - Range Trader - Breakout Scanner - Bayesian engine - "
+        "Swing Scanner v17.1 - 24 tabs - 8 strategies - US + SGX + India + HK - "
+        "Pre-Movers - 7-10% Swing - Pro Setups - Range Trader - Breakout Scanner - Bayesian engine - "
         "Operator layer - Not financial advice"
     )
 
