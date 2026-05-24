@@ -11,7 +11,8 @@ from .scan_results_tabs import render_long, render_short, render_both
 from .sectors_tab import render_sectors
 from .stock_analysis_tab import render_stock_analysis
 from .strategy_lab_tab import render_strategy_lab
+from .best_710_tab import render_best_710
 from .swing_picks_tab import render_swing_picks
 from .trade_desk_tab import render_trade_desk
 
-__all__ = ['render_accuracy_lab', 'render_diagnostics', 'render_earnings', 'render_etf_holdings', 'render_event_predictor', 'render_help', 'render_long_term', 'render_operator_activity', 'render_long', 'render_short', 'render_both', 'render_sectors', 'render_stock_analysis', 'render_strategy_lab', 'render_swing_picks', 'render_trade_desk']
+__all__ = ['render_accuracy_lab', 'render_diagnostics', 'render_earnings', 'render_etf_holdings', 'render_event_predictor', 'render_help', 'render_long_term', 'render_operator_activity', 'render_long', 'render_short', 'render_both', 'render_sectors', 'render_stock_analysis', 'render_strategy_lab', 'render_best_710', 'render_swing_picks', 'render_trade_desk']

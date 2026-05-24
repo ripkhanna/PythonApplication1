@@ -1,5 +1,5 @@
 """
-Swing Scanner v14.01 — Bayesian Ensemble
+Swing Scanner v14.02 — Bayesian Ensemble
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -16,7 +16,7 @@ v12 add-ons  : options-derived signals — call/put unusual flow, IV term
 Install:
   pip install financedatabase ta streamlit yfinance pandas numpy nsepython requests streamlit-autorefresh
 """
-# v14.01: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
+# v14.02: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
 # NotImplementedError from __annotate__ when @st.cache_data wraps functions
 # with bare unsubscripted generics like `-> tuple`. This `from __future__`
 # downgrades all annotations in this module to strings at parse time,
@@ -44,7 +44,7 @@ import streamlit as st
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v14.01",
+    page_title="Swing Scanner v14.02",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -266,7 +266,7 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v14.01")
+st.title("📈 Swing/Long Term Scanner v14.02")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TOP-OF-PAGE STATUS BANNER
@@ -302,7 +302,7 @@ def _show_top_status(message: str, stage: str = "Working", icon: str = "ℹ️",
             st.session_state["_top_status_state"] = state
             st.session_state["_top_status_updated_at"] = pd.Timestamp.now(tz="Asia/Singapore").strftime("%H:%M:%S SGT")
             st.session_state["_top_status_ts_epoch"] = time.time()
-            # v14.01: completed/failed messages must not keep an old tab context.
+            # v14.02: completed/failed messages must not keep an old tab context.
             # Otherwise a later rerun can either show a stale action or block the
             # next tab from writing a correct status.
             if state in {"done", "error", "idle"}:
@@ -420,7 +420,7 @@ def _top_status_payload_for_render():
     ts = float(st.session_state.get("_top_status_ts_epoch", 0) or 0)
     age = time.time() - ts if ts else 999999
     if state in {"done", "error"} and age > 8:
-        # v14.01: expire completed/error messages cleanly so old tab messages
+        # v14.02: expire completed/error messages cleanly so old tab messages
         # disappear when the user moves around the app.
         try:
             for _k in ("_top_status_context", "_top_status_message", "_top_status_stage", "_top_status_icon"):
@@ -451,7 +451,7 @@ _show_top_status(
     status=_top_payload["status"],
 )
 
-# v14.01: COMPACT SELF-STAMP
+# v14.02: COMPACT SELF-STAMP
 # The build identity (path, mtime, hash, size) is still computed so it can
 # self-prove the running file, but only the short hash and mtime are visible
 # in the caption. The full path and size are tucked into the tooltip — hover
@@ -1820,13 +1820,13 @@ if st.session_state.get("scan_cache_warning"):
 
 
 
-# Professional workflow layout v17.0
+# Professional workflow layout v14.02
 # Market prep and catalyst tabs are intentionally placed together.
 st.caption(
     "Workflow: Market Prep -> Catalyst/Event Watch -> Swing Setups -> Execution -> Research/QA"
 )
 
-tab_sectors, tab_premarket, tab_top_movers, tab_pre_movers, tab_breakout, tab_earn, tab_event, tab_long, tab_swing_710, tab_swing_picks, tab_pro_setups, tab_range_trader, tab_short, tab_operator, tab_trade_desk, tab_both, tab_stock, tab_strategy, tab_backtest, tab_lt, tab_etf, tab_tests, tab_diag, tab_help = st.tabs([
+tab_sectors, tab_premarket, tab_top_movers, tab_pre_movers, tab_breakout, tab_earn, tab_event, tab_long, tab_swing_710, tab_best_710, tab_swing_picks, tab_pro_setups, tab_range_trader, tab_short, tab_operator, tab_trade_desk, tab_both, tab_stock, tab_strategy, tab_backtest, tab_lt, tab_etf, tab_tests, tab_diag, tab_help = st.tabs([
     "1 Market Map",
     "2 Pre-Market",
     "3 Movers",
@@ -1836,21 +1836,22 @@ tab_sectors, tab_premarket, tab_top_movers, tab_pre_movers, tab_breakout, tab_ea
     "7 Event Predictor",
     "8 Long Setups",
     "9 7-10% Swing",
-    "10 Swing Picks",
-    "11 Pro Setups",
-    "12 Range Trader",
-    "13 Short Setups",
-    "14 Operator Activity",
-    "15 Trade Desk",
-    "16 Side by Side",
-    "17 Stock Analysis",
-    "18 Strategy Lab",
-    "19 Accuracy Lab",
-    "20 Long Term",
-    "21 ETF Holdings",
-    "22 Test Cases",
-    "23 Diagnostics",
-    "24 Help",
+    "10 Best 7-10%",
+    "11 Swing Picks",
+    "12 Pro Setups",
+    "13 Range Trader",
+    "14 Short Setups",
+    "15 Operator Activity",
+    "16 Trade Desk",
+    "17 Side by Side",
+    "18 Stock Analysis",
+    "19 Strategy Lab",
+    "20 Accuracy Lab",
+    "21 Long Term",
+    "22 ETF Holdings",
+    "23 Test Cases",
+    "24 Diagnostics",
+    "25 Help",
 ])
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1876,6 +1877,7 @@ from swing_trader_app.tabs.stock_analysis_tab import render_stock_analysis
 from swing_trader_app.tabs.strategy_lab_tab import render_strategy_lab
 from swing_trader_app.tabs.test_cases_tab import render_test_cases
 from swing_trader_app.tabs.swing_710_tab import render_swing_710
+from swing_trader_app.tabs.best_710_tab import render_best_710
 from swing_trader_app.tabs.swing_picks_tab import render_swing_picks
 from swing_trader_app.tabs.trade_desk_tab import render_trade_desk
 from swing_trader_app.tabs.top_movers_tab import render_top_movers
@@ -2624,6 +2626,9 @@ with tab_long:
 
 with tab_swing_710:
     _safe_render_tab('swing_710', render_swing_710)
+
+with tab_best_710:
+    _safe_render_tab('best_710', render_best_710)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

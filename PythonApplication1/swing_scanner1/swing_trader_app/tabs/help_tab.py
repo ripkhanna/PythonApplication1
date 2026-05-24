@@ -6,14 +6,14 @@ def render_help(ctx: dict) -> None:
 
     st.markdown("## ❓ Swing Scanner — Complete Guide")
     st.caption(
-        "24 tabs - 8 strategies - US + SGX + India + HK - "
+        "25 tabs - 8 strategies - US + SGX + India + HK - "
         "Pre-Movers - 7-10% Swing - Pro Setups - Range Trader - Breakout Scanner - Bayesian engine"
     )
 
     # ── What's new ────────────────────────────────────────────────────────────
     with st.expander("🆕 What changed recently", expanded=True):
         st.markdown("""
-### Latest build - v17.0 fast swing workflow
+### Latest build - v14.02 fast swing workflow
 
 #### New Pre-Movers tab
 - Added **4 Pre-Movers** after Movers. It is built for the goal of finding tomorrow's Movers before the large daily move.
@@ -34,6 +34,11 @@ def render_help(ctx: dict) -> None:
   - **Avoid / Not Ready**: fails room, range, R:R, extension, or trap filters.
 - UUUU-style rows that bounced strongly from support are kept visible as **Pullback Watch** instead of being hidden.
 
+#### New Best 7-10% tab
+- Added **10 Best 7-10%** after 7-10% Swing. It combines evidence from Long Setups, Swing Picks, 7-10% Swing, Pro Setups, and Pre-Movers/7-Star.
+- It is stricter than Long Setups and Pre-Movers: a stock needs enough 7-day range, upside room, R:R, reasonable daily extension, no major trap/chase risk, and multiple confirmations.
+- Tiers are **A+ Best 7-10%**, **A Watch For Trigger**, **B Early Watch**, and reject buckets. Use **Trigger Above** and **Invalid Below** before entry.
+
 #### Swing Picks BUY gate
 - Swing Picks no longer promotes a quiet/flat stock to **BUY / WATCH ENTRY** only because older probability, support, or event scores are high.
 - A BUY label now needs live participation: at least a small daily move, pre-market move, unusual volume, or an explicit momentum/volume signal. Flat names such as `5NF.SI` / `5LY.SI` should fall back to **WATCH** or **WAIT** with **No live move/volume today** in the reason.
@@ -43,7 +48,7 @@ Tabs now follow the trading workflow:
 
 ```text
 Market Map -> Pre-Market -> Movers -> Pre-Movers -> Breakouts -> Earnings -> Event Predictor
-    -> Long Setups -> 7-10% Swing -> Swing Picks -> Pro Setups -> Range Trader
+    -> Long Setups -> 7-10% Swing -> Best 7-10% -> Swing Picks -> Pro Setups -> Range Trader
     -> Short Setups -> Operator Activity -> Trade Desk -> Research/QA -> Help
 ```
 
@@ -95,7 +100,7 @@ Each card shows Buy at, Sell at, Stop, R:R, and a visual position bar.
 
 ### Previous milestones — v13 Accuracy Gate
 
-#### 🟦 v14.01 Status banner fixes for Movers + stale tab messages
+#### 🟦 v14.02 Status banner fixes for Movers + stale tab messages
 The top banner now updates correctly when **Refresh movers** is clicked. Movers writes a running message while it fetches data, then writes a final **Done** or **No rows returned** message when the process finishes. Completed/error messages now clear their tab context, so old messages do not block the next tab/button action and do not remain stale when you move around the app.
 
 #### 🟦 v16.7.12 Immediate button status + auto-clear
@@ -114,12 +119,12 @@ The top market radio is now the single source of truth for market-aware tabs. Pr
 #### 🟦 v16.7.7 Visible running status
 The app now shows a short status message above the tabs instead of a custom spinning indicator. During scans you should see messages such as **Fetch: Fetching SGX stock universe**, **Analyze: Downloading prices and computing signals**, and **Render: Applying selected strategy and preparing grids**. Pre-Market, Movers, Breakouts, Earnings and Swing Picks also show short inline status messages while they fetch data.
 
-#### 🧭 Professional tab layout — v17.0
+#### 🧭 Professional tab layout — v14.02
 Tabs are now ordered by the way a trader normally works during the day:
 
 ```text
 Market Map → Pre-Market → Movers → Pre-Movers → Breakouts → Earnings → Event Predictor
-    → Long Setups → 7-10% Swing → Swing Picks → Pro Setups → Range Trader
+    → Long Setups → 7-10% Swing → Best 7-10% → Swing Picks → Pro Setups → Range Trader
     → Short Setups → Operator Activity → Trade Desk
     → Research / Strategy / Accuracy / Test Cases / Diagnostics → Help
 ```
@@ -163,14 +168,14 @@ New columns added to Long Setups / Swing Picks:
 | **Trigger** | Safer follow-through condition before buying an explosive event mover |
 
 
-#### 🧪 Test Cases tab restored — v14.01
+#### 🧪 Test Cases tab restored — v14.02
 The **Test Cases** tab is included near the end of the professional layout as tab **22**.
 Use it after deployment to validate key scenarios without changing live scan results:
 - Strategy dropdown scenarios: Strict, Balanced, Discovery, Support Entry, Premarket Momentum, High Volume, High Conviction, PSM.
 - Column/logic checks: Tradeable Buy gate, Next-Day Rating vs Entry Quality, Event Predictor fallback, Accuracy Lab target-before-stop.
 - Tab smoke checks: imports/renderers for the major tabs.
 
-Recommended deployment QA flow: run a fresh scan, check Pre-Movers/Swing Picks/Long Setups, then open **22 Test Cases** and run the core set before checking Diagnostics.
+Recommended deployment QA flow: run a fresh scan, check Pre-Movers/Best 7-10%/Swing Picks/Long Setups, then open **23 Test Cases** and run the core set before checking Diagnostics.
 
 #### 🔥 SEDG-Type Event Reversal / Squeeze scanner
 The **Event Predictor** tab now includes a separate watchlist layer for explosive SEDG-style moves.
@@ -234,9 +239,9 @@ All ticker lists are now defined in a single file (`tabs/universe_data.py`) and 
 ```
 1 Market Map → 2 Pre-Market → 3 Movers → 4 Pre-Movers
     → 5 Breakouts → 6 Earnings → 7 Event Predictor
-    → 8 Long Setups → 9 7-10% Swing → 10 Swing Picks
-    → 11 Pro Setups → 12 Range Trader → 13 Short Setups
-    → 14 Operator Activity → 15 Trade Desk → 23 Diagnostics → 24 Help
+    → 8 Long Setups → 9 7-10% Swing → 10 Best 7-10%
+    → 11 Swing Picks → 12 Pro Setups → 13 Range Trader → 14 Short Setups
+    → 15 Operator Activity → 16 Trade Desk → 24 Diagnostics → 25 Help
 ```
 
 **Best strategy by time of day:**
@@ -482,7 +487,7 @@ Yahoo's predefined screeners can return US-listed stocks regardless of region pa
         """)
 
     # ── Tab guide ─────────────────────────────────────────────────────────────
-    with st.expander("🧭 Tab guide — all 24 tabs"):
+    with st.expander("🧭 Tab guide — all 25 tabs"):
         st.markdown("""
 | Tab | Purpose |
 |---|---|
@@ -492,6 +497,7 @@ Yahoo's predefined screeners can return US-listed stocks regardless of region pa
 | 📋 **Trade Desk** | Execution: entry zone, stop, target, R/R, position size calculator |
 | 📈 **Long Setups** | Bullish swing candidates — strategy-aware sections and columns |
 | **7-10% Swing** | Fast-swing ranking from the latest scan: Fresh Entry, Breakout/Momentum, Pullback Watch, Avoid |
+| **Best 7-10%** | Strict combined score from Long, Swing Picks, 7-10%, Pro Setups, and Pre-Movers |
 | 🎯 **Swing Picks** | Final shortlist — Bayesian + operator + sector + news ranking |
 | 🚀 **Movers/Losers** | Top Gainers, Top Losers, and Volume Leaders across all markets |
 | **Pre-Movers** | Tomorrow's mover candidates — compression + accumulation + ATR before the daily % move |
@@ -518,7 +524,8 @@ Pre-Movers          ← what may move next
 ⚡ Breakout Scanner ← which stocks are breaking out?
 📈 Long Setups      ← strategy scan results
 7-10% Swing         ← filter for 7-10% short-term potential
-🎯 Swing Picks      ← final shortlist
+Best 7-10%          ← strict combined candidates
+🎯 Swing Picks      ← enriched final shortlist
 ⭐ Pro Setups       ← highest-confidence picks ranked by confluence
 📦 Range Trader     ← range-bound stocks with exact buy/sell levels
 📋 Trade Desk       ← position sizing and execution
@@ -886,7 +893,7 @@ Key packages: `streamlit` · `yfinance` · `pandas` · `numpy` · `ta` ·
 
     st.markdown("---")
     st.caption(
-        "Swing Scanner v17.1 - 24 tabs - 8 strategies - US + SGX + India + HK - "
+        "Swing Scanner v17.2 - 25 tabs - 8 strategies - US + SGX + India + HK - "
         "Pre-Movers - 7-10% Swing - Pro Setups - Range Trader - Breakout Scanner - Bayesian engine - "
         "Operator layer - Not financial advice"
     )

@@ -40,6 +40,7 @@ TAB_MODULES = {
     "Sector Heatmap": "swing_trader_app.tabs.sectors_tab",
     "Trade Desk": "swing_trader_app.tabs.trade_desk_tab",
     "Long Setups": "swing_trader_app.tabs.scan_results_tabs",
+    "Best 7-10%": "swing_trader_app.tabs.best_710_tab",
     "Swing Picks": "swing_trader_app.tabs.swing_picks_tab",
     "Movers/Losers": "swing_trader_app.tabs.top_movers_tab",
     "Pre-Market": "swing_trader_app.tabs.premarket_tab",
