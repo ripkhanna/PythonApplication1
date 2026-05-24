@@ -23,7 +23,8 @@ STRATEGIES = [
 REQUIRED_LONG_COLUMNS = [
     "Ticker", "Action", "Entry Quality", "Tradeable Buy", "Quality Score",
     "Next-Day Score", "Next-Day Rating", "Next-Day Move", "7D Move Est",
-    "Upside to Res", "RR Est", "Rise Prob", "Score", "Signals",
+    "Upside to Res", "RR Est", "7-Star Score", "7-Star Tier", "7-Star Why",
+    "Rise Prob", "Score", "Signals",
 ]
 
 REQUIRED_EVENT_COLUMNS = [

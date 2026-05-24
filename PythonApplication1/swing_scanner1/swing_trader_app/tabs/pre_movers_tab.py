@@ -106,6 +106,61 @@ def _fallback_rank(df: pd.DataFrame) -> pd.DataFrame:
     quiet = today.between(-1.5, 2.5)
     not_moved = today <= 3.5
     vol_ok = (atr >= 2.8) | (move7 >= 6.0)
+    liquidity_ok = (vol >= 0.35) | (_num(out, "Price", 0) >= 1.0)
+    range_shift = (
+        joined.str.contains(r"RANGE SHIFT|BREAKOUT|HIGHER LOWS|RECLAIM|SUPPORT|MA20|MA60|VWAP|FAILED BRKDN", regex=True, na=False)
+        & today.between(-3.5, 3.5)
+        & ~recent_run_extended
+    )
+    divergence = (
+        accumulation
+        & (relative | joined.str.contains(r"OBV|OPERATOR|ABSORPTION|RS MOM", regex=True, na=False))
+        & (move5_recent <= 12.0)
+        & (today <= 3.5)
+        & ~recent_run_extended
+    )
+    one_red = (
+        today.between(-3.5, -0.15)
+        & support_trigger
+        & ((move5_recent >= 1.5) | relative | accumulation)
+        & ((vol <= 1.6) | accumulation)
+        & ~recent_run_extended
+    )
+    rr_ok = (
+        (_num(out, "RR Est", 0) >= 1.5)
+        | (_num(out, "Upside to Res", 0) >= 6.0)
+        | near_trigger
+    ) & ~recent_run_extended & (today <= 5.0)
+
+    seven_star = pd.Series([0] * len(out), index=idx, dtype="int64")
+    for _flag in (liquidity_ok, vol_ok, compression, range_shift, divergence, one_red, rr_ok):
+        seven_star += _flag.astype(int)
+    seven_star = seven_star.mask(recent_run_extended, seven_star.clip(upper=4))
+    seven_star = seven_star.mask((today <= -5.0) & (~joined.str.contains("FAILED BRKDN", regex=False, na=False)), seven_star.clip(upper=3))
+
+    seven_tier = pd.Series("LOW", index=idx)
+    seven_tier.loc[seven_star >= 7] = "7 - PRIME"
+    seven_tier.loc[seven_star == 6] = "6 - READY"
+    seven_tier.loc[seven_star == 5] = "5 - WATCH"
+    seven_tier.loc[seven_star == 4] = "4 - EARLY"
+    seven_tier.loc[recent_run_extended] = "MOVED ALREADY"
+
+    seven_why = []
+    for i in idx:
+        parts = []
+        if liquidity_ok.loc[i]: parts.append("liquid")
+        if vol_ok.loc[i]: parts.append("move potential")
+        if compression.loc[i]: parts.append("compression")
+        if range_shift.loc[i]: parts.append("range shift")
+        if divergence.loc[i]: parts.append("divergence/accumulation")
+        if one_red.loc[i]: parts.append("one red hold")
+        if rr_ok.loc[i]: parts.append("risk/reward")
+        if recent_run_extended.loc[i]: parts.append(f"already ran 5D {move5_recent.loc[i]:.1f}% / 20D {move20_recent.loc[i]:.1f}%")
+        seven_why.append(" | ".join(parts[:7]) if parts else "not enough 7-star evidence")
+
+    out["7-Star Score"] = seven_star.astype(int)
+    out["7-Star Tier"] = seven_tier
+    out["7-Star Why"] = seven_why
 
     score = pd.Series([0] * len(out), index=idx, dtype="float64")
     score += compression.astype(int) * 25
@@ -248,11 +303,20 @@ def _fallback_rank(df: pd.DataFrame) -> pd.DataFrame:
 
 def _rank(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
-    if "Pre-Mover Score" not in out.columns or "Pre-Mover Tier" not in out.columns or "Explosion Score" not in out.columns:
+    if (
+        "Pre-Mover Score" not in out.columns or
+        "Pre-Mover Tier" not in out.columns or
+        "Explosion Score" not in out.columns or
+        "7-Star Score" not in out.columns or
+        "7-Star Tier" not in out.columns
+    ):
         out = _fallback_rank(out)
     else:
         out["Pre-Mover Score"] = _num(out, "Pre-Mover Score", 0).round().astype(int)
         out["Explosion Score"] = _num(out, "Explosion Score", 0).round().astype(int)
+        out["7-Star Score"] = _num(out, "7-Star Score", 0).clip(0, 7).round().astype(int)
+        if "7-Star Why" not in out.columns:
+            out["7-Star Why"] = "-"
         if "Pre-Mover Why" not in out.columns:
             out["Pre-Mover Why"] = "–"
         if "Explosion Tier" not in out.columns:
@@ -270,8 +334,9 @@ def _rank(df: pd.DataFrame) -> pd.DataFrame:
     out["_best_candidate_score"] = pd.concat([
         out["Pre-Mover Score"].astype(float),
         out["Explosion Score"].astype(float),
+        out["7-Star Score"].astype(float) * 14.0,
     ], axis=1).max(axis=1)
-    return out.sort_values(["_tier_sort", "Explosion Score", "Pre-Mover Score"], ascending=[False, False, False], kind="stable")
+    return out.sort_values(["7-Star Score", "_tier_sort", "Explosion Score", "Pre-Mover Score"], ascending=[False, False, False, False], kind="stable")
 
 
 def _show(df: pd.DataFrame, key: str) -> None:
@@ -279,7 +344,8 @@ def _show(df: pd.DataFrame, key: str) -> None:
         st.info("No rows in this tier.")
         return
     preferred = [
-        "Ticker", "Explosion Score", "Explosion Tier", "Explosion Why",
+        "Ticker", "7-Star Score", "7-Star Tier", "7-Star Why",
+        "Explosion Score", "Explosion Tier", "Explosion Why",
         "Pre-Mover Score", "Pre-Mover Tier", "Pre-Mover Why",
         "Today %", "5D %", "20D %", "Vol Ratio", "ATR%", "7D Move Est", "Setup Type", "Action",
         "Rise Prob", "Quality Score", "Next-Day Score", "PSS Score", "PSS Label",
@@ -335,6 +401,7 @@ def render_pre_movers(ctx: dict) -> None:
     today = _num(ranked, "Today %", 0)
     explosion_score = _num(ranked, "Explosion Score", 0)
     candidate_score = pd.concat([
+        ranked["7-Star Score"].astype(float) * 14.0,
         ranked["Pre-Mover Score"].astype(float),
         explosion_score.astype(float),
     ], axis=1).max(axis=1)
@@ -343,7 +410,8 @@ def render_pre_movers(ctx: dict) -> None:
     if only_ready:
         ranked = ranked[
             ranked["Pre-Mover Tier"].isin(["A - PRE-MOVER READY", "B - COIL WATCH"]) |
-            ranked["Explosion Tier"].isin(["X - STYLE EXPLOSIVE", "A - EXPLOSIVE WATCH"])
+            ranked["Explosion Tier"].isin(["X - STYLE EXPLOSIVE", "A - EXPLOSIVE WATCH"]) |
+            (ranked["7-Star Score"] >= 5)
         ].copy()
 
     search = st.text_input("Filter ticker / setup", "", key="pmv_search").strip().upper()

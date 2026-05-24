@@ -1564,6 +1564,91 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             except Exception:
                 _recent_20d_pct = 0.0
             _recent_run_extended = bool((_recent_5d_pct >= 25.0) or (_recent_20d_pct >= 50.0))
+
+            # 7-star early swing filter: range shift + divergence + one-red hold.
+            # This is a ranking layer for Pre-Movers; it does not turn a stock
+            # into a buy without confirmation.
+            try:
+                _range20_hi = float(high.tail(20).max()) if len(high) >= 20 else float(raw.get("h10", p_raw) or p_raw)
+                _range20_lo = float(low.tail(20).min()) if len(low) >= 20 else float(raw.get("last_swing_low", p_raw) or p_raw)
+                _range20_pos = (p_raw - _range20_lo) / max(_range20_hi - _range20_lo, 0.01)
+            except Exception:
+                _range20_pos = 0.0
+            _ma20_star = float(raw.get("ma20", 0) or 0)
+            _ma60_star = float(raw.get("ma60", 0) or 0)
+            _liq_floor = 120_000 if is_asia_market else 500_000
+            _star_liquidity = bool(p_raw > 0 and _vol_avg_s > 0 and (p_raw * _vol_avg_s >= _liq_floor))
+            _star_move_potential = bool(_pre_volatility_ok and not extreme_volatility)
+            _star_compression = bool(_compression_ok)
+            _star_range_shift = bool(
+                (
+                    (_ma20_star > 0 and p_raw >= _ma20_star * 0.995)
+                    or raw.get("above_vwap", False)
+                    or raw.get("failed_breakdown", False)
+                    or _near_trigger
+                )
+                and _range20_pos >= 0.55
+                and -3.5 <= _today_chg_abs <= 3.5
+                and not _recent_run_extended
+            )
+            _star_divergence = bool(
+                _accumulation_ok
+                and (_relative_ok or long_sig.get("obv_rising", False) or operator_score >= 3)
+                and _recent_5d_pct <= 12.0
+                and _today_chg_abs <= 3.5
+                and not _recent_run_extended
+            )
+            _holds_key_area = bool(
+                raw.get("above_vwap", False)
+                or raw.get("failed_breakdown", False)
+                or (_ma20_star > 0 and p_raw >= _ma20_star * 0.985)
+                or (_ma60_star > 0 and p_raw >= _ma60_star * 0.985)
+            )
+            _panic_red = bool(vr >= 1.8 and _today_chg_abs <= -2.5)
+            _star_one_red = bool(
+                -3.5 <= _today_chg_abs <= -0.15
+                and _holds_key_area
+                and (_recent_5d_pct >= 1.5 or _relative_ok or _accumulation_ok)
+                and not _panic_red
+                and not _recent_run_extended
+            )
+            _star_risk_reward = bool(
+                risk_reward_ok
+                and resistance_clearance_ok
+                and not major_trap_risk
+                and not _recent_run_extended
+                and _today_chg_abs <= 5.0
+            )
+            _seven_flags = [
+                ("liquid", _star_liquidity),
+                ("move potential", _star_move_potential),
+                ("compression", _star_compression),
+                ("range shift", _star_range_shift),
+                ("divergence/accumulation", _star_divergence),
+                ("one red hold", _star_one_red),
+                ("risk/reward", _star_risk_reward),
+            ]
+            seven_star_score = sum(1 for _, _ok in _seven_flags if _ok)
+            if _recent_run_extended and not post_earnings_gap:
+                seven_star_score = min(seven_star_score, 4)
+            if _today_chg_abs <= -5.0 and not raw.get("failed_breakdown", False):
+                seven_star_score = min(seven_star_score, 3)
+            if seven_star_score >= 7:
+                seven_star_tier = "7 - PRIME"
+            elif seven_star_score == 6:
+                seven_star_tier = "6 - READY"
+            elif seven_star_score == 5:
+                seven_star_tier = "5 - WATCH"
+            elif seven_star_score == 4:
+                seven_star_tier = "4 - EARLY"
+            else:
+                seven_star_tier = "LOW"
+            if _recent_run_extended and not post_earnings_gap:
+                seven_star_tier = "MOVED ALREADY"
+            _seven_reasons = [name for name, ok in _seven_flags if ok]
+            if _recent_run_extended:
+                _seven_reasons.append(f"already ran 5D {_recent_5d_pct:.1f}% / 20D {_recent_20d_pct:.1f}%")
+            seven_star_why = " | ".join(_seven_reasons[:7]) if _seven_reasons else "not enough 7-star evidence"
             _options_bullish = bool(
                 opt_long.get("opt_unusual_call_flow")
                 or opt_long.get("opt_call_skew_bullish")
@@ -2411,6 +2496,9 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "Quality Score": int(quality_score),
                     "Tradeable Buy": "YES" if tradeable_buy else "NO",
                     "Trade Tier": trade_tier,
+                    "7-Star Score": int(seven_star_score),
+                    "7-Star Tier": seven_star_tier,
+                    "7-Star Why": seven_star_why,
                     "Pre-Mover Score": pre_mover_score,
                     "Pre-Mover Tier": pre_mover_tier,
                     "Pre-Mover Why": pre_mover_why,

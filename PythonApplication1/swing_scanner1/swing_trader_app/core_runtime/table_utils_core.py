@@ -584,7 +584,7 @@ def show_table(df, label, prob_col="Rise Prob"):
     else:
         wanted = [
             "Rank", "Ticker", "Action", "View", "Buy Condition",
-            "Entry Quality", "Tradeable Buy", "Trade Tier", "Explosion Score", "Explosion Tier", "Explosion Why", "Pre-Mover Score", "Pre-Mover Tier", "Pre-Mover Why", "Quality Score", "Next-Day Score", "Next-Day Rating", "Next-Day Move", "7D Move Est", "Upside to Res", "RR Est", "Setup Type", "Today %", "5D %", "20D %", "Rise Prob", "Swing Rank Score", "Pro Score", "PI Proxy", "Tier", "Why Buy",
+            "Entry Quality", "Tradeable Buy", "Trade Tier", "7-Star Score", "7-Star Tier", "7-Star Why", "Explosion Score", "Explosion Tier", "Explosion Why", "Pre-Mover Score", "Pre-Mover Tier", "Pre-Mover Why", "Quality Score", "Next-Day Score", "Next-Day Rating", "Next-Day Move", "7D Move Est", "Upside to Res", "RR Est", "Setup Type", "Today %", "5D %", "20D %", "Rise Prob", "Swing Rank Score", "Pro Score", "PI Proxy", "Tier", "Why Buy",
             "Operator", "VWAP", "Trap Risk", "Price", "MA60 Stop", "Best Stop",
             "TP1 +10%", "TP2 +15%", "TP3 +20%", "Target Est.", "Hold Est.",
             "Vol Ratio", "ATR%", "Vol Quality", "PSM Quality", "PSS Score", "PSS Label", "Op Score", "Score",
@@ -612,6 +612,9 @@ def show_table(df, label, prob_col="Rise Prob"):
         "Quality Score": st.column_config.NumberColumn("Quality",      width=65),
         "Tradeable Buy": st.column_config.TextColumn("Tradeable",      width=75),
         "Trade Tier":    st.column_config.TextColumn("Tier",           width=80),
+        "7-Star Score":  st.column_config.NumberColumn("7-Star",       width=70),
+        "7-Star Tier":   st.column_config.TextColumn("7-Star Tier",    width=95),
+        "7-Star Why":    st.column_config.TextColumn("7-Star Why",     width=280),
         "Explosion Score": st.column_config.NumberColumn("Explode",     width=75),
         "Explosion Tier": st.column_config.TextColumn("Explode Tier",   width=150),
         "Explosion Why": st.column_config.TextColumn("Explode Why",     width=280),

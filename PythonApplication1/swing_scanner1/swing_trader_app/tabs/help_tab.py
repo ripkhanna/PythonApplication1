@@ -18,9 +18,11 @@ def render_help(ctx: dict) -> None:
 #### New Pre-Movers tab
 - Added **4 Pre-Movers** after Movers. It is built for the goal of finding tomorrow's Movers before the large daily move.
 - A good pre-mover needs compression/coiling, quiet accumulation, enough ATR/move potential, a nearby trigger, and today's move still below the chase zone.
+- Added the **7-Star early swing filter** inside Pre-Movers. It scores liquidity, move potential, compression, range shift, divergence/accumulation, one-red hold, and risk/reward.
+- Use **7-Star Score / Tier / Why** as the stricter early-entry layer. A 6-7 star row is a stronger watch candidate; 5 stars is a watchlist idea; 4 or lower needs confirmation.
 - The same tab now includes **Style Explosive Watch** rows for higher-risk 10-20% candidates: high ATR, squeeze/float/catalyst fuel, options or PSS evidence, coil/accumulation, and not already moved.
 - Slow quality names such as SCCO/IFF/MGM-style rows should rank lower unless they also show coil, accumulation, volatility, or catalyst evidence.
-- New columns in Long Setups: **Explosion Score**, **Explosion Tier**, **Explosion Why**, **Pre-Mover Score**, **Pre-Mover Tier**, and **Pre-Mover Why**.
+- New columns in Long Setups: **7-Star Score**, **7-Star Tier**, **7-Star Why**, **Explosion Score**, **Explosion Tier**, **Explosion Why**, **Pre-Mover Score**, **Pre-Mover Tier**, and **Pre-Mover Why**.
 
 #### New 7-10% Swing tab
 - Added **9 7-10% Swing** after Long Setups. It ranks the latest scan for stocks that have enough upside room, short-term range, reward:risk, volume or support/breakout confirmation, and acceptable extension risk.
@@ -141,6 +143,9 @@ New columns added to Long Setups / Swing Picks:
 | Column | Meaning |
 |---|---|
 | **Tradeable Buy** | YES only if final 5–7 day swing gate passes |
+| **7-Star Score** | 0-7 early swing score for liquidity, move potential, compression, range shift, divergence/accumulation, one-red hold, and risk/reward |
+| **7-Star Tier** | 7 Prime / 6 Ready / 5 Watch / 4 Early / Low / Moved Already |
+| **7-Star Why** | Short reason showing which of the seven filters passed |
 | **Explosion Score** | 0-100 score for high-return style explosive potential |
 | **Explosion Tier** | X/A/B/low bucket based on ATR, squeeze fuel, float, catalyst/options, coil, and extension |
 | **Explosion Why** | Short reason such as high ATR, short interest, small float, coil, catalyst/options, or already moved |
