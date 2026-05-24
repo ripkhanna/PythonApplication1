@@ -353,7 +353,7 @@ def _show(df: pd.DataFrame, key: str) -> None:
         "Price", "Signals",
     ]
     cols = [c for c in preferred if c in df.columns]
-    st.dataframe(df[cols].reset_index(drop=True), use_container_width=True, hide_index=True, key=key)
+    st.dataframe(df[cols].reset_index(drop=True), width="stretch", hide_index=True, key=key)
     st.code(", ".join(df["Ticker"].astype(str).head(80).tolist()) if "Ticker" in df.columns else "")
 
 
@@ -381,7 +381,7 @@ def render_pre_movers(ctx: dict) -> None:
                     "Rows": len(rt_df) if isinstance(rt_df, pd.DataFrame) else 0,
                     "Columns": ", ".join(list(rt_df.columns)[:8]) if isinstance(rt_df, pd.DataFrame) and not rt_df.empty else "–",
                 })
-            st.dataframe(pd.DataFrame(checks), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(checks), width="stretch", hide_index=True)
         return
 
     ranked = _rank(src)

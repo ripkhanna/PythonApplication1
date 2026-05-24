@@ -1090,7 +1090,7 @@ def render_long(ctx: dict) -> None:
             _cols = ["★ Score", "Ticker", "Entry Quality", "RR Est", "Rise Prob",
                      "Quality Score", "Next-Day Score", "Best Stop", "TP1 +10%", "Signals"]
             _show_cols = [c for c in _cols if c in _top5.columns]
-            st.dataframe(_top5[_show_cols], use_container_width=True, hide_index=True)
+            st.dataframe(_top5[_show_cols], width="stretch", hide_index=True)
             st.divider()
 
         # ── Blocked-by helper: surface the single gate stopping each WATCH stock ──

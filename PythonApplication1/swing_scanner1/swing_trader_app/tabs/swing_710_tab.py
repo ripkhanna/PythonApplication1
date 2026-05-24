@@ -190,7 +190,7 @@ def _show(df: pd.DataFrame, key: str) -> None:
         "Trap Risk", "Signals", "Buy Condition",
     ]
     cols = [c for c in preferred if c in df.columns]
-    st.dataframe(df[cols].reset_index(drop=True), use_container_width=True, hide_index=True, key=key)
+    st.dataframe(df[cols].reset_index(drop=True), width="stretch", hide_index=True, key=key)
     st.code(", ".join(df["Ticker"].astype(str).head(80).tolist()))
 
 

@@ -57,9 +57,12 @@ def render_long_term(ctx: dict) -> None:
 
     def style_support(v):
         s = str(v)
-        if "🟢" in s: return "background-color:#d4edda;color:#155724;font-weight:700"
-        if "🟡" in s: return "background-color:#fff3cd;color:#856404;font-weight:600"
-        if "🔴" in s: return "background-color:#f8d7da;color:#721c24"
+        if "🟢" in s or "At support" in s:
+            return "background-color:#d4edda;color:#155724;font-weight:700"
+        if "🟡" in s or "Near support" in s:
+            return "background-color:#fff3cd;color:#856404;font-weight:600"
+        if "🔴" in s or "Extended" in s or "Broken" in s:
+            return "background-color:#f8d7da;color:#721c24"
         return "color:#888"
 
     def style_rsi(v):
@@ -167,8 +170,8 @@ def render_long_term(ctx: dict) -> None:
         with r1c2:
             horizon_f = st.multiselect(
                 "Horizon",
-                ["⭐ CORE HOLD (3–5yr)", "✅ BUY & HOLD (1–3yr)",
-                 "👀 ACCUMULATE on dips", "⏳ MONITOR only"],
+                ["CORE HOLD (3-5yr)", "BUY & HOLD (1-3yr)",
+                 "ACCUMULATE on dips", "MONITOR only"],
                 default=[],
                 key=f"{session_key}_horizon_f",
                 placeholder="All horizons",
@@ -259,6 +262,64 @@ def render_long_term(ctx: dict) -> None:
         return df, near_supp
 
     # ── Grid renderer ──────────────────────────────────────────────────────────
+    def _ascii_clean_value(v):
+        """Normalize common mojibake/emoji markers before rendering grids."""
+        if not isinstance(v, str):
+            return v
+        s = v
+        replacements = {
+            "Ã¢â‚¬â€œ": "-",
+            "Ã¢â‚¬â€": "-",
+            "â€“": "-",
+            "â€”": "-",
+            "–": "-",
+            "—": "-",
+            "Ã¢Â­Â": "",
+            "â­": "",
+            "⭐": "",
+            "Ã¢Å“â€¦": "",
+            "âœ…": "",
+            "✅": "",
+            "Ã°Å¸â€˜â‚¬": "",
+            "ðŸ‘€": "",
+            "👀": "",
+            "Ã¢ÂÂ³": "",
+            "â³": "",
+            "⏳": "",
+            "Ã¢Å¡Âª": "",
+            "âšª": "",
+            "⚪": "",
+            "ðŸŸ¢": "",
+            "🟢": "",
+            "ðŸŸ¡": "",
+            "🟡": "",
+            "ðŸ”´": "",
+            "🔴": "",
+            "âŒ": "No",
+            "âœ…": "Yes",
+        }
+        for old, new in replacements.items():
+            s = s.replace(old, new)
+        s = s.replace("Yes BUY & HOLD", "BUY & HOLD")
+        s = s.replace("No CORE HOLD", "CORE HOLD")
+        s = s.replace("No BUY & HOLD", "BUY & HOLD")
+        s = s.replace("No ACCUMULATE", "ACCUMULATE")
+        s = s.replace("No Fallback", "Fallback")
+        s = s.replace("3No5yr", "3-5yr").replace("1No3yr", "1-3yr")
+        s = " ".join(s.split())
+        if s == "No":
+            return "-"
+        return s if s else "-"
+
+    def _ascii_clean_df(df):
+        if df is None or df.empty:
+            return df
+        out = df.copy()
+        for col in out.columns:
+            if out[col].dtype == "object":
+                out[col] = out[col].map(_ascii_clean_value)
+        return out
+
     def _render_grid(df_lt, session_key,
                      near_support_only=False,
                      extra_source_cols=True):
@@ -270,6 +331,7 @@ def render_long_term(ctx: dict) -> None:
             )
             return
 
+        df_lt = _ascii_clean_df(df_lt)
         has_supp = "_supp_score" in df_lt.columns
 
         sort_cols = (
@@ -408,6 +470,16 @@ def render_long_term(ctx: dict) -> None:
                 p2.progress((i + 1) / max(1, len(scan_list)))
             p2.empty(); st2.empty()
 
+            if not results and session_key == "lt_us":
+                results = _us_cloud_fallback_rows_ascii(scan_list, source_map, etf_holdings, min_sc)
+                if results:
+                    st.warning(
+                        "Yahoo US fundamentals/price calls returned no rows, so I loaded "
+                        "conservative US fallback rows instead of showing an empty grid. "
+                        "Rows are clearly marked as fallback and should be refreshed later "
+                        "for live Price/MA/RSI values."
+                    )
+
             results.sort(key=lambda x: (-x.get("ETF Count",0), -x.get("_score",0)))
             st.session_state[session_key] = results
             st.session_state[f"{session_key}_universe_csv"] = ", ".join(scan_list)
@@ -433,7 +505,7 @@ def render_long_term(ctx: dict) -> None:
             )
             return
 
-        df_all = pd.DataFrame(raw)
+        df_all = _ascii_clean_df(pd.DataFrame(raw))
         df_filtered, near_supp = _render_filter_bar(session_key, df_all)
         _render_grid(df_filtered, session_key,
                      near_support_only=near_supp,
@@ -446,6 +518,156 @@ def render_long_term(ctx: dict) -> None:
                              height=90, key=f"{session_key}_universe_text")
 
     # ── SG cloud-offline safety net ───────────────────────────────────────────
+    def _us_cloud_fallback_rows_ascii(us_scan, us_sources, us_etf_holdings, us_min_sc):
+        """Return ASCII-only conservative US rows when Yahoo rate-limits scoring."""
+        seed = {
+            "MSFT":  ("Microsoft", "Technology", 7, "CORE HOLD (3-5yr)", 12.0),
+            "AAPL":  ("Apple", "Technology", 6, "BUY & HOLD (1-3yr)", 9.0),
+            "NVDA":  ("NVIDIA", "Semiconductors", 7, "CORE HOLD (3-5yr)", 16.0),
+            "AVGO":  ("Broadcom", "Semiconductors", 7, "CORE HOLD (3-5yr)", 13.0),
+            "GOOGL": ("Alphabet", "Communication Services", 6, "BUY & HOLD (1-3yr)", 10.0),
+            "META":  ("Meta Platforms", "Communication Services", 6, "BUY & HOLD (1-3yr)", 11.0),
+            "AMZN":  ("Amazon", "Consumer Cyclical", 6, "BUY & HOLD (1-3yr)", 11.0),
+            "COST":  ("Costco", "Consumer Defensive", 6, "BUY & HOLD (1-3yr)", 8.0),
+            "V":     ("Visa", "Financial Services", 6, "BUY & HOLD (1-3yr)", 8.0),
+            "MA":    ("Mastercard", "Financial Services", 6, "BUY & HOLD (1-3yr)", 8.0),
+            "JPM":   ("JPMorgan Chase", "Financial Services", 6, "BUY & HOLD (1-3yr)", 7.0),
+            "BRK.B": ("Berkshire Hathaway", "Financial Services", 6, "BUY & HOLD (1-3yr)", 7.0),
+            "LLY":   ("Eli Lilly", "Healthcare", 6, "BUY & HOLD (1-3yr)", 10.0),
+            "UNH":   ("UnitedHealth", "Healthcare", 5, "ACCUMULATE on dips", 7.0),
+            "ASML":  ("ASML", "Semiconductors", 5, "ACCUMULATE on dips", 9.0),
+            "TSM":   ("Taiwan Semiconductor", "Semiconductors", 5, "ACCUMULATE on dips", 9.0),
+            "ADBE":  ("Adobe", "Technology", 5, "ACCUMULATE on dips", 8.0),
+            "CRM":   ("Salesforce", "Technology", 5, "ACCUMULATE on dips", 8.0),
+            "QCOM":  ("Qualcomm", "Semiconductors", 5, "ACCUMULATE on dips", 8.0),
+            "TXN":   ("Texas Instruments", "Semiconductors", 5, "ACCUMULATE on dips", 7.0),
+        }
+        scan_set = {str(t).upper().strip() for t in us_scan}
+        rows = []
+        for t, (name, sector, score, horizon, exp_1y) in seed.items():
+            if t not in scan_set or score < us_min_sc:
+                continue
+            etfs = list(us_etf_holdings.get(t, []))
+            src = list(us_sources.get(t, []))
+            src_text = ", ".join(src + ["US fallback seed"]) if src else "US fallback seed"
+            rows.append({
+                "Ticker": t,
+                "Name": name[:28],
+                "Sector": sector,
+                "Price": "-",
+                "Mkt Cap": "-",
+                "Exp 1Y Return": f"+{exp_1y:.1f}%",
+                "Return Breakdown": "Fallback: quality/ETF watchlist, refresh for live values",
+                "Rev Growth": "-",
+                "EPS Growth": "-",
+                "ROE": "-",
+                "Margin": "-",
+                "Fwd PE": "-",
+                "PEG": "-",
+                "Div Yield": "-",
+                "Beta": "-",
+                "MA200": "-",
+                "Target": "-",
+                "Upside": "-",
+                "Rec": "-",
+                "Score": f"{score}/10",
+                "Horizon": horizon,
+                "_score": score,
+                "_hcol": "buy" if score >= 7 else "watch" if score >= 6 else "wait",
+                "_exp1y": exp_1y,
+                "Support": "Fallback - refresh",
+                "SuppScore": "-",
+                "RSI14": "-",
+                "vsMA50%": "-",
+                "vsMA200%": "-",
+                "From52WHi%": "-",
+                "VolRatio": "-",
+                "FCFYield": "-",
+                "_supp_score": 0,
+                "_rsi14": 50.0,
+                "_supp_flags": ["Yahoo US data unavailable/rate-limited"],
+                "In ETFs": ", ".join(etfs[:4]) or "-",
+                "ETF Count": len(etfs),
+                "Sources": src_text,
+            })
+        rows.sort(key=lambda x: (-x.get("_score", 0), -x.get("ETF Count", 0), x.get("Ticker", "")))
+        return rows
+
+    def _us_cloud_fallback_rows(us_scan, us_sources, us_etf_holdings, us_min_sc):
+        """Return conservative US rows when Yahoo rate-limits all live scoring."""
+        seed = {
+            "MSFT":  ("Microsoft", "Technology", 7, "â­ CORE HOLD (3â€“5yr)", 12.0),
+            "AAPL":  ("Apple", "Technology", 6, "âœ… BUY & HOLD (1â€“3yr)", 9.0),
+            "NVDA":  ("NVIDIA", "Semiconductors", 7, "â­ CORE HOLD (3â€“5yr)", 16.0),
+            "AVGO":  ("Broadcom", "Semiconductors", 7, "â­ CORE HOLD (3â€“5yr)", 13.0),
+            "GOOGL": ("Alphabet", "Communication Services", 6, "âœ… BUY & HOLD (1â€“3yr)", 10.0),
+            "META":  ("Meta Platforms", "Communication Services", 6, "âœ… BUY & HOLD (1â€“3yr)", 11.0),
+            "AMZN":  ("Amazon", "Consumer Cyclical", 6, "âœ… BUY & HOLD (1â€“3yr)", 11.0),
+            "COST":  ("Costco", "Consumer Defensive", 6, "âœ… BUY & HOLD (1â€“3yr)", 8.0),
+            "V":     ("Visa", "Financial Services", 6, "âœ… BUY & HOLD (1â€“3yr)", 8.0),
+            "MA":    ("Mastercard", "Financial Services", 6, "âœ… BUY & HOLD (1â€“3yr)", 8.0),
+            "JPM":   ("JPMorgan Chase", "Financial Services", 6, "âœ… BUY & HOLD (1â€“3yr)", 7.0),
+            "BRK.B": ("Berkshire Hathaway", "Financial Services", 6, "âœ… BUY & HOLD (1â€“3yr)", 7.0),
+            "LLY":   ("Eli Lilly", "Healthcare", 6, "âœ… BUY & HOLD (1â€“3yr)", 10.0),
+            "UNH":   ("UnitedHealth", "Healthcare", 5, "ðŸ‘€ ACCUMULATE on dips", 7.0),
+            "ASML":  ("ASML", "Semiconductors", 5, "ðŸ‘€ ACCUMULATE on dips", 9.0),
+            "TSM":   ("Taiwan Semiconductor", "Semiconductors", 5, "ðŸ‘€ ACCUMULATE on dips", 9.0),
+            "ADBE":  ("Adobe", "Technology", 5, "ðŸ‘€ ACCUMULATE on dips", 8.0),
+            "CRM":   ("Salesforce", "Technology", 5, "ðŸ‘€ ACCUMULATE on dips", 8.0),
+            "QCOM":  ("Qualcomm", "Semiconductors", 5, "ðŸ‘€ ACCUMULATE on dips", 8.0),
+            "TXN":   ("Texas Instruments", "Semiconductors", 5, "ðŸ‘€ ACCUMULATE on dips", 7.0),
+        }
+        scan_set = {str(t).upper().strip() for t in us_scan}
+        rows = []
+        for t, (name, sector, score, horizon, exp_1y) in seed.items():
+            if t not in scan_set or score < us_min_sc:
+                continue
+            etfs = list(us_etf_holdings.get(t, []))
+            src = list(us_sources.get(t, []))
+            src_text = ", ".join(src + ["US fallback seed"]) if src else "US fallback seed"
+            rows.append({
+                "Ticker": t,
+                "Name": name[:28],
+                "Sector": sector,
+                "Price": "â€“",
+                "Mkt Cap": "â€“",
+                "Exp 1Y Return": f"+{exp_1y:.1f}%",
+                "Return Breakdown": "Fallback: quality/ETF watchlist, refresh for live values",
+                "Rev Growth": "â€“",
+                "EPS Growth": "â€“",
+                "ROE": "â€“",
+                "Margin": "â€“",
+                "Fwd PE": "â€“",
+                "PEG": "â€“",
+                "Div Yield": "â€“",
+                "Beta": "â€“",
+                "MA200": "â€“",
+                "Target": "â€“",
+                "Upside": "â€“",
+                "Rec": "â€“",
+                "Score": f"{score}/10",
+                "Horizon": horizon,
+                "_score": score,
+                "_hcol": "buy" if score >= 7 else "watch" if score >= 6 else "wait",
+                "_exp1y": exp_1y,
+                "Support": "âšª Fallback - refresh",
+                "SuppScore": "â€“",
+                "RSI14": "â€“",
+                "vsMA50%": "â€“",
+                "vsMA200%": "â€“",
+                "From52WHi%": "â€“",
+                "VolRatio": "â€“",
+                "FCFYield": "â€“",
+                "_supp_score": 0,
+                "_rsi14": 50.0,
+                "_supp_flags": ["Yahoo US data unavailable/rate-limited"],
+                "In ETFs": ", ".join(etfs[:4]) or "â€“",
+                "ETF Count": len(etfs),
+                "Sources": src_text,
+            })
+        rows.sort(key=lambda x: (-x.get("_score", 0), -x.get("ETF Count", 0), x.get("Ticker", "")))
+        return rows
+
     def _sgx_cloud_fallback_rows(sg_scan, sg_sources, sg_min_sc):
         """Return conservative SGX rows when yfinance returns no usable .SI rows.
 
@@ -638,7 +860,7 @@ def render_long_term(ctx: dict) -> None:
             )
             return
 
-        df_all = pd.DataFrame(raw)
+        df_all = _ascii_clean_df(pd.DataFrame(raw))
         df_filtered, near_supp = _render_filter_bar("lt_sg", df_all)
         _render_grid(df_filtered, "lt_sg",
                      near_support_only=near_supp,

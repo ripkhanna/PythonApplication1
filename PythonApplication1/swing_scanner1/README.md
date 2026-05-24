@@ -1,6 +1,6 @@
 # Swing Scanner v15.0 — Patched Build
 
-## What Changed in v14.1 (from v14.02)
+## What Changed in v14.1 (from v14.05)
 
 ### Core Scanner Fixes (`analysis_scan_core.py`)
 

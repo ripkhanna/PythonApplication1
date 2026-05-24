@@ -590,7 +590,7 @@ def render_top_movers(g: dict) -> None:
     live_tickers = _live_tickers_for_market(g, market_key, int(mover_count)) if market_key != "US" else []
     tickers = _unique_keep_order(live_tickers + base_tickers)
 
-    # v14.02: shared top banner helpers.  These update the page-level
+    # v14.05: shared top banner helpers.  These update the page-level
     # status only when this tab's Refresh button created the movers context.
     # This avoids hidden tabs overwriting the banner, while still giving
     # immediate/complete feedback when the user runs Movers.

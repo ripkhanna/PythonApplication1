@@ -243,7 +243,7 @@ def score_lt_stock(ticker: str) -> dict:
         # Computed from ma50/ma200/w52hi/w52lo already in `info` + rsi14 from
         # history. Zero extra API calls.
         supp_score = 0
-        supp_label = "⚪ Approaching"
+        supp_label = "Approaching"
         supp_flags = []
         vs_ma50_v  = None
         vs_ma200_v = None
@@ -290,17 +290,17 @@ def score_lt_stock(ticker: str) -> dict:
                 supp_flags.append(f"Floor +{from_lo_v:.0f}%")
 
             if supp_score >= 4:
-                supp_label = "🟢 At support"
+                supp_label = "At support"
             elif supp_score >= 2:
-                supp_label = "🟡 Near support"
+                supp_label = "Near support"
             elif supp_score == 1:
-                supp_label = "⚪ Approaching"
+                supp_label = "Approaching"
             else:
-                supp_label = "🔴 Extended/Broken"
+                supp_label = "Extended/Broken"
         except Exception:
             # Support scoring is best-effort — never prevent the quality row
             supp_score = 0
-            supp_label = "⚪ –"
+            supp_label = "-"
 
         # ── FCF yield ─────────────────────────────────────────────────────
         fcf_yield_pct = None
@@ -389,26 +389,55 @@ def score_lt_stock(ticker: str) -> dict:
                 notes.extend([x for x in sgx_added if x not in notes])
             score = min(score, 6)
 
+        # US Yahoo fundamentals can also be sparse or rate-limited. When price
+        # history exists but quoteSummary fields are blank, keep a conservative
+        # technical/quality fallback so the US Long Term tab does not show an
+        # empty grid purely because .info was unavailable.
+        is_us_symbol = "." not in str(ticker).upper()
+        if is_us_symbol and score < 4:
+            us_added = []
+            if mktcap and float(mktcap) >= 10_000_000_000:
+                score += 1; us_added.append("Large cap")
+            if trailing_1y > 8:
+                score += 1; us_added.append("1Y momentum")
+            if price and ma200 and price > ma200:
+                score += 1; us_added.append("Above MA200")
+            if supp_score >= 2:
+                score += 1; us_added.append("Near support")
+            if vol_ratio >= 1.05:
+                score += 1; us_added.append("Volume improving")
+            try:
+                pe_for_gate = fwd_pe or trail_pe
+                if pe_for_gate and 0 < float(pe_for_gate) <= 45:
+                    score += 1; us_added.append("Reasonable PE")
+            except Exception:
+                pass
+            if us_added:
+                notes.extend([x for x in us_added if x not in notes])
+            if len(us_added) >= 2:
+                score = max(score, 4)
+            score = min(score, 6)
+
         exp_1y     = _clip(price_return + div_return, -10, 24)
         exp_1y_str = f"+{exp_1y:.1f}%" if exp_1y > 0 else f"{exp_1y:.1f}%"
-        exp_1y_note = " + ".join(exp_parts) if exp_parts else "–"
+        exp_1y_note = " + ".join(exp_parts) if exp_parts else "-"
 
         # ── Hold horizon ──────────────────────────────────────────────────
         if score >= 8:
-            horizon = "⭐ CORE HOLD (3–5yr)";  hcol = "buy"
+            horizon = "CORE HOLD (3-5yr)";  hcol = "buy"
         elif score >= 6:
-            horizon = "✅ BUY & HOLD (1–3yr)"; hcol = "watch"
+            horizon = "BUY & HOLD (1-3yr)"; hcol = "watch"
         elif score >= 4:
-            horizon = "👀 ACCUMULATE on dips"; hcol = "wait"
+            horizon = "ACCUMULATE on dips"; hcol = "wait"
         else:
-            horizon = "⏳ MONITOR only";        hcol = "avoid"
+            horizon = "MONITOR only";        hcol = "avoid"
 
         mktcap_str = (f"${mktcap/1e9:.1f}B" if mktcap > 1e9
                       else f"${mktcap/1e6:.0f}M")
 
         def _fmt(v):
             if v is None:
-                return "–"
+                return "-"
             return f"{v:+.1f}%"
 
         return {
@@ -421,22 +450,22 @@ def score_lt_stock(ticker: str) -> dict:
             "Exp 1Y Return":    exp_1y_str,
             "Return Breakdown": exp_1y_note,
             "Rev Growth":       (f"+{rev_growth*100:.0f}%"
-                                 if rev_growth else "–"),
+                                 if rev_growth else "-"),
             "EPS Growth":       (f"+{earn_growth*100:.0f}%"
-                                 if earn_growth else "–"),
-            "ROE":              f"{roe*100:.0f}%"      if roe       else "–",
-            "Margin":           f"{profit_mg*100:.0f}%" if profit_mg else "–",
-            "Fwd PE":           f"{fwd_pe:.1f}x"        if fwd_pe   else "–",
-            "PEG":              f"{peg:.2f}"             if peg      else "–",
+                                 if earn_growth else "-"),
+            "ROE":              f"{roe*100:.0f}%"      if roe       else "-",
+            "Margin":           f"{profit_mg*100:.0f}%" if profit_mg else "-",
+            "Fwd PE":           f"{fwd_pe:.1f}x"        if fwd_pe   else "-",
+            "PEG":              f"{peg:.2f}"             if peg      else "-",
             "Div Yield":        (f"{div_yield*100:.1f}%"
-                                 if div_yield else "–"),
-            "Beta":             f"{beta:.2f}"            if beta     else "–",
-            "MA200":            "✅" if (price and ma200 and price > ma200)
-                                else "❌",
-            "Target":           f"${tgt:.2f}"            if tgt      else "–",
+                                 if div_yield else "-"),
+            "Beta":             f"{beta:.2f}"            if beta     else "-",
+            "MA200":            "Yes" if (price and ma200 and price > ma200)
+                                else "No",
+            "Target":           f"${tgt:.2f}"            if tgt      else "-",
             "Upside":           (f"+{upside_pct:.0f}%"
-                                 if upside_pct else "–"),
-            "Rec":              rec or "–",
+                                 if upside_pct else "-"),
+            "Rec":              rec or "-",
             "Score":            f"{score}/10",
             "Horizon":          horizon,
             "_score":           score,
@@ -450,9 +479,9 @@ def score_lt_stock(ticker: str) -> dict:
             "vsMA200%":         _fmt(vs_ma200_v),
             "From52WHi%":       _fmt(from_hi_v),
             "VolRatio":         (f"{vol_ratio:.2f}x"
-                                 if vol_ratio != 1.0 else "–"),
+                                 if vol_ratio != 1.0 else "-"),
             "FCFYield":         (f"{fcf_yield_pct:.1f}%"
-                                 if fcf_yield_pct else "–"),
+                                 if fcf_yield_pct else "-"),
             "_supp_score":      supp_score,
             "_rsi14":           rsi14,
             "_supp_flags":      supp_flags,
