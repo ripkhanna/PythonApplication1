@@ -13,6 +13,7 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
+import requests
 import streamlit as st
 import yfinance as yf
 
@@ -20,6 +21,276 @@ try:
     from swing_trader_app.tabs.universe_data import get_tickers_for_market
 except Exception:
     get_tickers_for_market = None
+
+
+def _fi_get(fi, *names):
+    """Read yfinance fast_info values across attr-style and dict-style builds."""
+    for name in names:
+        try:
+            val = getattr(fi, name, None)
+        except Exception:
+            val = None
+        if val is not None:
+            return val
+        if hasattr(fi, "get"):
+            try:
+                val = fi.get(name)
+            except Exception:
+                val = None
+            if val is not None:
+                return val
+    return None
+
+
+def _as_float(value, default: float = 0.0) -> float:
+    try:
+        if isinstance(value, dict):
+            value = value.get("raw", value.get("fmt"))
+        if value is None:
+            return default
+        out = float(value)
+        return out if np.isfinite(out) else default
+    except Exception:
+        return default
+
+
+def _as_pct(value) -> Optional[float]:
+    out = _as_float(value, default=float("nan"))
+    if not np.isfinite(out):
+        return None
+    # Yahoo/yfinance may expose PM percent as either 5.85 or 0.0585.
+    return out * 100.0 if abs(out) <= 1.0 else out
+
+
+def _chunks(items: list[str], size: int):
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
+def _quote_get(q: dict, *names):
+    for name in names:
+        val = q.get(name)
+        if val is not None:
+            return val
+    return None
+
+
+def _bar_time_sgt(epoch_value) -> str:
+    if not epoch_value:
+        return "–"
+    try:
+        ts = pd.Timestamp(int(epoch_value), unit="s", tz="UTC")
+        return ts.tz_convert("Asia/Singapore").strftime("%H:%M SGT")
+    except Exception:
+        return "–"
+
+
+def _premarket_row_from_values(
+    sym: str,
+    *,
+    pm_price: float,
+    pm_pct: Optional[float],
+    prev_close: float,
+    last_price: float,
+    last_vol: float,
+    avg3m_vol: float,
+    hi52: float,
+    lo52: float,
+    market_time,
+    min_gap_pct: float,
+    source: str,
+) -> Optional[dict]:
+    ref_price = pm_price if pm_price > 0 else last_price
+    if pm_pct is not None and prev_close > 0:
+        pm_chg = pm_pct
+        if ref_price <= 0:
+            ref_price = prev_close * (1 + pm_chg / 100.0)
+    else:
+        if ref_price <= 0 or prev_close <= 0:
+            return None
+        pm_chg = (ref_price - prev_close) / prev_close * 100.0
+
+    if ref_price <= 0 or prev_close <= 0 or abs(pm_chg) < min_gap_pct:
+        return None
+
+    vol_ratio = round(last_vol / avg3m_vol, 2) if avg3m_vol > 0 else float("nan")
+    hi52_dist = round((ref_price / hi52 - 1) * 100, 1) if hi52 > 0 else float("nan")
+    lo52_dist = round((ref_price / lo52 - 1) * 100, 1) if lo52 > 0 else float("nan")
+
+    return {
+        "Ticker":       str(sym).strip().upper(),
+        "PM Price":     round(ref_price, 2),
+        "Prev Close":   round(prev_close, 2),
+        "PM Chg %":     round(pm_chg, 2),
+        "Vol Ratio":    vol_ratio,
+        "52W High":     round(hi52, 2) if hi52 > 0 else float("nan"),
+        "52W Low":      round(lo52, 2) if lo52 > 0 else float("nan"),
+        "vs 52W Hi":    hi52_dist,
+        "vs 52W Lo":    lo52_dist,
+        "Last Updated": _bar_time_sgt(market_time),
+        "PM Source":    source,
+    }
+
+
+def _fetch_yahoo_quote_rows(tickers: list[str], min_gap_pct: float) -> list[dict]:
+    """Batch quote fallback for extended-hours fields missing from fast_info."""
+    rows: list[dict] = []
+    headers = {"User-Agent": "Mozilla/5.0"}
+    for batch in _chunks([t for t in tickers if t], 70):
+        try:
+            url = "https://query1.finance.yahoo.com/v7/finance/quote"
+            resp = requests.get(
+                url,
+                params={"symbols": ",".join(batch)},
+                headers=headers,
+                timeout=8,
+            )
+            if resp.status_code != 200:
+                continue
+            quotes = (
+                resp.json()
+                .get("quoteResponse", {})
+                .get("result", [])
+            )
+        except Exception:
+            continue
+
+        for q in quotes:
+            sym = str(_quote_get(q, "symbol") or "").strip().upper()
+            if not sym:
+                continue
+            pm_price = _as_float(_quote_get(q, "preMarketPrice"))
+            pm_pct = _as_pct(_quote_get(q, "preMarketChangePercent"))
+            prev_close = _as_float(_quote_get(q, "regularMarketPreviousClose", "previousClose"))
+            last_price = _as_float(_quote_get(q, "regularMarketPrice", "postMarketPrice"))
+            last_vol = _as_float(_quote_get(q, "preMarketVolume", "regularMarketVolume"))
+            avg3m_vol = _as_float(_quote_get(q, "averageDailyVolume3Month", "averageDailyVolume10Day"))
+            hi52 = _as_float(_quote_get(q, "fiftyTwoWeekHigh"))
+            lo52 = _as_float(_quote_get(q, "fiftyTwoWeekLow"))
+            market_time = _quote_get(q, "preMarketTime", "regularMarketTime")
+            source = "PM" if (pm_price > 0 or pm_pct is not None) else "LIVE"
+            row = _premarket_row_from_values(
+                sym,
+                pm_price=pm_price,
+                pm_pct=pm_pct,
+                prev_close=prev_close,
+                last_price=last_price,
+                last_vol=last_vol,
+                avg3m_vol=avg3m_vol,
+                hi52=hi52,
+                lo52=lo52,
+                market_time=market_time,
+                min_gap_pct=min_gap_pct,
+                source=source,
+            )
+            if row:
+                rows.append(row)
+    return rows
+
+
+def _download_symbol_frame(raw: pd.DataFrame, sym: str) -> pd.DataFrame:
+    if raw is None or raw.empty:
+        return pd.DataFrame()
+    try:
+        if isinstance(raw.columns, pd.MultiIndex):
+            levels0 = [str(x).upper() for x in raw.columns.get_level_values(0)]
+            levels1 = [str(x).upper() for x in raw.columns.get_level_values(1)]
+            sym_u = str(sym).upper()
+            if sym_u in levels0:
+                actual = raw.columns.get_level_values(0)[levels0.index(sym_u)]
+                out = raw[actual].copy()
+            elif sym_u in levels1:
+                actual = raw.columns.get_level_values(1)[levels1.index(sym_u)]
+                out = raw.xs(actual, axis=1, level=1).copy()
+            else:
+                return pd.DataFrame()
+        else:
+            out = raw.copy()
+        out.columns = [str(c).strip().title().replace("Adj Close", "Adj Close") for c in out.columns]
+        return out
+    except Exception:
+        return pd.DataFrame()
+
+
+def _fetch_intraday_prepost_rows(tickers: list[str], min_gap_pct: float) -> list[dict]:
+    """Use Yahoo chart bars with pre/post-market included when quote fields are absent."""
+    rows: list[dict] = []
+    if not tickers:
+        return rows
+
+    now_et = _now_et()
+    for batch in _chunks([t for t in tickers if t], 60):
+        try:
+            with _cl.redirect_stderr(_io.StringIO()), _cl.redirect_stdout(_io.StringIO()):
+                raw = yf.download(
+                    tickers=batch,
+                    period="5d",
+                    interval="5m",
+                    prepost=True,
+                    progress=False,
+                    auto_adjust=False,
+                    group_by="ticker",
+                    threads=True,
+                )
+        except Exception:
+            continue
+
+        for sym in batch:
+            df = _download_symbol_frame(raw, sym)
+            if df.empty or "Close" not in df.columns:
+                continue
+            df = df.dropna(subset=["Close"]).copy()
+            if df.empty:
+                continue
+            try:
+                idx = pd.DatetimeIndex(pd.to_datetime(df.index))
+                if idx.tz is None:
+                    idx = idx.tz_localize("America/New_York")
+                else:
+                    idx = idx.tz_convert("America/New_York")
+                df.index = idx
+            except Exception:
+                pass
+
+            try:
+                regular = df.between_time("09:30", "16:00")
+                prev_regular = regular[regular.index.date < now_et.date()]
+                if prev_regular.empty:
+                    prev_regular = regular.iloc[:-1]
+                prev_close = float(prev_regular["Close"].dropna().iloc[-1])
+                latest = df.iloc[-1]
+                ref_price = float(latest["Close"])
+                if ref_price <= 0 or prev_close <= 0:
+                    continue
+                latest_ts = df.index[-1]
+                mins = latest_ts.hour * 60 + latest_ts.minute
+                if mins < 9 * 60 + 30:
+                    source = "PM BAR"
+                elif mins > 16 * 60:
+                    source = "AH BAR"
+                else:
+                    source = "LIVE BAR"
+                today_rows = df[df.index.date == latest_ts.date()]
+                last_vol = float(today_rows.get("Volume", pd.Series(dtype=float)).fillna(0).sum())
+                row = _premarket_row_from_values(
+                    sym,
+                    pm_price=ref_price if source == "PM BAR" else 0.0,
+                    pm_pct=None,
+                    prev_close=prev_close,
+                    last_price=ref_price,
+                    last_vol=last_vol,
+                    avg3m_vol=0.0,
+                    hi52=0.0,
+                    lo52=0.0,
+                    market_time=int(latest_ts.timestamp()),
+                    min_gap_pct=min_gap_pct,
+                    source=source,
+                )
+                if row:
+                    rows.append(row)
+            except Exception:
+                continue
+    return rows
 
 # ── Market window helpers ──────────────────────────────────────────────────────
 
@@ -85,29 +356,56 @@ def _fetch_premarket_data(tickers_tuple: tuple, min_gap_pct: float, market_label
     interpreted as live/day change.
     """
     tickers  = list(tickers_tuple)
-    rows: list[dict] = []
+    rows: list[dict] = _fetch_yahoo_quote_rows(tickers, min_gap_pct)
+    seen = {str(r.get("Ticker", "")).upper() for r in rows}
+    fallback_tickers = [t for t in tickers if str(t).upper() not in seen]
 
     def _one(sym: str) -> Optional[dict]:
         try:
             with _cl.redirect_stderr(_io.StringIO()), _cl.redirect_stdout(_io.StringIO()):
                 fi = yf.Ticker(sym).fast_info
 
-            # Pre-market fields
-            pm_price  = float(getattr(fi, "pre_market_price",  None) or 0)
-            prev_close= float(getattr(fi, "previous_close",    None) or 0)
-            last_price= float(getattr(fi, "last_price",        None) or 0)
-            last_vol  = float(getattr(fi, "last_volume",       None) or 0)
-            avg3m_vol = float(getattr(fi, "three_month_average_volume", None) or 0)
-            hi52      = float(getattr(fi, "year_high",         None) or 0)
-            lo52      = float(getattr(fi, "year_low",          None) or 0)
-            mktts     = getattr(fi, "regular_market_time",     None)
+            # Pre-market fields. yfinance has changed these names across
+            # versions, so read both snake_case attributes and camelCase keys.
+            pm_price  = _as_float(_fi_get(fi, "pre_market_price", "preMarketPrice"))
+            pm_pct    = _as_pct(_fi_get(fi, "pre_market_change_percent", "preMarketChangePercent"))
+            prev_close= _as_float(_fi_get(fi, "previous_close", "regularMarketPreviousClose", "previousClose"))
+            last_price= _as_float(_fi_get(fi, "last_price", "regularMarketPrice", "postMarketPrice"))
+            last_vol  = _as_float(_fi_get(fi, "last_volume", "regularMarketVolume", "preMarketVolume"))
+            avg3m_vol = _as_float(_fi_get(fi, "three_month_average_volume", "averageDailyVolume3Month"))
+            hi52      = _as_float(_fi_get(fi, "year_high", "fiftyTwoWeekHigh"))
+            lo52      = _as_float(_fi_get(fi, "year_low", "fiftyTwoWeekLow"))
+            mktts     = _fi_get(fi, "pre_market_time", "preMarketTime", "regular_market_time", "regularMarketTime")
 
-            # Use pre-market price if available, else last price
+            return _premarket_row_from_values(
+                sym,
+                pm_price=pm_price,
+                pm_pct=pm_pct,
+                prev_close=prev_close,
+                last_price=last_price,
+                last_vol=last_vol,
+                avg3m_vol=avg3m_vol,
+                hi52=hi52,
+                lo52=lo52,
+                market_time=mktts,
+                min_gap_pct=min_gap_pct,
+                source="PM" if (pm_price > 0 or pm_pct is not None) else "LIVE",
+            )
+
+            # Use pre-market price/percent if available, else last price.
             ref_price = pm_price if pm_price > 0 else last_price
+            if pm_pct is not None and prev_close > 0:
+                pm_chg = pm_pct
+                if ref_price <= 0:
+                    ref_price = prev_close * (1 + pm_chg / 100.0)
+            else:
+                if ref_price <= 0 or prev_close <= 0:
+                    return None
+                pm_chg = (ref_price - prev_close) / prev_close * 100.0
+
             if ref_price <= 0 or prev_close <= 0:
                 return None
 
-            pm_chg = (ref_price - prev_close) / prev_close * 100.0
             if abs(pm_chg) < min_gap_pct:
                 return None
 
@@ -138,16 +436,20 @@ def _fetch_premarket_data(tickers_tuple: tuple, min_gap_pct: float, market_label
                 "vs 52W Hi":    hi52_dist,
                 "vs 52W Lo":    lo52_dist,
                 "Last Updated": bar_sgt,
-                "PM Source":    "PM" if pm_price > 0 else "LIVE",
+                "PM Source":    "PM" if (pm_price > 0 or pm_pct is not None) else "LIVE",
             }
         except Exception:
             return None
 
-    workers = min(25, max(1, len(tickers)))
+    workers = min(25, max(1, len(fallback_tickers)))
     with _fut.ThreadPoolExecutor(max_workers=workers) as ex:
-        for r in ex.map(_one, tickers):
+        for r in ex.map(_one, fallback_tickers):
             if r:
                 rows.append(r)
+
+    seen = {str(r.get("Ticker", "")).upper() for r in rows}
+    intraday_tickers = [t for t in tickers if str(t).upper() not in seen]
+    rows.extend(_fetch_intraday_prepost_rows(intraday_tickers, min_gap_pct))
 
     if not rows:
         return pd.DataFrame()
@@ -247,7 +549,7 @@ def render_premarket(g: dict) -> None:
         min_gap = st.slider("Min gap %", 0.5, 10.0, 2.0, 0.5, key="pm_min_gap",
                             help="Minimum absolute PM gap to show. 2% = meaningful catalyst. 5% = significant gap.")
     with c2:
-        show_n = st.slider("Show top N", 5, 100, 30, 5, key="pm_show_n")
+        show_n = st.slider("Show top N", 5, 200, 100, 5, key="pm_show_n")
     with c3:
         direction = st.radio("Direction", ["All", "Gapping Up ↑", "Gapping Down ↓"],
                              horizontal=True, key="pm_direction")

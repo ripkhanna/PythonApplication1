@@ -772,6 +772,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
 
     for i, ticker in enumerate(all_tickers):
         try:
+            _options_bullish = False
             _scan_progress(i, f"Scanning {ticker} ({i+1}/{total})...")
 
             # ── Earnings guard — pre-fetched calendar cache ──────────────
@@ -1026,6 +1027,11 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             # SHORT_WEIGHTS, so this is purely additive.
             long_sig  = {**long_sig,  **opt_long}
             short_sig = {**short_sig, **opt_short}
+            _options_bullish = bool(
+                opt_long.get("opt_unusual_call_flow")
+                or opt_long.get("opt_call_skew_bullish")
+                or opt_long.get("opt_pc_volume_low")
+            )
 
             # ── Float / short / PE — pre-fetched meta cache ──────────────────
             _m          = _meta_cache.get(ticker, {})
@@ -1649,11 +1655,6 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             if _recent_run_extended:
                 _seven_reasons.append(f"already ran 5D {_recent_5d_pct:.1f}% / 20D {_recent_20d_pct:.1f}%")
             seven_star_why = " | ".join(_seven_reasons[:7]) if _seven_reasons else "not enough 7-star evidence"
-            _options_bullish = bool(
-                opt_long.get("opt_unusual_call_flow")
-                or opt_long.get("opt_call_skew_bullish")
-                or opt_long.get("opt_pc_volume_low")
-            )
             _pss_score_val = int(raw.get("pss_score", 0) or 0)
             _explosive_breakout_trigger = bool(
                 (raw.get("h10", 0) and p_raw >= float(raw.get("h10", 0)) * 0.940) or
