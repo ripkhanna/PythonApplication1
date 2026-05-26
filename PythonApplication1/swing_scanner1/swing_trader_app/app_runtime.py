@@ -1823,22 +1823,23 @@ if st.session_state.get("scan_cache_warning"):
 # Professional workflow layout v17.4
 # Daily workflow is kept compact; detailed/source/QA views are nested.
 st.caption(
-    "Workflow: Market Activity -> Pre-Movers -> Best 7-10% -> Long Setups -> Short Setups -> Trade Tools -> Stock Analysis -> Advanced"
+    "Workflow: Market Activity -> Momentum Runner -> Pre-Movers -> Best 7-10% -> Long Setups -> Short Setups -> Trade Tools -> Stock Analysis -> Advanced"
 )
 
-tab_sectors, tab_market_activity, tab_pre_movers, tab_best_710, tab_long, tab_short, tab_trade_tools, tab_stock, tab_events, tab_long_term, tab_advanced, tab_help = st.tabs([
+tab_sectors, tab_market_activity, tab_momentum_runner, tab_pre_movers, tab_best_710, tab_long, tab_short, tab_trade_tools, tab_stock, tab_events, tab_long_term, tab_advanced, tab_help = st.tabs([
     "1 Market Map",
     "2 Market Activity",
-    "3 Pre-Movers",
-    "4 Best 7-10%",
-    "5 Long Setups",
-    "6 Short Setups",
-    "7 Trade Tools",
-    "8 Stock Analysis",
-    "9 Events",
-    "10 Long Term / ETF",
-    "11 Advanced",
-    "12 Help",
+    "3 Momentum Runner",
+    "4 Pre-Movers",
+    "5 Best 7-10%",
+    "6 Long Setups",
+    "7 Short Setups",
+    "8 Trade Tools",
+    "9 Stock Analysis",
+    "10 Events",
+    "11 Long Term / ETF",
+    "12 Advanced",
+    "13 Help",
 ])
 
 with tab_market_activity:
@@ -1907,6 +1908,7 @@ from swing_trader_app.tabs.swing_picks_tab import render_swing_picks
 from swing_trader_app.tabs.trade_desk_tab import render_trade_desk
 from swing_trader_app.tabs.top_movers_tab import render_top_movers
 from swing_trader_app.tabs.pre_movers_tab import render_pre_movers
+from swing_trader_app.tabs.momentum_runner_tab import render_momentum_runner
 from swing_trader_app.tabs.premarket_tab import render_premarket
 from swing_trader_app.tabs.breakout_scanner_tab import render_breakout_scanner
 from swing_trader_app.tabs.pro_setups_tab     import render_pro_setups
@@ -2708,6 +2710,9 @@ with tab_swing_picks:
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_top_movers:
     _safe_render_tab('top_movers', render_top_movers)
+
+with tab_momentum_runner:
+    _safe_render_tab('momentum_runner', render_momentum_runner)
 
 with tab_pre_movers:
     _safe_render_tab('pre_movers', render_pre_movers)

@@ -6,8 +6,8 @@ def render_help(ctx: dict) -> None:
 
     st.markdown("## Swing Scanner - Current Guide")
     st.caption(
-        "12 top tabs - US, SGX, India, HK - swing trading, pre-movers, "
-        "7-10% candidates, long/short setups, trade tools, events, and long-term/ETF tools"
+        "13 top tabs - US, SGX, India, HK - market activity, momentum runners, "
+        "pre-movers, 7-10% candidates, long/short setups, trade tools, events, and long-term/ETF tools"
     )
 
     st.markdown(
@@ -17,13 +17,13 @@ def render_help(ctx: dict) -> None:
 Use the tabs from left to right:
 
 ```text
-1 Market Map -> 2 Market Activity -> 3 Pre-Movers -> 4 Best 7-10%
-    -> 5 Long Setups -> 6 Short Setups -> 7 Trade Tools
-    -> 8 Stock Analysis -> 9 Events -> 10 Long Term / ETF
-    -> 11 Advanced -> 12 Help
+1 Market Map -> 2 Market Activity -> 3 Momentum Runner -> 4 Pre-Movers
+    -> 5 Best 7-10% -> 6 Long Setups -> 7 Short Setups
+    -> 8 Trade Tools -> 9 Stock Analysis -> 10 Events
+    -> 11 Long Term / ETF -> 12 Advanced -> 13 Help
 ```
 
-Start with market direction, then active movers, then early candidates, then the strict 7-10% shortlist. Confirm the setup in Long Setups and Stock Analysis before using Trade Tools for entry, stop, target, and position sizing.
+Start with market direction, then active movers, then Momentum Runner for stocks already moving, then Pre-Movers for names before the move, then the strict 7-10% shortlist. Confirm the setup in Long Setups and Stock Analysis before using Trade Tools for entry, stop, target, and position sizing.
         """
     )
 
@@ -34,22 +34,34 @@ Start with market direction, then active movers, then early candidates, then the
 |---|---|---|
 | **1 Market Map** | Sector heatmap and broad market context | Check whether the market/sector backdrop supports long or short trades |
 | **2 Market Activity** | Pre-Market, Movers, Breakouts | See what is active now and which stocks are breaking out |
-| **3 Pre-Movers** | Pre-Mover score, 7-Star score, Style Explosive Watch | Find names before the large daily move |
-| **4 Best 7-10%** | Combined shortlist from Long Setups, Swing Picks, 7-10% Swing, Pro Setups, Pre-Movers | Strictest shortlist for the 7-10% swing objective |
-| **5 Long Setups** | Main bullish scanner results | Review BUY/WATCH/WAIT long candidates and all scan columns |
-| **6 Short Setups** | Bearish scanner results | Find weak names or hedge candidates |
-| **7 Trade Tools** | Trade Desk, Operator Activity, Range Trader | Plan entries/exits and check smart-money/range behavior |
-| **8 Stock Analysis** | Single-stock deep dive | Confirm a specific ticker before action |
-| **9 Events** | Earnings, Event Predictor | Check earnings/catalyst risk and event/squeeze watchlists |
-| **10 Long Term / ETF** | Long Term, ETF Holdings | Longer-term quality/support scoring and ETF universe tools |
-| **11 Advanced** | 7-10% Swing, Swing Picks, Pro Setups, Side by Side, Strategy Lab, Accuracy Lab, Test Cases, Diagnostics | Research, QA, diagnostics, and specialist views |
-| **12 Help** | This guide | Current workflow and troubleshooting |
+| **3 Momentum Runner** | Day-1 Ignition, Controlled Runner, Hot Runner / Wait Reset | Track stocks that are already running without weakening strict swing filters |
+| **4 Pre-Movers** | Pre-Mover score, 7-Star score, Style Explosive Watch | Find names before the large daily move |
+| **5 Best 7-10%** | Combined shortlist from Long Setups, Swing Picks, 7-10% Swing, Pro Setups, Pre-Movers, and PM strength | Strictest shortlist for the 7-10% swing objective |
+| **6 Long Setups** | Main bullish scanner results | Review BUY/WATCH/WAIT long candidates and all scan columns |
+| **7 Short Setups** | Bearish scanner results | Find weak names or hedge candidates |
+| **8 Trade Tools** | Trade Desk, Operator Activity, Range Trader | Plan entries/exits and check smart-money/range behavior |
+| **9 Stock Analysis** | Single-stock deep dive | Confirm a specific ticker before action |
+| **10 Events** | Earnings, Event Predictor | Check earnings/catalyst risk and event/squeeze watchlists |
+| **11 Long Term / ETF** | Long Term, ETF Holdings | Longer-term quality/support scoring and ETF universe tools |
+| **12 Advanced** | 7-10% Swing, Swing Picks, Pro Setups, Side by Side, Strategy Lab, Accuracy Lab, Test Cases, Diagnostics | Research, QA, diagnostics, and specialist views |
+| **13 Help** | This guide | Current workflow and troubleshooting |
             """
         )
 
     with st.expander("Main Swing Tabs"):
         st.markdown(
             """
+### Momentum Runner
+
+Use this tab for stocks that are already moving now. It is separate from Best 7-10%, so hot runners do not pollute the strict swing shortlist.
+
+Buckets:
+- **A - Day-1 Ignition**: early runner with PM/today strength, quality/fuel, liquidity, and no avoid/trap flag.
+- **B - Controlled Runner**: moving but not yet overheated.
+- **C - Hot Runner / Wait Reset**: already extended; wait for VWAP hold, inside day, pullback, or reset before considering entry.
+
+Example behavior: a stock like NVTS can appear as **Hot Runner / Wait Reset** when it is +20% today and already up strongly over 5-20 days. That means "track it, but do not force it into a clean swing entry."
+
 ### Pre-Movers
 
 Designed to find stocks that may become Movers soon, before the move is already obvious.
@@ -62,6 +74,12 @@ Key fields:
 ### Best 7-10%
 
 This is the strict combined tab for the user's main goal: candidates with realistic 7-10% swing potential. It checks multiple evidence sources and rejects names with poor room, weak range, bad reward:risk, overextension, or trap/chase risk.
+
+Latest behavior:
+- **PM Chg%** is now included as a quality confirmation when the setup already has supporting evidence.
+- Constructive PM strength can improve the score.
+- Overextended PM moves and red PM moves are penalized.
+- The grid shows **PM Chg%** and **PM Price** next to trigger/invalid levels.
 
 ### Long Setups
 
@@ -135,6 +153,7 @@ Use this to inspect ETF constituents and add universe ideas for scans.
 - The top market selector controls US, SGX, India, and HK aware tabs.
 - Manual/always-include tickers are merged into the selected market universe.
 - Movers and Breakouts combine selected-market tickers with live/high-activity sources where available.
+- Pre-Market uses multiple generic data paths: Yahoo quote fields, `fast_info`, then 5-minute intraday bars with `prepost=True`. No ticker is hardcoded.
 - SGX/HK/India tickers keep their native Yahoo suffixes such as `.SI`, `.HK`, and `.NS`.
 - If Yahoo rate-limits, use Diagnostics to inspect errors and rerun later.
             """
@@ -146,11 +165,14 @@ Use this to inspect ETF constituents and add universe ideas for scans.
 | Symptom | What to try |
 |---|---|
 | No rows in a tab | Run a fresh scan for the selected market and check filter sliders/search boxes |
-| A ticker is missing | Add it to Always include tickers, then scan again |
+| A hot stock is not in Best 7-10% | Check **3 Momentum Runner**; it may be too extended for a clean swing entry |
+| A stock is marked Hot Runner / Wait Reset | Wait for VWAP hold, opening-range reclaim, inside day, or pullback/reset |
+| Premarket stock is missing | Click Refresh in Pre-Market, lower Min gap %, raise Show top N, and confirm the selected market is US |
+| A ticker is missing from scan results | Add it to Always include tickers for the next full scan |
 | Yahoo rate-limit warning | Wait and rerun later; cached data may still show previous scan results |
 | Long Term US fallback rows appear | Yahoo live data was blocked or blank; refresh later for live values before acting |
 | Wrong market appears | Use the top market radio, then scan again |
-| Need debugging | Open **11 Advanced -> Diagnostics** |
+| Need debugging | Open **12 Advanced -> Diagnostics** |
             """
         )
 
