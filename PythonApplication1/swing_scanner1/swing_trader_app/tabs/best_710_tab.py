@@ -126,6 +126,7 @@ def _classify(df: pd.DataFrame, min_score: int, max_today: float, strict: bool) 
     trap_label = _text(out, "Trap Risk").str.upper()
 
     today = _num(out, "Today %", 0)
+    pm_chg = _num(out, "PM Chg%", 0)
     move5 = _num(out, "5D %", 0)
     move20 = _num(out, "20D %", 0)
     upside = _num(out, "Upside to Res", 0)
@@ -151,8 +152,19 @@ def _classify(df: pd.DataFrame, min_score: int, max_today: float, strict: bool) 
         | signals.str.contains("BREAKOUT|POCKET|VOLUME|NR7|INSIDE|BB BULL SQ|HIGHER LOWS|MACD", regex=True, na=False)
     )
 
-    moved_already = (today > max_today) | (move5 >= 25) | (move20 >= 50) | premover_tier.str.contains("MOVED", na=False) | explosion_tier.str.contains("MOVED", na=False) | seven_tier.str.contains("MOVED", na=False)
-    hard_red = (today <= -5.0) & ~signals.str.contains("FAILED BRKDN", na=False)
+    pm_cap = max(float(max_today) + 2.0, 6.0)
+    pm_constructive = (pm_chg >= 0.75) & (pm_chg <= pm_cap)
+    pm_soft = (pm_chg >= 0.25) & (pm_chg < 0.75)
+    pm_hot = pm_chg > pm_cap
+    pm_red = pm_chg <= -3.0
+
+    moved_already = (
+        (today > max_today) | pm_hot | (move5 >= 25) | (move20 >= 50)
+        | premover_tier.str.contains("MOVED", na=False)
+        | explosion_tier.str.contains("MOVED", na=False)
+        | seven_tier.str.contains("MOVED", na=False)
+    )
+    hard_red = ((today <= -5.0) | (pm_chg <= -4.0)) & ~signals.str.contains("FAILED BRKDN", na=False)
     trap = trap_label.str.contains("TRAP|CHASING|DISTRIBUTION|LIMIT", regex=True, na=False) | signals.str.contains("CHASING|LIMIT-UP", regex=True, na=False)
 
     swing_component = pd.Series(np.maximum(
@@ -169,6 +181,14 @@ def _classify(df: pd.DataFrame, min_score: int, max_today: float, strict: bool) 
     )
     swing710_component = pd.Series(swing710_component, index=idx)
     premover_component = pd.Series(np.maximum(seven * 14.0, np.maximum(pm_score, expl_score)), index=idx)
+    pm_component = pd.Series(
+        np.where(
+            pm_constructive,
+            62 + np.minimum(pm_chg.clip(lower=0), pm_cap) / pm_cap * 28,
+            np.where(pm_soft, 45, 0),
+        ),
+        index=idx,
+    )
     pro_component = np.minimum(pro_score, 20) / 20 * 100
     long_component = (
         np.minimum(np.maximum(quality, nds).clip(lower=0), 15) / 15 * 55
@@ -178,16 +198,18 @@ def _classify(df: pd.DataFrame, min_score: int, max_today: float, strict: bool) 
     long_component = pd.Series(long_component, index=idx)
 
     combo = (
-        swing710_component * 0.30
-        + swing_component * 0.25
-        + premover_component * 0.20
-        + pro_component * 0.15
-        + long_component * 0.10
+        swing710_component * 0.28
+        + swing_component * 0.23
+        + premover_component * 0.18
+        + pro_component * 0.14
+        + long_component * 0.09
+        + pm_component * 0.08
     )
     combo = pd.Series(combo, index=idx).clip(0, 100)
     combo -= np.where(moved_already, 18, 0)
     combo -= np.where(hard_red, 18, 0)
     combo -= np.where(trap, 18, 0)
+    combo -= np.where(pm_red, 8, 0)
     combo -= np.where((vol < 0.75) & ~supportish, 6, 0)
     combo = combo.clip(0, 100).round(1)
 
@@ -207,6 +229,7 @@ def _classify(df: pd.DataFrame, min_score: int, max_today: float, strict: bool) 
         + (pro_score >= 8).astype(int)
         + (pm_score >= 55).astype(int)
         + (expl_score >= 45).astype(int)
+        + (pm_constructive & ((quality >= 10) | (seven >= 4) | (pro_score >= 6) | (rise >= 65))).astype(int)
     )
     confirm_needed = 3 if strict else 2
 
@@ -236,6 +259,9 @@ def _classify(df: pd.DataFrame, min_score: int, max_today: float, strict: bool) 
         if pro_score.loc[i] >= 8: parts.append(f"pro {int(pro_score.loc[i])}")
         if pm_score.loc[i] >= 55: parts.append("pre-mover")
         if expl_score.loc[i] >= 45: parts.append("explosive watch")
+        if pm_constructive.loc[i]: parts.append(f"PM +{pm_chg.loc[i]:.1f}%")
+        if pm_hot.loc[i]: parts.append("PM overextended")
+        if pm_red.loc[i]: parts.append("PM red")
         if moved_already.loc[i]: parts.append("already ran")
         if hard_red.loc[i]: parts.append("hard red")
         if trap.loc[i]: parts.append("trap/chase risk")
@@ -270,7 +296,8 @@ def _show(df: pd.DataFrame, key: str) -> None:
         return
     preferred = [
         "Ticker", "Best 710 Score", "Best 710 Tier", "Best 710 Why",
-        "Trigger Above", "Invalid Below", "Tradeable Buy", "7-Star Score",
+        "Trigger Above", "Invalid Below", "PM Chg%", "PM Price",
+        "Tradeable Buy", "7-Star Score",
         "7-Star Tier", "Pre-Mover Score", "Explosion Score", "Quality Score",
         "Next-Day Score", "Final Swing Score", "Rise Prob", "Today %",
         "5D %", "20D %", "7D Move Est", "Upside to Res", "RR Est",
