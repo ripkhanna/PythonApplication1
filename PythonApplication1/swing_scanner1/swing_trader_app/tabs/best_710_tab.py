@@ -114,6 +114,8 @@ def _classify(df: pd.DataFrame, min_score: int, max_today: float, strict: bool) 
     idx = out.index
 
     signals = _text(out, "Signals").str.upper()
+    ticker_s = _text(out, "Ticker").str.upper()
+    is_hk = ticker_s.str.endswith(".HK")
     action = _text(out, "Action").str.upper()
     setup = _text(out, "Setup Type").str.upper()
     entry = _text(out, "Entry Quality").str.upper()
@@ -157,6 +159,16 @@ def _classify(df: pd.DataFrame, min_score: int, max_today: float, strict: bool) 
     pm_soft = (pm_chg >= 0.25) & (pm_chg < 0.75)
     pm_hot = pm_chg > pm_cap
     pm_red = pm_chg <= -3.0
+    hk_participation_ok = (
+        ~is_hk
+        | (vol >= 0.85)
+        | (today >= 1.0)
+        | pm_constructive
+        | tradeable
+        | signals.str.contains("VOL BREAKOUT|POCKET|HIGH-ACCURACY|NEXT-DAY-A\\+|STYLE-EXPLOSIVE", regex=True, na=False)
+        | ((pm_score >= 70) & (seven >= 6) & (vol >= 0.65))
+        | ((expl_score >= 60) & (vol >= 0.65))
+    )
 
     moved_already = (
         (today > max_today) | pm_hot | (move5 >= 25) | (move20 >= 50)
@@ -211,6 +223,7 @@ def _classify(df: pd.DataFrame, min_score: int, max_today: float, strict: bool) 
     combo -= np.where(trap, 18, 0)
     combo -= np.where(pm_red, 8, 0)
     combo -= np.where((vol < 0.75) & ~supportish, 6, 0)
+    combo -= np.where(is_hk & ~hk_participation_ok, 18, 0)
     combo = combo.clip(0, 100).round(1)
 
     passes_core = (
@@ -221,6 +234,7 @@ def _classify(df: pd.DataFrame, min_score: int, max_today: float, strict: bool) 
         & (today >= -5.0)
         & ~moved_already
         & ~trap
+        & hk_participation_ok
     )
     multi_confirm = (
         tradeable.astype(int)
@@ -236,10 +250,11 @@ def _classify(df: pd.DataFrame, min_score: int, max_today: float, strict: bool) 
     tier = pd.Series("Reject / Too Risky", index=idx)
     tier.loc[(combo >= 62) & passes_core & (multi_confirm >= confirm_needed)] = "A - Watch For Trigger"
     tier.loc[(combo >= 75) & passes_core & (multi_confirm >= confirm_needed + 1) & (seven >= 5) & (tradeable | swing_pick_signal)] = "A+ - Best 7-10%"
-    tier.loc[(combo >= 52) & ~tier.str.startswith("A") & ~moved_already & ~trap & (today <= max_today)] = "B - Early Watch"
+    tier.loc[(combo >= 52) & ~tier.str.startswith("A") & ~moved_already & ~trap & (today <= max_today) & hk_participation_ok] = "B - Early Watch"
     tier.loc[moved_already] = "Reject - Moved Already"
     tier.loc[hard_red] = "Reject - Weak Red"
     tier.loc[trap] = "Reject - Trap Risk"
+    tier.loc[is_hk & ~hk_participation_ok] = "Reject - Low HK Activity"
 
     price = _num(out, "Price", 0)
     best_stop = _num(out, "Best Stop", 0)
@@ -262,6 +277,7 @@ def _classify(df: pd.DataFrame, min_score: int, max_today: float, strict: bool) 
         if pm_constructive.loc[i]: parts.append(f"PM +{pm_chg.loc[i]:.1f}%")
         if pm_hot.loc[i]: parts.append("PM overextended")
         if pm_red.loc[i]: parts.append("PM red")
+        if is_hk.loc[i] and not hk_participation_ok.loc[i]: parts.append("low HK participation")
         if moved_already.loc[i]: parts.append("already ran")
         if hard_red.loc[i]: parts.append("hard red")
         if trap.loc[i]: parts.append("trap/chase risk")
@@ -285,6 +301,7 @@ def _classify(df: pd.DataFrame, min_score: int, max_today: float, strict: bool) 
         "Reject / Too Risky": 0,
         "Reject - Weak Red": 0,
         "Reject - Trap Risk": 0,
+        "Reject - Low HK Activity": 0,
     }).fillna(0)
     out = out[out["Best 710 Score"] >= min_score].copy()
     return out.sort_values(["_tier_sort", "_combo_sort"], ascending=[False, False], kind="stable")

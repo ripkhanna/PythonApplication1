@@ -1332,8 +1332,20 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             # HK stocks (HKEX) have similar characteristics to SGX: lower ATR%,
             # lower vol ratios, tighter natural price moves — apply SGX-like gates.
             is_asia_market = is_sgx or is_hk
+            _asia_vr_floor = 0.85 if is_hk else (0.60 if is_sgx else 1.00)
             # v14-patch: pullback volume confirmation (vol declining on dip = healthy)
             pullback_vol_ok = bool(long_sig.get("vol_declining", False) and vr < 1.0)
+            hk_participation_ok = bool(
+                (not is_hk)
+                or vr >= _asia_vr_floor
+                or volume_confirmed
+                or _today_chg_abs >= 1.2
+                or long_sig.get("vol_breakout", False)
+                or long_sig.get("pocket_pivot", False)
+                or operator_score >= 4
+                or post_earnings_gap
+                or pre_earnings_run
+            )
             # v14-patch: support-aware stops + tighter SGX floor
             _stop_floor = 0.97 if is_asia_market else 0.94
             if raw.get("dip_to_ma60", False) and pullback_setup:
@@ -1401,7 +1413,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             if _today_chg_abs < -6 and not raw.get("failed_breakdown", False): next_day_score -= 3
             if rsi_now > 76: next_day_score -= 3
             # v14-patch: SGX has lower vol ratios — lighter penalty
-            _vr_floor = 0.6 if is_asia_market else 1.0
+            _vr_floor = _asia_vr_floor if is_asia_market else 1.0
             if vr < _vr_floor and not pullback_setup: next_day_score -= 3
             elif pullback_vol_ok: next_day_score += 1
             if is_biotech and not post_earnings_gap and operator_score < 5: next_day_score -= 3
@@ -1424,7 +1436,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             if _today_chg_abs > 8 and not post_earnings_gap: quality_score -= 3
             # v14-patch: pullback vol partial credit + SGX-aware thresholds
             if pullback_vol_ok and not volume_confirmed: quality_score += 2
-            _qs_vr_floor = 0.6 if is_asia_market else 1.0
+            _qs_vr_floor = _asia_vr_floor if is_asia_market else 1.0
             if vr < _qs_vr_floor and not pullback_setup: quality_score -= 3
             if rsi_now > 75: quality_score -= 2
             _atr_min_qs = 1.5 if is_asia_market else 2.8
@@ -1432,6 +1444,9 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             elif atr_pct_live < 2.8 and is_asia_market: quality_score -= 1
             if atr_pct_live > 12.0 and not post_earnings_gap: quality_score -= 3
             if is_biotech and not post_earnings_gap and operator_score < 5: quality_score -= 3
+            if is_hk and not hk_participation_ok:
+                next_day_score -= 4
+                quality_score -= 3
 
             # ── Pre-Mover score: designed for "tomorrow's movers" ─────────────
             # Long Setups can include good quality stocks that are simply slow.
@@ -1514,8 +1529,10 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 pre_mover_score = min(pre_mover_score, 52)
             if not _accumulation_ok:
                 pre_mover_score = min(pre_mover_score, 56)
-            if vr < (0.85 if is_asia_market else 1.0) and not _catalyst_ok and not _options_bullish:
+            if vr < (_asia_vr_floor if is_asia_market else 1.0) and not _catalyst_ok and not _options_bullish:
                 pre_mover_score = min(pre_mover_score, 62)
+            if is_hk and not hk_participation_ok:
+                pre_mover_score = min(pre_mover_score, 45)
             if _today_chg_abs < -1.5 and not raw.get("failed_breakdown", False):
                 pre_mover_score = min(pre_mover_score, 60)
 
@@ -1635,6 +1652,8 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 ("risk/reward", _star_risk_reward),
             ]
             seven_star_score = sum(1 for _, _ok in _seven_flags if _ok)
+            if is_hk and not hk_participation_ok:
+                seven_star_score = min(seven_star_score, 4)
             if _recent_run_extended and not post_earnings_gap:
                 seven_star_score = min(seven_star_score, 4)
             if _today_chg_abs <= -5.0 and not raw.get("failed_breakdown", False):
@@ -1710,7 +1729,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 no_fuel_cap = 58
                 if not _explosive_breakout_trigger:
                     no_fuel_cap -= 8
-                if vr < (0.85 if is_asia_market else 1.0):
+                if vr < (_asia_vr_floor if is_asia_market else 1.0):
                     no_fuel_cap -= 8
                 if p_raw > 100 and not _short_squeeze_fuel:
                     no_fuel_cap -= 6
@@ -1719,11 +1738,13 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 explosion_score = min(explosion_score, max(25, no_fuel_cap))
             if not _explosive_breakout_trigger and not _explosive_catalyst:
                 trigger_cap = 60
-                if vr < (0.85 if is_asia_market else 1.0):
+                if vr < (_asia_vr_floor if is_asia_market else 1.0):
                     trigger_cap -= 8
                 explosion_score = min(explosion_score, trigger_cap)
-            if vr < (0.85 if is_asia_market else 1.0) and not _options_bullish and not _pss_explosive_fuel:
+            if vr < (_asia_vr_floor if is_asia_market else 1.0) and not _options_bullish and not _pss_explosive_fuel:
                 explosion_score = min(explosion_score, 54)
+            if is_hk and not hk_participation_ok:
+                explosion_score = min(explosion_score, 42)
             if _float_val >= 1_000_000_000 and not _short_squeeze_fuel and not _options_bullish and not _pss_explosive_fuel:
                 explosion_score = min(explosion_score, 55)
             if _recent_run_extended and not post_earnings_gap:
@@ -1791,8 +1812,8 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 next_day_rating = "SKIP"
 
             # v14-patch: setup-type and market-aware NDS/QS gates
-            _nds_gate = 4 if is_asia_market else (6 if (pullback_setup or continuation_setup) else 8)
-            _qs_gate  = 7 if is_asia_market else 9
+            _nds_gate = 6 if is_hk else (4 if is_sgx else (6 if (pullback_setup or continuation_setup) else 8))
+            _qs_gate  = 9 if is_hk else (7 if is_sgx else 9)
             next_day_buy_ok = bool(
                 raw.get("above_ma60", False)
                 and core_long_trend
@@ -1804,6 +1825,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 and 35 <= rsi_now <= 75
                 and setup_family_ok
                 and confirmation_ok
+                and hk_participation_ok
                 and next_day_score >= _nds_gate
                 and quality_score >= _qs_gate
             )
@@ -2333,6 +2355,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     and core_long_trend
                     and not major_trap_risk
                     and not is_chasing
+                    and hk_participation_ok
                 )
                 # v14-patch: Near-Miss Buy — pullback/continuation just below gate
                 near_miss_buy = bool(
@@ -2345,7 +2368,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     and not is_chasing
                     and not major_trap_risk
                     and (pullback_setup or continuation_setup)
-                    and vr >= (0.5 if is_asia_market else 0.7)
+                    and vr >= (0.85 if is_hk else (0.5 if is_sgx else 0.7))
                     and entry_quality not in ("🚫 AVOID",)
                 )
                 if a_plus_buy:
@@ -2430,6 +2453,8 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 if high_accuracy_long:          l_tags.append("🎯HIGH-ACCURACY")
                 elif discovery_buy:             l_tags.append("🔍DISCOVERY-BUY")  # v14-patch
                 elif l_prob >= 0.82:            l_tags.append("⚠️PROB-NO-GATE")
+                if is_hk and not hk_participation_ok:
+                    l_tags.append("HK-LOW-ACTIVITY")
                 if next_day_score >= 9:         l_tags.append("🔥NEXT-DAY-A+")
                 elif next_day_score >= 7:       l_tags.append("✅NEXT-DAY")
                 elif next_day_score >= 5:       l_tags.append("👀NEXT-DAY-WATCH")

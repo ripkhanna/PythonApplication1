@@ -35,7 +35,7 @@ Start with market direction, then active movers, then Momentum Runner for stocks
 | **1 Market Map** | Sector heatmap and broad market context | Check whether the market/sector backdrop supports long or short trades |
 | **2 Market Activity** | Pre-Market, Movers, Breakouts | See what is active now and which stocks are breaking out |
 | **3 Momentum Runner** | Day-1 Ignition, Controlled Runner, Hot Runner / Wait Reset | Track stocks that are already running without weakening strict swing filters |
-| **4 Pre-Movers** | Pre-Mover score, 7-Star score, Style Explosive Watch | Find names before the large daily move |
+| **4 Pre-Movers** | Next-Day 5-10% Watchlist, Pre-Mover score, 7-Star score, Style Explosive Watch | Find names before the large daily move or prepare the previous-day list for tomorrow |
 | **5 Best 7-10%** | Combined shortlist from Long Setups, Swing Picks, 7-10% Swing, Pro Setups, Pre-Movers, and PM strength | Strictest shortlist for the 7-10% swing objective |
 | **6 Long Setups** | Main bullish scanner results | Review BUY/WATCH/WAIT long candidates and all scan columns |
 | **7 Short Setups** | Bearish scanner results | Find weak names or hedge candidates |
@@ -67,9 +67,12 @@ Example behavior: a stock like NVTS can appear as **Hot Runner / Wait Reset** wh
 Designed to find stocks that may become Movers soon, before the move is already obvious.
 
 Key fields:
+- **Next-Day 5-10% Watchlist**: previous-day close / before-open prep list for stocks with room, quality, reward:risk, and controlled extension that can attempt a 5-10% next-day move.
 - **Pre-Mover Score/Tier/Why**: coil, accumulation, ATR, trigger proximity, relative strength, and whether today's move is still small enough.
 - **7-Star Score/Tier/Why**: liquidity, move potential, compression, range shift, divergence/accumulation, one-red hold, and risk/reward.
 - **Explosion Score/Tier/Why**: higher-risk 10-20% style watchlist using volatility, squeeze/float/catalyst fuel, and accumulation.
+
+Use **Next-Day 5-10% Watchlist** after the prior close and before the next market session. It is meant for planning triggers, not chasing green candles after the move has already stretched. HK names now need participation confirmation, so low-volume watch rows are capped instead of promoted as 5-10% candidates.
 
 ### Best 7-10%
 
@@ -154,6 +157,7 @@ Use this to inspect ETF constituents and add universe ideas for scans.
 - Manual/always-include tickers are merged into the selected market universe.
 - Movers and Breakouts combine selected-market tickers with live/high-activity sources where available.
 - Pre-Market uses multiple generic data paths: Yahoo quote fields, `fast_info`, then 5-minute intraday bars with `prepost=True`. No ticker is hardcoded.
+- HK quality tabs apply a stricter participation gate. A .HK ticker with weak volume ratio and no live/technical participation can remain in Long Setups as a watch row, but it should be rejected from Best 7-10% and Next-Day 5-10%.
 - SGX/HK/India tickers keep their native Yahoo suffixes such as `.SI`, `.HK`, and `.NS`.
 - If Yahoo rate-limits, use Diagnostics to inspect errors and rerun later.
             """
@@ -167,6 +171,8 @@ Use this to inspect ETF constituents and add universe ideas for scans.
 | No rows in a tab | Run a fresh scan for the selected market and check filter sliders/search boxes |
 | A hot stock is not in Best 7-10% | Check **3 Momentum Runner**; it may be too extended for a clean swing entry |
 | A stock is marked Hot Runner / Wait Reset | Wait for VWAP hold, opening-range reclaim, inside day, or pullback/reset |
+| Need tomorrow's 5-10% candidates before market opens | Use **4 Pre-Movers -> Next-Day 5-10% Watchlist** after the prior close |
+| HK stocks appear but do not move much | Prefer **5 Best 7-10%** or **4 Pre-Movers -> Next-Day 5-10%**; low-volume .HK watch rows are now marked/rejected as low HK participation |
 | Premarket stock is missing | Click Refresh in Pre-Market, lower Min gap %, raise Show top N, and confirm the selected market is US |
 | A ticker is missing from scan results | Add it to Always include tickers for the next full scan |
 | Yahoo rate-limit warning | Wait and rerun later; cached data may still show previous scan results |

@@ -210,6 +210,32 @@ def _display_num(series, default=0.0):
         return pd.Series([default] * len(series), index=getattr(series, "index", None))
 
 
+def _low_hk_activity_mask(df: pd.DataFrame) -> pd.Series:
+    idx = df.index
+    ticker = df.get("Ticker", pd.Series([""] * len(df), index=idx)).astype(str).str.upper()
+    signals = df.get("Signals", pd.Series([""] * len(df), index=idx)).astype(str).str.upper()
+    today = _display_num(df.get("Today %", pd.Series([0] * len(df), index=idx)), 0)
+    pm_chg = _display_num(df.get("PM Chg%", pd.Series([0] * len(df), index=idx)), 0)
+    vol = _display_num(df.get("Vol Ratio", pd.Series([0] * len(df), index=idx)), 0)
+    pre_score = _display_num(df.get("Pre-Mover Score", pd.Series([0] * len(df), index=idx)), 0)
+    seven = _display_num(df.get("7-Star Score", pd.Series([0] * len(df), index=idx)), 0)
+    expl_score = _display_num(df.get("Explosion Score", pd.Series([0] * len(df), index=idx)), 0)
+    active = (
+        (vol >= 0.85)
+        | (today >= 1.0)
+        | (pm_chg >= 0.75)
+        | signals.str.contains("VOL BREAKOUT|POCKET|HIGH-ACCURACY|NEXT-DAY-A\\+|STYLE-EXPLOSIVE|PRE-MOVER-A", regex=True, na=False)
+        | ((pre_score >= 70) & (seven >= 6) & (vol >= 0.65))
+        | ((expl_score >= 60) & (vol >= 0.65))
+    )
+    return ticker.str.endswith(".HK") & ~active
+
+
+def _low_hk_activity_row(row: pd.Series) -> bool:
+    df = pd.DataFrame([row])
+    return bool(_low_hk_activity_mask(df).iloc[0])
+
+
 def _display_score_series(df: pd.DataFrame, prob_col: str) -> pd.Series:
     """Manual-style swing score used for display rank only.
 
@@ -287,6 +313,7 @@ def _display_score_series(df: pd.DataFrame, prob_col: str) -> pd.Series:
         entry_bonus +
         setup_bonus
     ).fillna(0)
+    base_score -= _low_hk_activity_mask(df).astype(int) * 20
 
     return base_score.fillna(0)
 
@@ -319,6 +346,8 @@ def _build_swing_view(row: pd.Series) -> str:
 
     if "AVOID" in action or "AVOID" in entry:
         return "Avoid"
+    if _low_hk_activity_row(row):
+        return "Low HK activity - watch only"
 
     # Symbol risk taxonomy used only for the display decision column. It does
     # not change scan/filter logic. It helps the grid match the practical swing
@@ -380,6 +409,8 @@ def _build_buy_condition(row: pd.Series) -> str:
 
     if "AVOID" in action.upper() or "🚫" in entry:
         return "Avoid — setup invalid"
+    if _low_hk_activity_row(row):
+        return "HK watch only - wait for volume ratio >=0.85x or +1% move confirmation"
 
     # Symbol-specific display conditions to match practical manual swing notes.
     # These are display-only; they do not change the strategy calculation.

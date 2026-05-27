@@ -6,6 +6,7 @@ accumulating, volatile enough, near a trigger, and not already up big today.
 
 import re
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -27,6 +28,42 @@ def _num(df: pd.DataFrame, col: str, default: float = 0.0) -> pd.Series:
         .str.extract(r"(-?\d+(?:\.\d+)?)")[0],
         errors="coerce",
     ).fillna(default)
+
+
+def _rr(df: pd.DataFrame) -> pd.Series:
+    if "RR Est" not in df.columns:
+        return pd.Series([0.0] * len(df), index=df.index)
+
+    def parse(v) -> float:
+        m = re.search(r"1\s*[:/]\s*([0-9]+(?:\.\d+)?)", str(v))
+        if m:
+            return float(m.group(1))
+        m = re.search(r"([0-9]+(?:\.\d+)?)", str(v))
+        return float(m.group(1)) if m else 0.0
+
+    return df["RR Est"].map(parse).astype(float).fillna(0.0)
+
+
+def _hk_participation_ok(df: pd.DataFrame) -> pd.Series:
+    idx = df.index
+    ticker = _txt(df, "Ticker").str.upper()
+    is_hk = ticker.str.endswith(".HK")
+    signals = _txt(df, "Signals").str.upper()
+    today = _num(df, "Today %", 0)
+    pm_chg = _num(df, "PM Chg%", 0)
+    vol = _num(df, "Vol Ratio", 0)
+    pre_score = _num(df, "Pre-Mover Score", 0)
+    seven = _num(df, "7-Star Score", 0)
+    expl_score = _num(df, "Explosion Score", 0)
+    active = (
+        (vol >= 0.85)
+        | (today >= 1.0)
+        | (pm_chg >= 0.75)
+        | signals.str.contains("VOL BREAKOUT|POCKET|HIGH-ACCURACY|NEXT-DAY-A\\+|STYLE-EXPLOSIVE|PRE-MOVER-A", regex=True, na=False)
+        | ((pre_score >= 70) & (seven >= 6) & (vol >= 0.65))
+        | ((expl_score >= 60) & (vol >= 0.65))
+    )
+    return pd.Series(~is_hk | active, index=idx)
 
 
 def _txt(df: pd.DataFrame, col: str) -> pd.Series:
@@ -135,6 +172,8 @@ def _fallback_rank(df: pd.DataFrame) -> pd.DataFrame:
     seven_star = pd.Series([0] * len(out), index=idx, dtype="int64")
     for _flag in (liquidity_ok, vol_ok, compression, range_shift, divergence, one_red, rr_ok):
         seven_star += _flag.astype(int)
+    hk_activity = _hk_participation_ok(out)
+    seven_star = seven_star.mask(~hk_activity, seven_star.clip(upper=4))
     seven_star = seven_star.mask(recent_run_extended, seven_star.clip(upper=4))
     seven_star = seven_star.mask((today <= -5.0) & (~joined.str.contains("FAILED BRKDN", regex=False, na=False)), seven_star.clip(upper=3))
 
@@ -182,6 +221,7 @@ def _fallback_rank(df: pd.DataFrame) -> pd.DataFrame:
     score = score.mask(~compression, score.clip(upper=52))
     score = score.mask(~accumulation, score.clip(upper=56))
     score = score.mask((vol < 1.0) & (~catalyst), score.clip(upper=62))
+    score = score.mask(~hk_activity, score.clip(upper=45))
     score = score.mask((today < -1.5) & (~joined.str.contains("FAILED BRKDN", regex=False, na=False)), score.clip(upper=60))
     score = score.mask(recent_run_extended, score.clip(upper=45))
     score = score.mask((today <= -5.0) & (~joined.str.contains("FAILED BRKDN", regex=False, na=False)), score.clip(upper=35))
@@ -190,6 +230,7 @@ def _fallback_rank(df: pd.DataFrame) -> pd.DataFrame:
     tier.loc[(score >= 70) & compression & accumulation & near_trigger & vol_ok & not_moved] = "A - PRE-MOVER READY"
     tier.loc[(score >= 55) & compression & vol_ok & not_moved & ~tier.eq("A - PRE-MOVER READY")] = "B - COIL WATCH"
     tier.loc[(score >= 40) & not_moved & tier.eq("SLOW / NOT READY")] = "C - EARLY WATCH"
+    tier.loc[~hk_activity] = "SLOW / NOT READY"
     tier.loc[recent_run_extended] = "MOVED ALREADY"
     tier.loc[today > 3.5] = "MOVED ALREADY"
 
@@ -203,6 +244,7 @@ def _fallback_rank(df: pd.DataFrame) -> pd.DataFrame:
         if catalyst.loc[i]: parts.append("catalyst")
         if quiet.loc[i]: parts.append("quiet before move")
         if not vol_ok.loc[i]: parts.append("low ATR/move potential")
+        if not hk_activity.loc[i]: parts.append("low HK participation")
         if recent_run_extended.loc[i]: parts.append(f"already ran 5D {move5_recent.loc[i]:.1f}% / 20D {move20_recent.loc[i]:.1f}%")
         if today.loc[i] > 3.5: parts.append("already moved today")
         why.append(" | ".join(parts[:6]) if parts else "no pre-mover evidence")
@@ -257,6 +299,7 @@ def _fallback_rank(df: pd.DataFrame) -> pd.DataFrame:
     trigger_cap = pd.Series([60] * len(out), index=idx, dtype="float64").mask(vol < 1.0, 52)
     explosion = explosion.mask((~explosive_trigger) & (~options_or_catalyst) & (~(squeeze_fuel & support_trigger)), pd.concat([explosion, trigger_cap], axis=1).min(axis=1))
     explosion = explosion.mask((vol < 1.0) & (~options_or_catalyst), explosion.clip(upper=54))
+    explosion = explosion.mask(~hk_activity, explosion.clip(upper=42))
     explosion = explosion.mask((float_m >= 1000) & (~squeeze_fuel) & (~options_or_catalyst), explosion.clip(upper=55))
     explosion = explosion.mask(recent_run_extended, explosion.clip(upper=42))
     explosion = explosion.mask((today <= -5.0) & (~joined.str.contains("FAILED BRKDN", regex=False, na=False)), explosion.clip(upper=38))
@@ -323,6 +366,15 @@ def _rank(df: pd.DataFrame) -> pd.DataFrame:
             out["Explosion Tier"] = "LOW EXPLOSION"
         if "Explosion Why" not in out.columns:
             out["Explosion Why"] = "–"
+    hk_activity = _hk_participation_ok(out)
+    out["Pre-Mover Score"] = out["Pre-Mover Score"].mask(~hk_activity, out["Pre-Mover Score"].clip(upper=45))
+    out["Explosion Score"] = out["Explosion Score"].mask(~hk_activity, out["Explosion Score"].clip(upper=42))
+    out["7-Star Score"] = out["7-Star Score"].mask(~hk_activity, out["7-Star Score"].clip(upper=4))
+    out.loc[~hk_activity, "Pre-Mover Tier"] = "SLOW / NOT READY"
+    out.loc[~hk_activity & out["7-Star Tier"].astype(str).str.contains("5|6|7|PRIME|READY|WATCH", regex=True, na=False), "7-Star Tier"] = "4 - EARLY"
+    if "Pre-Mover Why" in out.columns:
+        low_hk = ~hk_activity & ~out["Pre-Mover Why"].astype(str).str.contains("low HK participation", case=False, na=False)
+        out.loc[low_hk, "Pre-Mover Why"] = out.loc[low_hk, "Pre-Mover Why"].astype(str) + " | low HK participation"
     order = {
         "A - PRE-MOVER READY": 4,
         "B - COIL WATCH": 3,
@@ -339,6 +391,105 @@ def _rank(df: pd.DataFrame) -> pd.DataFrame:
     return out.sort_values(["7-Star Score", "_tier_sort", "Explosion Score", "Pre-Mover Score"], ascending=[False, False, False, False], kind="stable")
 
 
+def _next_day_510(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    idx = out.index
+    signals = _txt(out, "Signals").str.upper()
+    action = _txt(out, "Action").str.upper()
+    entry = _txt(out, "Entry Quality").str.upper()
+    trap_label = _txt(out, "Trap Risk").str.upper()
+    pre_tier = _txt(out, "Pre-Mover Tier").str.upper()
+    seven_tier = _txt(out, "7-Star Tier").str.upper()
+    expl_tier = _txt(out, "Explosion Tier").str.upper()
+
+    today = _num(out, "Today %", 0)
+    move5 = _num(out, "5D %", 0)
+    move20 = _num(out, "20D %", 0)
+    move7 = _num(out, "7D Move Est", 0)
+    upside = _num(out, "Upside to Res", 0)
+    rise = _num(out, "Rise Prob", 0)
+    quality = _num(out, "Quality Score", 0)
+    next_day = _num(out, "Next-Day Score", 0)
+    seven = _num(out, "7-Star Score", 0)
+    pre_score = _num(out, "Pre-Mover Score", 0)
+    expl_score = _num(out, "Explosion Score", 0)
+    vol = _num(out, "Vol Ratio", 0)
+    atr = _num(out, "ATR%", 0)
+    price = _num(out, "Price", 0)
+    rr = _rr(out)
+    hk_activity = _hk_participation_ok(out)
+
+    setup_ready = (
+        signals.str.contains(r"NEXT-DAY|NR7|INSIDE|BB BULL SQ|VOL-DIP|DIP-MA20|DIP-MA60|HIGHER LOWS|MACD|WKLY TREND|RS>SPY", regex=True, na=False)
+        | action.str.contains("BUY|DISCOVERY|DEVELOPING|WATCH", regex=True, na=False)
+        | (next_day >= 8)
+        | (quality >= 10)
+    )
+    quiet_enough = today.between(-2.5, 3.5)
+    not_extended = (move5 < 20.0) & (move20 < 45.0) & ~pre_tier.str.contains("MOVED", na=False) & ~seven_tier.str.contains("MOVED", na=False) & ~expl_tier.str.contains("MOVED", na=False)
+    room_ok = (move7 >= 5.0) & (move7 <= 14.0) & ((upside >= 5.0) | (rr >= 2.0))
+    rr_ok = rr >= 1.8
+    quality_ok = (rise >= 65.0) | (quality >= 8) | (next_day >= 8) | (seven >= 5) | (pre_score >= 50) | (expl_score >= 45)
+    volume_ok = ((vol >= 0.45) | (atr >= 3.0)) & hk_activity
+    avoid = (
+        entry.str.contains("AVOID|SKIP", regex=True, na=False)
+        | action.str.contains("TRAP RISK", regex=True, na=False)
+        | trap_label.str.contains("TRAP|DISTRIB|LIMIT", regex=True, na=False)
+        | signals.str.contains("CHASING|LIMIT-UP", regex=True, na=False)
+    )
+
+    score = pd.Series(0.0, index=idx)
+    score += np.minimum(move7.clip(lower=0), 10) / 10 * 24
+    score += np.minimum(upside.clip(lower=0), 12) / 12 * 18
+    score += np.minimum(rr.clip(lower=0), 4) / 4 * 18
+    score += np.minimum(rise.clip(lower=0), 100) / 100 * 14
+    score += np.minimum(next_day.clip(lower=0), 12) / 12 * 10
+    score += (seven >= 5).astype(int) * 8
+    score += (pre_score >= 55).astype(int) * 5
+    score += volume_ok.astype(int) * 3
+    score -= (~quiet_enough).astype(int) * 18
+    score -= (~not_extended).astype(int) * 22
+    score -= (~hk_activity).astype(int) * 18
+    score -= avoid.astype(int) * 25
+    score = score.clip(0, 100).round(1)
+
+    valid = setup_ready & quiet_enough & not_extended & room_ok & rr_ok & quality_ok & volume_ok & hk_activity & ~avoid
+    tier = pd.Series("Reject", index=idx)
+    tier.loc[valid & (score >= 72)] = "A - Next-Day 5-10%"
+    tier.loc[valid & (score >= 60) & ~tier.str.startswith("A")] = "B - Watch Before Open"
+    tier.loc[valid & (score >= 50) & tier.eq("Reject")] = "C - Early Setup"
+
+    stop = _num(out, "Best Stop", 0)
+    ma_stop = _num(out, "MA60 Stop", 0)
+    stop = stop.where(stop > 0, ma_stop)
+    stop = stop.where((stop > 0) & (stop < price), price * 0.94)
+    trigger = price * 1.006
+    trigger = trigger.where(today <= 0, price * 1.003)
+
+    why = []
+    for i in idx:
+        parts = []
+        if setup_ready.loc[i]: parts.append("next-day setup")
+        if quiet_enough.loc[i]: parts.append("quiet enough")
+        if room_ok.loc[i]: parts.append(f"5-10% room {move7.loc[i]:.1f}%")
+        if rr_ok.loc[i]: parts.append(f"RR 1:{rr.loc[i]:.1f}")
+        if seven.loc[i] >= 5: parts.append(f"7-star {int(seven.loc[i])}")
+        if pre_score.loc[i] >= 55: parts.append("pre-mover")
+        if not not_extended.loc[i]: parts.append("extended")
+        if not hk_activity.loc[i]: parts.append("low HK participation")
+        if avoid.loc[i]: parts.append("avoid/trap/chase")
+        why.append(" | ".join(parts[:7]) if parts else "not enough next-day evidence")
+
+    out["Next-Day 5-10 Score"] = score
+    out["Next-Day 5-10 Tier"] = tier
+    out["Next-Day 5-10 Why"] = why
+    out["Next-Day Trigger"] = trigger.round(2).map(lambda x: f"${x:.2f}" if x > 0 else "-")
+    out["Next-Day Invalid"] = stop.round(2).map(lambda x: f"${x:.2f}" if x > 0 else "-")
+    order = {"A - Next-Day 5-10%": 3, "B - Watch Before Open": 2, "C - Early Setup": 1, "Reject": 0}
+    out["_nd_sort"] = out["Next-Day 5-10 Tier"].map(order).fillna(0)
+    return out[out["Next-Day 5-10 Tier"].ne("Reject")].sort_values(["_nd_sort", "Next-Day 5-10 Score"], ascending=[False, False], kind="stable")
+
+
 def _show(df: pd.DataFrame, key: str) -> None:
     if df.empty:
         st.info("No rows in this tier.")
@@ -351,6 +502,22 @@ def _show(df: pd.DataFrame, key: str) -> None:
         "Rise Prob", "Quality Score", "Next-Day Score", "PSS Score", "PSS Label",
         "Operator", "Op Score", "VWAP", "Trap Risk", "Short %", "Float", "Upside to Res", "RR Est",
         "Price", "Signals",
+    ]
+    cols = [c for c in preferred if c in df.columns]
+    st.dataframe(df[cols].reset_index(drop=True), width="stretch", hide_index=True, key=key)
+    st.code(", ".join(df["Ticker"].astype(str).head(80).tolist()) if "Ticker" in df.columns else "")
+
+
+def _show_next_day(df: pd.DataFrame, key: str) -> None:
+    if df.empty:
+        st.info("No next-day 5-10% candidates with the current scan/filter state.")
+        return
+    preferred = [
+        "Ticker", "Next-Day 5-10 Score", "Next-Day 5-10 Tier", "Next-Day 5-10 Why",
+        "Next-Day Trigger", "Next-Day Invalid", "Today %", "5D %", "20D %",
+        "7D Move Est", "Upside to Res", "RR Est", "Rise Prob", "Quality Score",
+        "Next-Day Score", "7-Star Score", "Pre-Mover Score", "Explosion Score",
+        "Vol Ratio", "ATR%", "Action", "Entry Quality", "Trap Risk", "Price", "Signals",
     ]
     cols = [c for c in preferred if c in df.columns]
     st.dataframe(df[cols].reset_index(drop=True), width="stretch", hide_index=True, key=key)
@@ -414,6 +581,8 @@ def render_pre_movers(ctx: dict) -> None:
             (ranked["7-Star Score"] >= 5)
         ].copy()
 
+    next_day = _next_day_510(ranked).head(40).copy()
+
     search = st.text_input("Filter ticker / setup", "", key="pmv_search").strip().upper()
     if search:
         hay = (
@@ -423,6 +592,13 @@ def render_pre_movers(ctx: dict) -> None:
             _txt(ranked, "Pre-Mover Why")
         ).str.upper()
         ranked = ranked[hay.str.contains(re.escape(search), na=False)].copy()
+        if not next_day.empty:
+            nd_hay = (
+                _txt(next_day, "Ticker") + " " +
+                _txt(next_day, "Signals") + " " +
+                _txt(next_day, "Next-Day 5-10 Why")
+            ).str.upper()
+            next_day = next_day[nd_hay.str.contains(re.escape(search), na=False)].copy()
 
     ranked = ranked.assign(_expl_sort=_num(ranked, "Explosion Score", 0))
     _expl_why = ranked.get("Explosion Why", pd.Series([""] * len(ranked), index=ranked.index)).astype(str).str.upper()
@@ -443,6 +619,10 @@ def render_pre_movers(ctx: dict) -> None:
     m2.metric("Ready", len(tier_a))
     m3.metric("Coil Watch", len(tier_b))
     m4.metric("Early/slow", len(tier_c) + len(slow))
+
+    st.markdown("### Next-Day 5-10% Watchlist")
+    st.caption("Use this after the prior day close and before the next market session. It favors quiet/controlled setups with 5-10% room, RR, next-day score, pre-mover evidence, and HK participation checks.")
+    _show_next_day(next_day, "pmv_next_day_510")
 
     st.markdown("### Best Available Candidates")
     st.caption("Always shown from the latest scan, even when strict Style Explosive / Pre-Mover filters find no perfect setup.")
