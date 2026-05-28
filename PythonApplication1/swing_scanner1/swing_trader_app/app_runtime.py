@@ -1823,7 +1823,7 @@ if st.session_state.get("scan_cache_warning"):
 # Professional workflow layout v17.4
 # Daily workflow is kept compact; detailed/source/QA views are nested.
 st.caption(
-    "Workflow: Market Activity -> Momentum Runner -> Pre-Movers -> Best 7-10% -> Long Setups -> Short Setups -> Trade Tools -> Stock Analysis -> Advanced"
+    "Workflow: Market Activity -> Big Money -> Momentum Runner -> Pre-Movers -> Best 7-10% -> Long Setups -> Short Setups -> Trade Tools -> Stock Analysis -> Advanced"
 )
 
 tab_sectors, tab_market_activity, tab_momentum_runner, tab_pre_movers, tab_best_710, tab_long, tab_short, tab_trade_tools, tab_stock, tab_events, tab_long_term, tab_advanced, tab_help = st.tabs([
@@ -1843,9 +1843,10 @@ tab_sectors, tab_market_activity, tab_momentum_runner, tab_pre_movers, tab_best_
 ])
 
 with tab_market_activity:
-    tab_premarket, tab_top_movers, tab_breakout = st.tabs([
+    tab_premarket, tab_top_movers, tab_big_money, tab_breakout = st.tabs([
         "Pre-Market",
         "Movers",
+        "Big Money",
         "Breakouts",
     ])
 
@@ -1898,6 +1899,7 @@ from swing_trader_app.tabs.event_predictor_tab import render_event_predictor
 from swing_trader_app.tabs.help_tab import render_help
 from swing_trader_app.tabs.long_term_tab import render_long_term
 from swing_trader_app.tabs.operator_activity_tab import render_operator_activity
+from swing_trader_app.tabs.big_money_tab import render_big_money
 from swing_trader_app.tabs.scan_results_tabs import render_long, render_short, render_both
 from swing_trader_app.tabs.sectors_tab import render_sectors
 from swing_trader_app.tabs.stock_analysis_tab import render_stock_analysis
@@ -2712,6 +2714,9 @@ with tab_swing_picks:
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_top_movers:
     _safe_render_tab('top_movers', render_top_movers)
+
+with tab_big_money:
+    _safe_render_tab('big_money', render_big_money)
 
 with tab_momentum_runner:
     _safe_render_tab('momentum_runner', render_momentum_runner)

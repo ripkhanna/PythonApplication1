@@ -44,6 +44,7 @@ TAB_MODULES = {
     "Swing Picks": "swing_trader_app.tabs.swing_picks_tab",
     "Movers/Losers": "swing_trader_app.tabs.top_movers_tab",
     "Pre-Market": "swing_trader_app.tabs.premarket_tab",
+    "Big Money": "swing_trader_app.tabs.big_money_tab",
     "Short Setups": "swing_trader_app.tabs.scan_results_tabs",
     "Operator Activity": "swing_trader_app.tabs.operator_activity_tab",
     "Breakout Scanner": "swing_trader_app.tabs.breakout_scanner_tab",

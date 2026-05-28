@@ -6,7 +6,7 @@ def render_help(ctx: dict) -> None:
 
     st.markdown("## Swing Scanner - Current Guide")
     st.caption(
-        "13 top tabs - US, SGX, India, HK - market activity, momentum runners, "
+        "13 top tabs - US, SGX, India, HK - market activity, Big Money Radar, momentum runners, "
         "pre-movers, 7-10% candidates, long/short setups, trade tools, events, and long-term/ETF tools"
     )
 
@@ -17,13 +17,13 @@ def render_help(ctx: dict) -> None:
 Use the tabs from left to right:
 
 ```text
-1 Market Map -> 2 Market Activity -> 3 Momentum Runner -> 4 Pre-Movers
+1 Market Map -> 2 Market Activity / Big Money -> 3 Momentum Runner -> 4 Pre-Movers
     -> 5 Best 7-10% -> 6 Long Setups -> 7 Short Setups
     -> 8 Trade Tools -> 9 Stock Analysis -> 10 Events
     -> 11 Long Term / ETF -> 12 Advanced -> 13 Help
 ```
 
-Start with market direction, then active movers, then Momentum Runner for stocks already moving, then Pre-Movers for names before the move, then the strict 7-10% shortlist. Confirm the setup in Long Setups and Stock Analysis before using Trade Tools for entry, stop, target, and position sizing.
+Start with market direction, then active movers and Big Money Radar, then Momentum Runner for stocks already moving, then Pre-Movers for names before the move, then the strict 7-10% shortlist. Confirm the setup in Long Setups and Stock Analysis before using Trade Tools for entry, stop, target, and position sizing.
         """
     )
 
@@ -33,7 +33,7 @@ Start with market direction, then active movers, then Momentum Runner for stocks
 | Top tab | What it contains | Main use |
 |---|---|---|
 | **1 Market Map** | Sector heatmap and broad market context | Check whether the market/sector backdrop supports long or short trades |
-| **2 Market Activity** | Pre-Market, Movers, Breakouts | See what is active now and which stocks are breaking out |
+| **2 Market Activity** | Pre-Market, Movers, Big Money, Breakouts | See what is active now, where institutional-style accumulation appears, and which stocks are breaking out |
 | **3 Momentum Runner** | Day-1 Ignition, Controlled Runner, Hot Runner / Wait Reset | Track stocks that are already running without weakening strict swing filters |
 | **4 Pre-Movers** | Next-Day 5-10% Watchlist, Pre-Mover score, 7-Star score, Style Explosive Watch | Find names before the large daily move or prepare the previous-day list for tomorrow |
 | **5 Best 7-10%** | Combined shortlist from Long Setups, Swing Picks, 7-10% Swing, Pro Setups, Pre-Movers, and PM strength | Strictest shortlist for the 7-10% swing objective |
@@ -73,6 +73,12 @@ Key fields:
 - **Explosion Score/Tier/Why**: higher-risk 10-20% style watchlist using volatility, squeeze/float/catalyst fuel, and accumulation.
 
 Use **Next-Day 5-10% Watchlist** after the prior close and before the next market session. It is meant for planning triggers, not chasing green candles after the move has already stretched. HK names now need participation confirmation, so low-volume watch rows are capped instead of promoted as 5-10% candidates.
+
+### Big Money Radar
+
+Located under **2 Market Activity -> Big Money**. This ranks the latest scan for institutional-style sponsorship plus short-term move potential. It does not hardcode tickers. It scores operator accumulation, VWAP control, volume expansion, pocket-pivot/accumulation clues, relative strength, pre-mover score, quality, ATR, and extension risk.
+
+Use the **A - Big Money + Short-Term** and **B - Institutional Watch** tiers as the first institutional watchlist. The optional holder snapshot button checks Yahoo institutional/mutual-fund holder names for the displayed top rows, but holder/13F data is delayed and should be treated as confirmation only.
 
 ### Best 7-10%
 
@@ -191,6 +197,7 @@ The tracker is saved at `scanner_cache/performance_tracker.csv` and is kept when
 | HK stocks appear but do not move much | Prefer **5 Best 7-10%** or **4 Pre-Movers -> Next-Day 5-10%**; low-volume .HK watch rows are now marked/rejected as low HK participation |
 | Premarket stock is missing | Click Refresh in Pre-Market, lower Min gap %, raise Show top N, and confirm the selected market is US |
 | A ticker is missing from scan results | Add it to Always include tickers for the next full scan |
+| Need institutional / hedge-fund style candidates | Use **2 Market Activity -> Big Money**; then confirm entries in Long Setups and Stock Analysis |
 | Yahoo rate-limit warning | Wait and rerun later; cached data may still show previous scan results |
 | Long Term US fallback rows appear | Yahoo live data was blocked or blank; refresh later for live values before acting |
 | Wrong market appears | Use the top market radio, then scan again |
