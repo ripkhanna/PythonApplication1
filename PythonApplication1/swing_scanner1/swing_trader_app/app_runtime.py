@@ -1869,13 +1869,14 @@ with tab_long_term:
     ])
 
 with tab_advanced:
-    tab_swing_710, tab_swing_picks, tab_pro_setups, tab_both, tab_strategy, tab_backtest, tab_tests, tab_diag = st.tabs([
+    tab_swing_710, tab_swing_picks, tab_pro_setups, tab_both, tab_strategy, tab_backtest, tab_perf, tab_tests, tab_diag = st.tabs([
         "7-10% Swing",
         "Swing Picks",
         "Pro Setups",
         "Side by Side",
         "Strategy Lab",
         "Accuracy Lab",
+        "Performance Tracker",
         "Test Cases",
         "Diagnostics",
     ])
@@ -1902,6 +1903,7 @@ from swing_trader_app.tabs.sectors_tab import render_sectors
 from swing_trader_app.tabs.stock_analysis_tab import render_stock_analysis
 from swing_trader_app.tabs.strategy_lab_tab import render_strategy_lab
 from swing_trader_app.tabs.test_cases_tab import render_test_cases
+from swing_trader_app.tabs.performance_tracker_tab import render_performance_tracker
 from swing_trader_app.tabs.swing_710_tab import render_swing_710
 from swing_trader_app.tabs.best_710_tab import render_best_710
 from swing_trader_app.tabs.swing_picks_tab import render_swing_picks
@@ -2844,6 +2846,10 @@ CACHE_DIR = SCAN_CACHE_DIR
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_tests:
     _safe_render_tab('test_cases', render_test_cases)
+
+
+with tab_perf:
+    _safe_render_tab('performance_tracker', render_performance_tracker)
 
 
 with tab_diag:

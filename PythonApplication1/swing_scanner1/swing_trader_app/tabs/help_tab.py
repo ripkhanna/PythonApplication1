@@ -43,7 +43,7 @@ Start with market direction, then active movers, then Momentum Runner for stocks
 | **9 Stock Analysis** | Single-stock deep dive | Confirm a specific ticker before action |
 | **10 Events** | Earnings, Event Predictor | Check earnings/catalyst risk and event/squeeze watchlists |
 | **11 Long Term / ETF** | Long Term, ETF Holdings | Longer-term quality/support scoring and ETF universe tools |
-| **12 Advanced** | 7-10% Swing, Swing Picks, Pro Setups, Side by Side, Strategy Lab, Accuracy Lab, Test Cases, Diagnostics | Research, QA, diagnostics, and specialist views |
+| **12 Advanced** | 7-10% Swing, Swing Picks, Pro Setups, Side by Side, Strategy Lab, Accuracy Lab, Performance Tracker, Test Cases, Diagnostics | Research, QA, diagnostics, and specialist views |
 | **13 Help** | This guide | Current workflow and troubleshooting |
             """
         )
@@ -145,8 +145,23 @@ Use this to inspect ETF constituents and add universe ideas for scans.
 | **Side by Side** | Compare long and short candidates |
 | **Strategy Lab** | Research layer for strategy experiments |
 | **Accuracy Lab** | Backtest and validation tools |
+| **Performance Tracker** | Save each day's scanner picks, then update 1D/3D/5D/7D max gain, drawdown, hit rate, and stop-first outcomes |
 | **Test Cases** | Built-in smoke/regression checks |
 | **Diagnostics** | Cache, ticker, error, and data-source debugging |
+            """
+        )
+
+    with st.expander("Performance Tracking"):
+        st.markdown(
+            """
+Use **12 Advanced -> Performance Tracker** to judge the scanner by real follow-through.
+
+Workflow:
+- After a scan, click **Capture Current Candidates** to save candidates from Best 7-10%, Next-Day 5-10%, Long Buy, and optional Momentum Runner.
+- After 1-7 trading days, click **Update Outcomes** to fetch daily bars and calculate max gain, drawdown, +3/+5/+7/+10 hits, and whether the stop hit before +5%.
+- Review **What Is Working** by Source and Tier. If a tab has low +5% hit rate or high Stop First rate, treat it as watchlist-only until the filters improve.
+
+The tracker is saved at `scanner_cache/performance_tracker.csv` and is kept when Diagnostics clears normal scan cache files.
             """
         )
 
@@ -172,6 +187,7 @@ Use this to inspect ETF constituents and add universe ideas for scans.
 | A hot stock is not in Best 7-10% | Check **3 Momentum Runner**; it may be too extended for a clean swing entry |
 | A stock is marked Hot Runner / Wait Reset | Wait for VWAP hold, opening-range reclaim, inside day, or pullback/reset |
 | Need tomorrow's 5-10% candidates before market opens | Use **4 Pre-Movers -> Next-Day 5-10% Watchlist** after the prior close |
+| Stocks selected do not give returns | Use **12 Advanced -> Performance Tracker** to capture picks and compare hit rate by tab/tier after 1D/3D/5D/7D |
 | HK stocks appear but do not move much | Prefer **5 Best 7-10%** or **4 Pre-Movers -> Next-Day 5-10%**; low-volume .HK watch rows are now marked/rejected as low HK participation |
 | Premarket stock is missing | Click Refresh in Pre-Market, lower Min gap %, raise Show top N, and confirm the selected market is US |
 | A ticker is missing from scan results | Add it to Always include tickers for the next full scan |

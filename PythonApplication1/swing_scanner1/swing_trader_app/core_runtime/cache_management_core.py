@@ -9,6 +9,8 @@ def clear_scanner_cache(cache_dir: Path):
 
     for item in cache_dir.iterdir():
         try:
+            if item.name == "performance_tracker.csv":
+                continue
             if item.is_file() or item.is_symlink():
                 try:
                     os.chmod(item, stat.S_IWRITE)
@@ -30,5 +32,4 @@ def clear_scanner_cache(cache_dir: Path):
             errors.append(f"{item}: {e}")
 
     return errors
-
 
