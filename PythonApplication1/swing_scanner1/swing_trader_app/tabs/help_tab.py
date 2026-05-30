@@ -23,7 +23,7 @@ Use the tabs from left to right:
     -> 11 Long Term / ETF -> 12 Advanced -> 13 Help
 ```
 
-Start with market direction, then active movers and Big Money Radar, then Momentum Runner for stocks already moving, then Pre-Movers for names before the move, then the strict 7-10% shortlist. Confirm the setup in Long Setups and Stock Analysis before using Trade Tools for entry, stop, target, and position sizing.
+Start with market direction, then active movers and Big Money Radar. For **same-day explosive 5-10% trades**, go to **3 Momentum Runner** and use the **Buy Decision** column first. For tomorrow or multi-day swings, use Pre-Movers and Best 7-10%. Confirm the setup in Long Setups and Stock Analysis before using Trade Tools for entry, stop, target, and position sizing.
         """
     )
 
@@ -53,14 +53,56 @@ Start with market direction, then active movers and Big Money Radar, then Moment
             """
 ### Momentum Runner
 
-Use this tab for stocks that are already moving now. It is separate from Best 7-10%, so hot runners do not pollute the strict swing shortlist.
+Use this tab for **explosive same-day 5-10% candidates** and stocks already moving now. It is separate from Best 7-10%, so hot runners do not pollute the stricter multi-day swing shortlist.
+
+Main decision columns are now grouped at the start of the table:
+
+```text
+Ticker -> Buy Decision -> Buy Checklist -> Runner Tier -> Firefly Pass -> Explosive Buy -> Entry Quality -> Tradeable Buy -> Runner Trigger -> Runner Invalid -> Target 1 +5% -> Target 2 +10%
+```
+
+Use **Buy Decision** as the first decision field:
+
+| Buy Decision | Meaning | Action |
+|---|---|---|
+| **BUY ABOVE TRIGGER - best candidate** | Best combination of Firefly, entry quality, volume, reward:risk, and risk controls | Prepare buy only above Runner Trigger with VWAP/ORB confirmation |
+| **BUY ABOVE TRIGGER - confirm entry** | Good candidate, but still needs live trigger confirmation | Buy only if price breaks trigger and holds VWAP |
+| **BUY WATCH - explosive; confirm VWAP/ORB** | Explosive watch candidate but not perfect yet | Alert only; wait for VWAP/opening-range confirmation |
+| **WATCH - needs Firefly/VWAP confirmation** | Moving name but missing one or more safety layers | Do not buy yet |
+| **WAIT - not explosive enough** | Not a 5-10% same-day priority | Ignore for momentum trade |
+| **SKIP - trap/avoid/broken** | Risk, trap, or avoid condition detected | Do not trade |
+| **SKIP - chase risk / wait reset** | Already too extended | Wait for pullback/reset |
+
+Strongest filter for your 5-10% same-day goal:
+
+```text
+Runner Tier = A++ Firefly 5-Layer Explosive
+Buy Decision = BUY ABOVE TRIGGER - best candidate OR BUY ABOVE TRIGGER - confirm entry
+Firefly Pass = YES
+Entry Quality = A+ or A
+Trap Risk = blank/low
+RR Est >= 1:2
+Price breaks Runner Trigger
+Volume remains strong after the open
+```
+
+Firefly 5-layer logic:
+- **Layer 1 - Market Structure**: stock/sector/market structure should support momentum, not a range-bound chop.
+- **Layer 2 - Volatility Window**: ATR/move potential should be high enough for 5-10%, but not so extreme that it becomes a random trap.
+- **Layer 3 - Event Guard**: event-risk days and abnormal catalyst days are flagged so the setup is not treated as normal.
+- **Layer 4 - Entry Precision**: signal + volume + structure alignment must occur together.
+- **Layer 5 - Dynamic Exit**: use VWAP/9EMA/momentum fade rules instead of a fixed static stop only.
 
 Buckets:
+- **A++ Firefly 5-Layer Explosive**: strictest same-day 5-10% candidate bucket.
+- **A+ Explosive 5-10% Today**: strong explosive candidate, but may need extra confirmation.
 - **A - Day-1 Ignition**: early runner with PM/today strength, quality/fuel, liquidity, and no avoid/trap flag.
 - **B - Controlled Runner**: moving but not yet overheated.
 - **C - Hot Runner / Wait Reset**: already extended; wait for VWAP hold, inside day, pullback, or reset before considering entry.
 
 Example behavior: a stock like NVTS can appear as **Hot Runner / Wait Reset** when it is +20% today and already up strongly over 5-20 days. That means "track it, but do not force it into a clean swing entry."
+
+Do not buy just because a stock is green. For same-day runners, buy only after **Runner Trigger + VWAP/opening-range confirmation**.
 
 ### Pre-Movers
 
@@ -191,6 +233,8 @@ The tracker is saved at `scanner_cache/performance_tracker.csv` and is kept when
 |---|---|
 | No rows in a tab | Run a fresh scan for the selected market and check filter sliders/search boxes |
 | A hot stock is not in Best 7-10% | Check **3 Momentum Runner**; it may be too extended for a clean swing entry |
+| Need 5-10% same-day explosive stocks | Use **3 Momentum Runner**, then filter **Buy Decision** for BUY ABOVE TRIGGER rows |
+| Buy Decision shows mostly WAIT | Check Runner Trigger, Entry Quality, Volume Ratio, RR Est, and Trap Risk. WAIT means the stock is not ready yet, not necessarily bad |
 | A stock is marked Hot Runner / Wait Reset | Wait for VWAP hold, opening-range reclaim, inside day, or pullback/reset |
 | Need tomorrow's 5-10% candidates before market opens | Use **4 Pre-Movers -> Next-Day 5-10% Watchlist** after the prior close |
 | Stocks selected do not give returns | Use **12 Advanced -> Performance Tracker** to capture picks and compare hit rate by tab/tier after 1D/3D/5D/7D |
@@ -202,6 +246,40 @@ The tracker is saved at `scanner_cache/performance_tracker.csv` and is kept when
 | Long Term US fallback rows appear | Yahoo live data was blocked or blank; refresh later for live values before acting |
 | Wrong market appears | Use the top market radio, then scan again |
 | Need debugging | Open **12 Advanced -> Diagnostics** |
+            """
+        )
+
+
+    with st.expander("How To Decide What To Buy", expanded=True):
+        st.markdown(
+            """
+### Fast Buy Decision Rule
+
+For explosive same-day trades, buy from **3 Momentum Runner** only when the decision stack agrees.
+
+```text
+1. Buy Decision = BUY ABOVE TRIGGER - best candidate / confirm entry
+2. Runner Tier = A++ Firefly 5-Layer Explosive or A+ Explosive 5-10% Today
+3. Firefly Pass = YES
+4. Entry Quality = A+ or A
+5. Explosive Buy is positive
+6. RR Est >= 1:2
+7. Trap Risk is blank/low
+8. Live price breaks Runner Trigger and holds VWAP/opening range
+```
+
+If any of these fail, the correct action is usually **WAIT**, not chase.
+
+### Difference Between Entry Quality And Buy Decision
+
+| Column | Meaning | How to use |
+|---|---|---|
+| **Entry Quality** | Is the current price area good for entry? | Timing filter only |
+| **Firefly Pass** | Do the 5 market/volatility/event/entry/exit layers align? | Setup quality filter |
+| **Explosive Buy** | Is the stock a possible 5-10% same-day runner? | Momentum filter |
+| **Buy Decision** | Combines all key conditions into one action label | Final decision field |
+
+Entry Quality alone is not enough. A+ entry with weak volume or trap risk should still be skipped.
             """
         )
 
