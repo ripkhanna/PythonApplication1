@@ -1283,7 +1283,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             _earn_momentum_long = bool(
                 post_earnings_gap
                 and vr >= 2.0
-                and 8.0 <= _today_chg_abs <= 70.0
+                and 8.0 <= _today_chg_abs <= 25.0
                 and l_prob >= 0.45
                 and not false_breakout
                 and not distribution_risk
@@ -2079,7 +2079,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             _earn_momentum_long = (
                 post_earnings_gap
                 and vr >= 2.0
-                and 8.0 <= _today_chg_abs <= 70.0
+                and 8.0 <= _today_chg_abs <= 25.0
                 and l_prob >= 0.45
                 and not false_breakout
                 and not distribution_risk
@@ -2094,6 +2094,31 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     raw.get("today_chg_pct", 99) < (8 if swing_mode != "DISCOVERY" else 10) and
                     momentum_confirmed and
                     (volume_confirmed or operator_score >= 4 or raw.get("vwap_support", False) or pullback_setup)
+                )
+            )
+
+            # ── 90% CONFIDENCE TIER ────────────────────────────────────────────
+            # Important: this is NOT a guaranteed win rate. It is a strict display
+            # tier used to avoid showing 90-95% confidence on WATCH/DISCOVERY rows.
+            # A row can show 90%+ only if it is tradeable, has room to target,
+            # confirmed participation, no trap/chase risk, and multiple independent
+            # confluence layers. Actual win-rate must be validated in Accuracy Lab.
+            ninety_confidence_long = bool(
+                high_accuracy_long
+                and next_day_buy_ok
+                and next_day_score >= (16 if not is_asia_market else 14)
+                and quality_score >= (14 if not is_asia_market else 12)
+                and rr_est >= 2.0
+                and not major_trap_risk
+                and not is_chasing
+                and not extreme_volatility
+                and 35 <= rsi_now <= 72
+                and _today_chg_abs <= (6.0 if not post_earnings_gap else 18.0)
+                and (
+                    (volume_confirmed and operator_score >= 4)
+                    or (pre_mover_ready and seven_star_score >= 5)
+                    or (raw.get("tight_flag", False) and raw.get("above_vwap", False))
+                    or (raw.get("failed_breakdown", False) and operator_score >= 3)
                 )
             )
             actionable_long = (
@@ -2426,6 +2451,30 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     else:
                         l_action = "WATCH – NEED CONFIRMATION"
 
+                # Calibrate displayed probability separately from internal Bayesian score.
+                # Internal l_prob still drives ranking, but displayed confidence should
+                # never imply 90%+ unless the strict 90% tier passes.
+                display_prob = float(l_prob)
+                if ninety_confidence_long:
+                    display_prob = max(display_prob, 0.90)
+                    display_prob = min(display_prob, 0.93)
+                    confidence_tier = "90% CONFIDENCE"
+                elif high_accuracy_long:
+                    display_prob = min(display_prob, 0.88)
+                    confidence_tier = "HIGH ACCURACY"
+                elif tradeable_buy:
+                    display_prob = min(display_prob, 0.84)
+                    confidence_tier = "TRADEABLE"
+                elif discovery_buy:
+                    display_prob = min(display_prob, 0.78)
+                    confidence_tier = "DISCOVERY"
+                elif near_miss_buy:
+                    display_prob = min(display_prob, 0.74)
+                    confidence_tier = "NEAR MISS"
+                else:
+                    display_prob = min(display_prob, 0.70)
+                    confidence_tier = "WATCH ONLY"
+
                 l_tags = []
                 if long_sig["stoch_confirmed"]: l_tags.append("STOCH BOUNCE")
                 if long_sig["bb_bull_squeeze"]: l_tags.append("BB BULL SQ")
@@ -2450,9 +2499,10 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 if is_monday and entry_quality in ("✅ BUY", "🔍 DISCOVERY BUY", "⚡ NEAR-MISS BUY"):
                     l_tags.append("⚠️MON")
                 if combo_bonus > 0:             l_tags.append(f"COMBO+{combo_bonus:.0%}")
-                if high_accuracy_long:          l_tags.append("🎯HIGH-ACCURACY")
+                if ninety_confidence_long:     l_tags.append("🎯90-CONFIDENCE")
+                elif high_accuracy_long:        l_tags.append("🎯HIGH-ACCURACY")
                 elif discovery_buy:             l_tags.append("🔍DISCOVERY-BUY")  # v14-patch
-                elif l_prob >= 0.82:            l_tags.append("⚠️PROB-NO-GATE")
+                elif display_prob >= 0.82:      l_tags.append("⚠️PROB-NO-GATE")
                 if is_hk and not hk_participation_ok:
                     l_tags.append("HK-LOW-ACTIVITY")
                 if next_day_score >= 9:         l_tags.append("🔥NEXT-DAY-A+")
@@ -2536,8 +2586,9 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "7D Move Est": f"{expected_7d_move:.1f}%",
                     "Upside to Res": f"{upside_to_resistance:.1f}%",
                     "RR Est": f"1:{rr_est:.1f}",
-                    "Rise Prob":      f"{l_prob * 100:.1f}%",
-                    "Prob Tier":      prob_label(l_prob),
+                    "Rise Prob":      f"{display_prob * 100:.1f}%",
+                    "Prob Tier":      confidence_tier,
+                    "90% Qualified":  "YES" if ninety_confidence_long else "NO",
                     "Score":          f"{l_score}/{len(long_sig)}",
                     "Operator":       raw.get("operator_label", "–"),
                     "Op Score":       str(raw.get("operator_score", 0)),

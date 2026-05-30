@@ -218,8 +218,9 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
 
     # Limit-up filter: today's move not >8% (avoid limit-up/gap-up chasing)
     today_chg_pct = float((close.iloc[-1] - close.iloc[-2]) / close.iloc[-2] * 100) if len(close) >= 2 else 0
-    #not_limit_up = today_chg_pct < 8.0
-    not_limit_up = today_chg_pct < 30.0
+    # Strict no-chase filter for high-accuracy swing entries.
+    # Large earnings gaps can still be shown, but they should not pass the normal high-accuracy gate.
+    not_limit_up = today_chg_pct < 12.0
 
 
     # Stop-loss trigger: price broke below MA60 with significant volume (>1.5× avg)

@@ -32,7 +32,7 @@ def render_accuracy_lab(ctx: dict) -> None:
     with bt_cols[2]:
         bt_period = st.selectbox("History", ["1y", "2y", "3y"], index=1, key="bt_period")
     with bt_cols[3]:
-        bt_mode = st.selectbox("Signal", ["BUY/SELL", "High Prob Only"], index=0, key="bt_mode")
+        bt_mode = st.selectbox("Signal", ["BUY/SELL", "High Prob Only", "90% Tier Only"], index=0, key="bt_mode")
 
     def _bt_flatten(df: pd.DataFrame) -> pd.DataFrame:
         if isinstance(df.columns, pd.MultiIndex):
@@ -138,6 +138,30 @@ def render_accuracy_lab(ctx: dict) -> None:
                 if mode == "High Prob Only":
                     long_gate = long_gate and l_prob >= 0.82
                     short_gate = short_gate and s_prob >= 0.82
+
+                if mode == "90% Tier Only":
+                    # Approximate the live 90% confidence layer using historical OHLCV only.
+                    # This is intentionally strict and will produce fewer trades.
+                    rv_op = int(rv.get("operator_score", 0) or 0)
+                    rv_atr = float(rv.get("atr_pct", 0.0) or 0.0)
+                    rv_today = float(rv.get("today_chg_pct", 0.0) or 0.0)
+                    rv_trap = bool(rv.get("false_breakout", False) or rv.get("gap_chase_risk", False) or rv.get("operator_distribution", False))
+                    long_gate = bool(
+                        l_prob >= 0.82
+                        and l_score >= 8
+                        and rv.get("above_ma60", False)
+                        and (long_sig.get("vol_breakout", False) or long_sig.get("pocket_pivot", False) or rv_op >= 4)
+                        and (long_sig.get("weekly_trend", False) or long_sig.get("rs_momentum", False) or long_sig.get("rel_strength", False))
+                        and 2.8 <= rv_atr <= 10.0
+                        and -3.5 <= rv_today <= 6.0
+                        and not rv_trap
+                    )
+                    short_gate = bool(
+                        s_prob >= 0.82
+                        and s_score >= 5
+                        and (short_sig.get("vol_breakdown", False) or short_sig.get("high_volume_down", False))
+                        and not rv.get("gap_chase_risk", False)
+                    )
 
                 # Simple safety checks for historical test only, to avoid counting junk bars.
                 dollar_vol_20d = float((c.tail(20) * v.tail(20)).mean()) if len(c) >= 20 else 0
