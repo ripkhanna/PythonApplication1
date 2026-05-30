@@ -95,6 +95,25 @@ def _market_event_label() -> str:
 def _event_is_blocking(label: str) -> bool:
     return str(label).upper().startswith("BLOCK")
 
+
+def _sector_tailwind_label(sector_text: str, signals_text: str = "") -> str:
+    """Classify whether the stock belongs to a green/moving sector.
+
+    The main scan prefixes sector names with 🟢 / 🔴 based on current sector ETF
+    performance. Signals may also include SEC LEAD or RS>SPY when the stock is
+    outperforming its sector/market. This helper converts that into a visible
+    decision field for Momentum Runner.
+    """
+    sec = str(sector_text or "").upper()
+    sig = str(signals_text or "").upper()
+    if any(x in sec for x in ["🔴", "RED", "WEAK"]) and not any(x in sig for x in ["SEC LEAD", "RS>SPY"]):
+        return "RED/WEAK - avoid unless exceptional"
+    if any(x in sec for x in ["🟢", "GREEN", "STRONG"]) or any(x in sig for x in ["SEC LEAD", "RS>SPY", "REL STRENGTH"]):
+        return "GREEN/LEADER - preferred"
+    if "MIXED" in sec or not sec.strip():
+        return "UNKNOWN/MIXED - needs stock-level confirmation"
+    return "NEUTRAL - not a sector leader"
+
 def _source_frame() -> pd.DataFrame:
     sources = []
     for key in ("df_long_master", "df_long"):
@@ -139,6 +158,13 @@ def _classify(df: pd.DataFrame, min_score: int, show_chase: bool) -> pd.DataFram
     expl_score = _num(out, "Explosion Score", 0)
     op_score = _num(out, "Op Score", 0)
     price = _num(out, "Price", 0)
+    sector_txt = _txt(out, "Sector").str.upper()
+    sector_green = sector_txt.str.contains("🟢|GREEN|STRONG", regex=True, na=False)
+    sector_red = sector_txt.str.contains("🔴|RED|WEAK", regex=True, na=False)
+    sector_mixed = sector_txt.str.contains("MIXED|UNKNOWN", regex=True, na=False) | sector_txt.eq("")
+    sector_leader_signal = signals.str.contains(r"SEC LEAD|RS>SPY|REL STRENGTH|SECTOR LEADER", regex=True, na=False)
+    sector_tailwind_ok = sector_green | sector_leader_signal
+    sector_not_bad = ~sector_red | sector_leader_signal | sector_mixed
 
     has_live_move = (pm >= 2.0) | (today >= 2.0)
     ignition_move = ((pm >= 3.0) | (today >= 3.0)) & (pm <= 12.0) & (today <= 15.0)
@@ -192,6 +218,8 @@ def _classify(df: pd.DataFrame, min_score: int, show_chase: bool) -> pd.DataFram
     score += breakout.astype(int) * 12
     score += fuel.astype(int) * 8
     score += quality_ok.astype(int) * 10
+    score += sector_tailwind_ok.astype(int) * 8
+    score -= (sector_red & ~sector_leader_signal).astype(int) * 10
     score += (op_score >= 2).astype(int) * 4
     score -= trap.astype(int) * 18
     score -= avoid_entry.astype(int) * 10
@@ -219,6 +247,7 @@ def _classify(df: pd.DataFrame, min_score: int, show_chase: bool) -> pd.DataFram
         & explosive_fuel
         & explosive_liq
         & explosive_not_chase
+        & sector_not_bad
         & ~avoid_entry
         & ~trap
         & ~broken
@@ -257,12 +286,18 @@ def _classify(df: pd.DataFrame, min_score: int, show_chase: bool) -> pd.DataFram
         "Use normal stop; no dynamic runner mode"
     )
 
+    # Extra sector-strength layer: prefer explosive stocks in sectors that are
+    # green today or where the stock is leading its sector/market. This prevents
+    # buying a lone weak-sector spike unless there is exceptional stock-level RS.
+    firefly_sector_ok = sector_tailwind_ok | (sector_mixed & sector_leader_signal)
+
     firefly_pass = (
         explosive_setup
         & firefly_structure_ok
         & firefly_vol_ok
         & firefly_event_ok
         & firefly_entry_ok
+        & firefly_sector_ok
     )
 
     firefly_layer_summary = []
@@ -272,6 +307,7 @@ def _classify(df: pd.DataFrame, min_score: int, show_chase: bool) -> pd.DataFram
         parts.append("L2 vol window OK" if firefly_vol_ok.loc[i] else "L2 vol outside")
         parts.append("L3 event OK" if firefly_event_ok.loc[i] else "L3 event block")
         parts.append("L4 entry OK" if firefly_entry_ok.loc[i] else "L4 wait trigger")
+        parts.append("Sector✅" if sector_tailwind_ok.loc[i] else ("Sector⚠" if sector_mixed.loc[i] else "Sector❌"))
         parts.append("L5 dynamic exit")
         if event_risky_signal.loc[i]:
             parts.append("event/catalyst name: size down")
@@ -308,6 +344,8 @@ def _classify(df: pd.DataFrame, min_score: int, show_chase: bool) -> pd.DataFram
         if today.loc[i] >= 2.0: parts.append(f"today +{today.loc[i]:.1f}%")
         if move5.loc[i] >= 10.0: parts.append(f"5D +{move5.loc[i]:.1f}%")
         if breakout.loc[i]: parts.append("breakout/RS")
+        if sector_tailwind_ok.loc[i]: parts.append("green/leader sector")
+        elif sector_red.loc[i]: parts.append("weak/red sector")
         if fuel.loc[i]: parts.append("fuel")
         if firefly_pass.loc[i]: parts.append("A++ Firefly 5-layer pass")
         elif explosive_setup.loc[i]: parts.append("A+ explosive 5-10% candidate")
@@ -346,14 +384,15 @@ def _classify(df: pd.DataFrame, min_score: int, show_chase: bool) -> pd.DataFram
 
     vol_confirm = explosive_volume | (vol >= 1.3) | (pm >= 3.0) | (today >= 3.0)
     clean_risk = ~trap & ~avoid_entry & ~broken & ~chase_flag
+    sector_confirm = sector_tailwind_ok
 
     # Final decision levels:
     # READY = all major gates pass; buy only above trigger/VWAP/ORB.
     # BUY WATCH = explosive candidate, but needs entry confirmation or Firefly layer improvement.
     # WAIT = runner exists but not enough explosive/volume/entry alignment yet.
-    ready_best = firefly_pass & entry_good & rr_ok & vol_confirm & clean_risk
+    ready_best = firefly_pass & sector_confirm & entry_good & rr_ok & vol_confirm & clean_risk
     ready_trigger = firefly_pass & entry_acceptable & rr_ok & vol_confirm & clean_risk & ~ready_best
-    explosive_ready = explosive_setup & entry_good & rr_ok & vol_confirm & clean_risk & ~firefly_pass
+    explosive_ready = explosive_setup & sector_not_bad & entry_good & rr_ok & vol_confirm & clean_risk & ~firefly_pass
     explosive_watch_setup = explosive_setup & clean_risk & ~(ready_best | ready_trigger | explosive_ready)
     normal_watch_setup = tier.isin(["A - Day-1 Ignition", "B - Controlled Runner"]) & clean_risk
 
@@ -372,6 +411,7 @@ def _classify(df: pd.DataFrame, min_score: int, show_chase: bool) -> pd.DataFram
         checks.append("Firefly✅" if firefly_pass.loc[i] else "Firefly❌")
         checks.append("Entry✅" if entry_good.loc[i] else ("Entry⚠" if entry_acceptable.loc[i] else "Entry❌"))
         checks.append("Tradeable✅" if (tradeable_buy.loc[i] or explosive_setup.loc[i] or firefly_pass.loc[i]) else "Tradeable❌")
+        checks.append("Sector✅" if sector_tailwind_ok.loc[i] else ("Sector⚠" if sector_mixed.loc[i] else "Sector❌"))
         checks.append("Vol✅" if vol_confirm.loc[i] else "Vol❌")
         checks.append("RR✅" if rr_ok.loc[i] else "RR❌")
         checks.append("Risk✅" if clean_risk.loc[i] else "Risk❌")
@@ -379,6 +419,10 @@ def _classify(df: pd.DataFrame, min_score: int, show_chase: bool) -> pd.DataFram
 
     out["Buy Decision"] = buy_decision
     out["Buy Checklist"] = checklist
+    out["Sector Tailwind"] = [
+        _sector_tailwind_label(out.at[i, "Sector"] if "Sector" in out.columns else "", out.at[i, "Signals"] if "Signals" in out.columns else "")
+        for i in idx
+    ]
     out["Runner Score"] = score
     out["Runner Tier"] = tier
     out["Runner Why"] = why
@@ -417,10 +461,11 @@ def _show(df: pd.DataFrame, key: str) -> None:
         st.info("No rows in this bucket with the current filters.")
         return
     preferred = [
-        # Decision block: keep these together so the buy/no-buy call is visible.
-        "Ticker", "Buy Decision", "Buy Checklist",
+        # Decision block: keep these together so the buy/no-buy call and exact trigger are visible.
+        "Ticker", "Buy Decision", "Buy Checklist", "Runner Trigger",
         "Runner Tier", "Firefly Pass", "Explosive Buy", "Entry Quality", "Tradeable Buy",
-        "Runner Trigger", "Runner Invalid", "Target 1 +5%", "Target 2 +10%",
+        "Sector Tailwind", "Sector",
+        "Runner Invalid", "Target 1 +5%", "Target 2 +10%",
         # Confirmation/risk block.
         "Runner Score", "Vol Ratio", "RR Est", "Trap Risk", "ATR%", "Rise Prob",
         "Today %", "PM Chg%", "PM Price", "5D %", "20D %", "7D Move Est", "Upside to Res",

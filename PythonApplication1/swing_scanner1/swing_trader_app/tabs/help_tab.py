@@ -55,10 +55,10 @@ Start with market direction, then active movers and Big Money Radar. For **same-
 
 Use this tab for **explosive same-day 5-10% candidates** and stocks already moving now. It is separate from Best 7-10%, so hot runners do not pollute the stricter multi-day swing shortlist.
 
-Main decision columns are now grouped at the start of the table:
+Main decision columns are now grouped at the start of the table. **Runner Trigger is placed immediately after Buy Checklist** because it is the exact price/level to watch before entering:
 
 ```text
-Ticker -> Buy Decision -> Buy Checklist -> Runner Tier -> Firefly Pass -> Explosive Buy -> Entry Quality -> Tradeable Buy -> Runner Trigger -> Runner Invalid -> Target 1 +5% -> Target 2 +10%
+Ticker -> Buy Decision -> Buy Checklist -> Runner Trigger -> Runner Tier -> Firefly Pass -> Explosive Buy -> Entry Quality -> Tradeable Buy -> Sector Tailwind -> Sector -> Runner Invalid -> Target 1 +5% -> Target 2 +10%
 ```
 
 Use **Buy Decision** as the first decision field:
@@ -253,6 +253,27 @@ The tracker is saved at `scanner_cache/performance_tracker.csv` and is kept when
     with st.expander("How To Decide What To Buy", expanded=True):
         st.markdown(
             """
+### Sector Tailwind Rule
+
+For 5-10% explosive trades, prefer stocks from the strongest sector/theme of the day. The scanner now shows **Sector Tailwind** beside the decision columns:
+
+| Sector Tailwind | Meaning | Action |
+|---|---|---|
+| **GREEN/LEADER - preferred** | Sector is green today, or stock is showing sector/market leadership | Best candidates |
+| **UNKNOWN/MIXED** | Sector data unavailable or mixed | Trade only if Firefly/VWAP/volume are strong |
+| **NEUTRAL** | Stock is moving but sector is not clearly strong | Lower priority |
+| **RED/WEAK** | Sector is weak/red | Usually skip unless exceptional news + volume |
+
+Best same-day buys should have:
+
+```text
+Buy Decision = BUY ABOVE TRIGGER
+Sector Tailwind = GREEN/LEADER - preferred
+Firefly Pass = YES
+Entry Quality = A or A+
+Volume confirmation
+```
+
 ### Fast Buy Decision Rule
 
 For explosive same-day trades, buy from **3 Momentum Runner** only when the decision stack agrees.
