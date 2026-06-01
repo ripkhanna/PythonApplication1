@@ -310,6 +310,133 @@ def score_lt_stock(ticker: str) -> dict:
         except Exception:
             pass
 
+        # ── Data quality + true quality-stock diagnostics ────────────────
+        # These columns make the Long Term tab separate real business quality
+        # from price momentum / analyst-target upside. A stock can have a high
+        # expected 1Y return but still not be a quality long-term candidate if
+        # fundamentals are sparse, debt is high, FCF is weak, or valuation is
+        # unsupported by growth.
+        def _has_val(v):
+            try:
+                if v is None:
+                    return False
+                if isinstance(v, str) and not v.strip():
+                    return False
+                f = float(v)
+                return f == f
+            except Exception:
+                return bool(v)
+
+        data_fields = {
+            "Price": price,
+            "MarketCap": mktcap,
+            "RevGrowth": rev_growth,
+            "EPSGrowth": earn_growth,
+            "ROE": roe,
+            "Margin": profit_mg,
+            "DebtEq": debt_eq,
+            "FCF": fcf,
+            "ForwardPE": fwd_pe,
+            "PEG": peg,
+            "MA200": ma200,
+            "52WHigh": w52hi,
+        }
+        data_quality_pct = int(round(sum(1 for v in data_fields.values() if _has_val(v)) / max(1, len(data_fields)) * 100))
+        if data_quality_pct >= 80:
+            data_quality_label = "High"
+        elif data_quality_pct >= 60:
+            data_quality_label = "Medium"
+        elif data_quality_pct >= 40:
+            data_quality_label = "Partial"
+        else:
+            data_quality_label = "Low"
+
+        true_q = 0
+        q_flags = []
+        q_warn = []
+
+        if mktcap and float(mktcap) >= 10_000_000_000:
+            true_q += 1; q_flags.append("Large cap")
+        elif mktcap and float(mktcap) >= 1_000_000_000:
+            q_flags.append("Mid cap")
+
+        if rev_growth is not None and rev_growth > 0.05:
+            true_q += 1; q_flags.append("Sales growing")
+        if earn_growth is not None and earn_growth > 0.05:
+            true_q += 1; q_flags.append("EPS growing")
+
+        if roe is not None and roe > 0.15:
+            true_q += 1; q_flags.append("ROE>15%")
+        elif roa is not None and roa > 0.06:
+            true_q += 1; q_flags.append("ROA>6%")
+
+        if profit_mg is not None and profit_mg > 0.12:
+            true_q += 1; q_flags.append("Good margin")
+
+        fcf_positive = False
+        try:
+            fcf_positive = bool(fcf is not None and float(fcf) > 0)
+        except Exception:
+            fcf_positive = False
+        if fcf_positive:
+            true_q += 1; q_flags.append("FCF+")
+        else:
+            q_warn.append("FCF missing/negative")
+
+        debt_ok = None
+        if debt_eq is not None:
+            try:
+                debt_f = float(debt_eq)
+                if debt_f < 80:
+                    debt_ok = True
+                    true_q += 1; q_flags.append("Debt OK")
+                elif debt_f > 180:
+                    debt_ok = False
+                    q_warn.append("High debt")
+                else:
+                    debt_ok = False
+            except Exception:
+                debt_ok = None
+
+        valuation_ok = False
+        try:
+            pe_for_quality = fwd_pe or trail_pe
+            if pe_for_quality and 0 < float(pe_for_quality) <= 35:
+                valuation_ok = True
+                true_q += 1; q_flags.append("Valuation OK")
+            elif peg and 0 < float(peg) <= 2.5:
+                valuation_ok = True
+                true_q += 1; q_flags.append("PEG OK")
+            elif pe_for_quality and float(pe_for_quality) > 60:
+                q_warn.append("Expensive")
+        except Exception:
+            pass
+
+        if price and ma200 and price > ma200:
+            true_q += 1; q_flags.append("Above MA200")
+
+        if div_yield and 0.015 <= float(div_yield) <= 0.08:
+            true_q += 1; q_flags.append("Dividend")
+
+        # Cap quality if source data is weak. This prevents sparse Yahoo rows
+        # from being treated the same as fundamentally verified companies.
+        if data_quality_pct < 40:
+            true_q = min(true_q, 4)
+            q_warn.append("Low data quality")
+        elif data_quality_pct < 60:
+            true_q = min(true_q, 6)
+
+        if true_q >= 8:
+            quality_grade = "A+"
+        elif true_q >= 7:
+            quality_grade = "A"
+        elif true_q >= 5:
+            quality_grade = "B"
+        elif true_q >= 3:
+            quality_grade = "C"
+        else:
+            quality_grade = "D"
+
         # ── Expected 1Y return ────────────────────────────────────────────
         def _clip(x, lo, hi, d=0.0):
             try:
@@ -422,6 +549,31 @@ def score_lt_stock(ticker: str) -> dict:
         exp_1y_str = f"+{exp_1y:.1f}%" if exp_1y > 0 else f"{exp_1y:.1f}%"
         exp_1y_note = " + ".join(exp_parts) if exp_parts else "-"
 
+        # ── Final quality-stock decision ─────────────────────────────────
+        quality_checklist_parts = []
+        quality_checklist_parts.append("Grade✅" if quality_grade in ("A+", "A") else "Grade⚠️" if quality_grade == "B" else "Grade❌")
+        quality_checklist_parts.append("Data✅" if data_quality_pct >= 60 else "Data⚠️" if data_quality_pct >= 40 else "Data❌")
+        quality_checklist_parts.append("Support✅" if supp_score >= 3 else "Support⚠️")
+        quality_checklist_parts.append("FCF✅" if fcf_positive else "FCF⚠️")
+        quality_checklist_parts.append("Debt✅" if debt_ok is True else "Debt⚠️" if debt_ok is False else "Debt?")
+        quality_checklist_parts.append("Valuation✅" if valuation_ok else "Valuation⚠️")
+        quality_checklist = " | ".join(quality_checklist_parts)
+
+        if quality_grade in ("A+", "A") and data_quality_pct >= 60 and supp_score >= 3 and exp_1y >= 8:
+            quality_decision = "✅ QUALITY BUY ZONE"
+        elif quality_grade in ("A+", "A") and data_quality_pct >= 60:
+            quality_decision = "🟢 QUALITY - WAIT SUPPORT"
+        elif quality_grade == "B" and data_quality_pct >= 50 and supp_score >= 3:
+            quality_decision = "🟡 GOOD - ACCUMULATE"
+        elif data_quality_pct < 40:
+            quality_decision = "⚪ DATA TOO LOW"
+        else:
+            quality_decision = "👀 WATCH ONLY"
+
+        quality_notes = " | ".join(q_flags[:6]) if q_flags else "-"
+        if q_warn:
+            quality_notes = (quality_notes + " | Watch: " + ", ".join(q_warn[:3])).strip(" |")
+
         # ── Hold horizon ──────────────────────────────────────────────────
         if score >= 8:
             horizon = "CORE HOLD (3-5yr)";  hcol = "buy"
@@ -445,6 +597,11 @@ def score_lt_stock(ticker: str) -> dict:
             "Ticker":           ticker,
             "Name":             name[:28],
             "Sector":           sector,
+            "Quality Decision": quality_decision,
+            "Quality Grade":    quality_grade,
+            "Quality Checklist": quality_checklist,
+            "Data Quality":     f"{data_quality_pct}% {data_quality_label}",
+            "Quality Notes":    quality_notes,
             "Price":            f"${price:.2f}",
             "Mkt Cap":          mktcap_str,
             "Exp 1Y Return":    exp_1y_str,
@@ -467,6 +624,7 @@ def score_lt_stock(ticker: str) -> dict:
                                  if upside_pct else "-"),
             "Rec":              rec or "-",
             "Score":            f"{score}/10",
+            "True Quality":     f"{true_q}/10",
             "Horizon":          horizon,
             "_score":           score,
             "_hcol":            hcol,

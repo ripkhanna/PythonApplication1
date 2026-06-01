@@ -17,7 +17,19 @@ import streamlit as st
 # Helper functions (unchanged from original)
 # ----------------------------------------------------------------------
 def _bind_runtime(ctx: dict) -> None:
+    """Bind shared runtime objects without overwriting local tab helpers.
+
+Some app runtimes pass helper functions in ctx. A shared helper named
+_fmt_price_value(value) accepts only one argument. Momentum Runner needs its
+market-aware two-argument formatter, so protect it from being overwritten.
+"""
+    protected = {
+        "_fmt_price_value": globals().get("_MOMENTUM_FMT_PRICE_VALUE", globals().get("_fmt_price_value")),
+    }
     globals().update(ctx)
+    for name, fn in protected.items():
+        if fn is not None:
+            globals()[name] = fn
 
 def _num(df: pd.DataFrame, col: str, default: float = 0.0) -> pd.Series:
     if col not in df.columns:
@@ -64,7 +76,7 @@ def _is_monthly_options_expiry(now: datetime) -> bool:
 def _market_event_label() -> str:
     market = str(st.session_state.get("market_selector", globals().get("market_selector", ""))).upper()
     now = datetime.now()
-    if "INDIA" in market:
+    if any(x in market for x in ("INDIA", "INR", "NSE", "🇮🇳")):
         if now.weekday() == 3:
             return "CAUTION - India weekly expiry day; smaller size / wait ORB"
         return "CLEAR - no built-in India fixed event detected"
@@ -104,6 +116,79 @@ def _source_frame() -> pd.DataFrame:
             return out.drop_duplicates("Ticker").reset_index(drop=True)
     return pd.DataFrame()
 
+
+
+def _market_text() -> str:
+    return str(st.session_state.get("market_selector", globals().get("market_selector", ""))).upper()
+
+def _is_india_context(df: pd.DataFrame | None = None) -> bool:
+    m = _market_text()
+    if any(x in m for x in ("INDIA", "INR", "NSE", "🇮🇳")):
+        return True
+    if isinstance(df, pd.DataFrame) and "Ticker" in df.columns and not df.empty:
+        sample = df["Ticker"].astype(str).str.upper().head(30)
+        return bool(sample.str.endswith(".NS").mean() >= 0.5)
+    return False
+
+def _is_sgx_context(df: pd.DataFrame | None = None) -> bool:
+    m = _market_text()
+    if any(x in m for x in ("SGX", "SINGAPORE", "SG", "🇸🇬")):
+        return True
+    if isinstance(df, pd.DataFrame) and "Ticker" in df.columns and not df.empty:
+        sample = df["Ticker"].astype(str).str.upper().head(30)
+        return bool(sample.str.endswith(".SI").mean() >= 0.5)
+    return False
+
+def _is_hk_context(df: pd.DataFrame | None = None) -> bool:
+    m = _market_text()
+    if any(x in m for x in ("HK", "HONG KONG", "HKEX", "🇭🇰")):
+        return True
+    if isinstance(df, pd.DataFrame) and "Ticker" in df.columns and not df.empty:
+        sample = df["Ticker"].astype(str).str.upper().head(30)
+        return bool(sample.str.endswith(".HK").mean() >= 0.5)
+    return False
+
+def _is_sparse_asia_context(df: pd.DataFrame | None = None) -> bool:
+    """Markets where Yahoo sector heat / intraday relative volume are often sparse."""
+    return _is_india_context(df) or _is_sgx_context(df) or _is_hk_context(df)
+
+def _min_price_for_market(df: pd.DataFrame | None = None) -> float:
+    if _is_india_context(df):
+        return 20.0
+    if _is_hk_context(df):
+        return 0.50
+    if _is_sgx_context(df):
+        return 0.05
+    return 2.0
+
+def _currency_symbol(df: pd.DataFrame | None = None) -> str:
+    m = _market_text()
+    if _is_india_context(df):
+        return "₹"
+    if _is_hk_context(df):
+        return "HK$"
+    if _is_sgx_context(df):
+        return "S$"
+    return "$"
+
+def _fmt_price_value(x: float, sym: str = "$", *args, **kwargs) -> str:
+    """Format price with market currency.
+
+    Keep sym optional so older one-argument calls and newer two-argument
+    market-aware calls both work. This prevents:
+    TypeError: _fmt_price_value() takes 1 positional argument but 2 were given
+    """
+    try:
+        x = float(x)
+    except Exception:
+        return "-"
+    sym = "$" if sym is None else str(sym)
+    return f"{sym}{x:.2f}" if x > 0 else "-"
+
+# Keep a stable alias so _bind_runtime(ctx) cannot replace the local formatter
+# with the one-argument formatter from shared table utilities.
+_MOMENTUM_FMT_PRICE_VALUE = _fmt_price_value
+
 # ----------------------------------------------------------------------
 # INTRADAY EXPLOSIVE CLASSIFICATION (original logic, slightly renamed)
 # ----------------------------------------------------------------------
@@ -111,6 +196,10 @@ def _classify_intraday(df: pd.DataFrame, min_score: int, show_chase: bool) -> pd
     """Original Firefly/Explosive runner logic for same-day 5-10% moves."""
     out = df.copy()
     idx = out.index
+    india_mode = _is_india_context(out)
+    sgx_mode = _is_sgx_context(out)
+    hk_mode = _is_hk_context(out)
+    sparse_asia_mode = india_mode or sgx_mode or hk_mode
 
     signals = _txt(out, "Signals").str.upper()
     action = _txt(out, "Action").str.upper()
@@ -144,6 +233,28 @@ def _classify_intraday(df: pd.DataFrame, min_score: int, show_chase: bool) -> pd
     sector_tailwind_ok = sector_green | sector_leader_signal
     sector_not_bad = ~sector_red | sector_leader_signal | sector_mixed
 
+    # Sparse-market note: Yahoo intraday volume ratio and sector heat are often incomplete
+    # for India/NSE, SGX and HK. Do not discard good stocks solely because Vol Ratio is low
+    # or Sector is Mixed. Use stock-level structure, relative strength, pre-mover and operator
+    # signals as a conservative proxy, while still requiring clean risk and a trigger.
+    india_volume_proxy = (vol >= 0.03) | (pre_score >= 45) | (rise >= 65) | signals.str.contains(
+        r"HIGH-ACCURACY|NEXT-DAY|PRE-MOVER|BULL CANDLE|HIGHER LOWS|MACD|WKLY TREND|RS>SPY",
+        regex=True, na=False
+    )
+    sgx_hk_volume_proxy = (vol >= 0.15) | (pre_score >= 40) | (rise >= 65) | (op_score >= 2) | signals.str.contains(
+        r"HIGH-ACCURACY|NEXT-DAY|PRE-MOVER|BULL CANDLE|HIGHER LOWS|MACD|WKLY TREND|RS>SPY|VOL SURGE|POCKET PIVOT|52W",
+        regex=True, na=False
+    )
+    sparse_volume_proxy = np.where(india_mode, india_volume_proxy, sgx_hk_volume_proxy)
+    sparse_volume_proxy = pd.Series(sparse_volume_proxy, index=idx).astype(bool)
+
+    sparse_sector_proxy = sector_tailwind_ok | (sector_mixed & (sector_leader_signal | signals.str.contains(
+        r"WKLY TREND|RS>SPY|HIGHER LOWS|BREAKOUT|MACD|BULL CANDLE|52W|POCKET PIVOT|VOL SURGE", regex=True, na=False
+    )))
+    if sparse_asia_mode:
+        sector_tailwind_ok = sparse_sector_proxy
+        sector_not_bad = ~sector_red | sparse_sector_proxy | sector_mixed
+
     has_live_move = (pm >= 2.0) | (today >= 2.0)
     ignition_move = ((pm >= 3.0) | (today >= 3.0)) & (pm <= 12.0) & (today <= 15.0)
     controlled_runner = (
@@ -173,8 +284,12 @@ def _classify_intraday(df: pd.DataFrame, min_score: int, show_chase: bool) -> pd
     )
     quality_ok = runner_quality | breakout
     avoid_entry = entry.str.contains("AVOID|SKIP", regex=True, na=False) | action.str.contains("TRAP RISK", regex=True, na=False)
-    liq_ok = (price >= 1.0) & ((vol >= 0.5) | (today >= 5.0) | (pm >= 5.0))
-    vol_ok = (atr >= 3.5) | (move7 >= 7.0)
+    if sparse_asia_mode:
+        liq_ok = (price >= _min_price_for_market(out)) & (sparse_volume_proxy | (today >= 0.8) | (pm >= 0.8))
+        vol_ok = (atr >= 2.3) | (move7 >= 5.0)
+    else:
+        liq_ok = (price >= 1.0) & ((vol >= 0.5) | (today >= 5.0) | (pm >= 5.0))
+        vol_ok = (atr >= 3.5) | (move7 >= 7.0)
     trap = (
         trap_label.str.contains("TRAP|DISTRIB|LIMIT", regex=True, na=False)
         | signals.str.contains("LIMIT-UP", regex=True, na=False)
@@ -202,14 +317,28 @@ def _classify_intraday(df: pd.DataFrame, min_score: int, show_chase: bool) -> pd
     score = score.clip(0, 100).round(1)
 
     # Explosive criteria (same as original)
-    explosive_live_move = (pm.between(2.0, 9.5) | today.between(2.0, 9.5))
-    explosive_volume = vol.between(1.5, 7.0) | ((pm >= 4.0) | (today >= 4.0))
-    explosive_atr = atr.between(3.0, 12.0) | (move7 >= 7.0)
+    if sparse_asia_mode:
+        # For same-day runners, do not promote red names just because they have a good 5D trend.
+        # A 5D/pre-mover proxy is allowed only when today's move is not materially negative.
+        explosive_live_move = (
+            pm.between(0.8, 9.5)
+            | today.between(0.8, 9.5)
+            | (move5.between(3.0, 18.0) & (pre_score >= 40) & (today >= -0.5) & (pm >= -0.5))
+        )
+        explosive_volume = sparse_volume_proxy | ((pm >= 1.5) | (today >= 1.5))
+        explosive_atr = atr.between(2.3, 12.0) | (move7 >= 5.0)
+    else:
+        explosive_live_move = (pm.between(2.0, 9.5) | today.between(2.0, 9.5))
+        explosive_volume = vol.between(1.5, 7.0) | ((pm >= 4.0) | (today >= 4.0))
+        explosive_atr = atr.between(3.0, 12.0) | (move7 >= 7.0)
     explosive_fuel = breakout | fuel | signals.str.contains(
         r"PREMARKET|PRE-MARKET|GAPPER|GAP|NEWS|CATALYST|EARNINGS|FDA|CONTRACT|GUIDANCE|UPGRADE|SHORT SQUEEZE|VOLUME BREAKOUT|VOL BREAKOUT|52W|HOD|ORB|VWAP",
         regex=True, na=False
     )
-    explosive_liq = (price >= 2.0) & ((vol >= 1.0) | (pm >= 3.0) | (today >= 3.0))
+    if sparse_asia_mode:
+        explosive_liq = (price >= _min_price_for_market(out)) & (sparse_volume_proxy | (pm >= 0.8) | (today >= 0.8))
+    else:
+        explosive_liq = (price >= 2.0) & ((vol >= 1.0) | (pm >= 3.0) | (today >= 3.0))
     explosive_not_chase = (pm <= 12.0) & (today <= 12.0) & (move5 <= 45.0) & (move20 <= 85.0)
     explosive_setup = (
         explosive_live_move & explosive_volume & explosive_atr & explosive_fuel &
@@ -223,7 +352,10 @@ def _classify_intraday(df: pd.DataFrame, min_score: int, show_chase: bool) -> pd
     )
     structure_ranging = signals.str.contains(r"NR7|INSIDE|BB BULL SQ|VCP", regex=True, na=False) & ~structure_trending
     firefly_structure_ok = structure_trending & ~structure_ranging & ~trap & ~broken
-    firefly_vol_ok = (atr.between(3.0, 10.5) | move7.between(7.0, 18.0)) & vol.between(1.2, 7.0)
+    if sparse_asia_mode:
+        firefly_vol_ok = (atr.between(2.3, 10.5) | move7.between(5.0, 18.0)) & sparse_volume_proxy
+    else:
+        firefly_vol_ok = (atr.between(3.0, 10.5) | move7.between(7.0, 18.0)) & vol.between(1.2, 7.0)
     event_label = _market_event_label()
     event_block = _event_is_blocking(event_label)
     event_risky_signal = signals.str.contains(r"EARNINGS|PRE-EARN|FDA|FOMC|CPI|BUDGET|RBI|EXPIRY", regex=True, na=False)
@@ -234,7 +366,10 @@ def _classify_intraday(df: pd.DataFrame, min_score: int, show_chase: bool) -> pd
         "Trail: below VWAP/9EMA after +3%; after +5% move stop to breakeven; exit if 2 candles close below VWAP",
         "Use normal stop; no dynamic runner mode"
     )
-    firefly_sector_ok = sector_tailwind_ok | (sector_mixed & sector_leader_signal)
+    if sparse_asia_mode:
+        firefly_sector_ok = sector_tailwind_ok | (sector_mixed & (sector_leader_signal | breakout | (pre_score >= 40) | (rise >= 65)))
+    else:
+        firefly_sector_ok = sector_tailwind_ok | (sector_mixed & sector_leader_signal)
     firefly_pass = (
         explosive_setup & firefly_structure_ok & firefly_vol_ok &
         firefly_event_ok & firefly_entry_ok & firefly_sector_ok
@@ -312,17 +447,23 @@ def _classify_intraday(df: pd.DataFrame, min_score: int, show_chase: bool) -> pd
     rr_missing = (rr <= 0)
     rr_ok = (rr >= 1.8) | (rr_missing & tier.isin(["A++ Firefly 5-Layer Explosive", "A+ Explosive 5-10% Today"]))
     vol_confirm = explosive_volume | (vol >= 1.3) | (pm >= 3.0) | (today >= 3.0)
+    if sparse_asia_mode:
+        vol_confirm = vol_confirm | sparse_volume_proxy
     clean_risk = ~trap & ~avoid_entry & ~broken & ~chase_flag
     sector_confirm = sector_tailwind_ok
+    if sparse_asia_mode:
+        sector_confirm = sector_tailwind_ok | (sector_mixed & (sector_leader_signal | breakout | (pre_score >= 40) | (rise >= 65)))
 
     ready_best = firefly_pass & sector_confirm & entry_good & rr_ok & vol_confirm & clean_risk
     ready_trigger = firefly_pass & entry_acceptable & rr_ok & vol_confirm & clean_risk & ~ready_best
     explosive_ready = explosive_setup & sector_not_bad & entry_good & rr_ok & vol_confirm & clean_risk & ~firefly_pass
-    explosive_watch_setup = explosive_setup & clean_risk & ~(ready_best | ready_trigger | explosive_ready)
+    firefly_watch_setup = firefly_pass & clean_risk & ~(ready_best | ready_trigger)
+    explosive_watch_setup = explosive_setup & clean_risk & ~(ready_best | ready_trigger | explosive_ready | firefly_watch_setup)
     normal_watch_setup = tier.isin(["A - Day-1 Ignition", "B - Controlled Runner"]) & clean_risk
 
     buy_decision = pd.Series("⚪ IGNORE - no edge", index=idx, dtype="object")
     buy_decision.loc[normal_watch_setup] = "⏳ WAIT - not explosive enough"
+    buy_decision.loc[firefly_watch_setup] = "⚡ WATCH - Firefly pass; wait VWAP/entry"
     buy_decision.loc[explosive_watch_setup] = "⚡ WATCH - needs Firefly/VWAP confirmation"
     buy_decision.loc[explosive_ready] = "🟢 BUY WATCH - explosive; confirm VWAP/ORB"
     buy_decision.loc[ready_trigger] = "✅ BUY ABOVE TRIGGER - confirm entry"
@@ -371,10 +512,11 @@ def _classify_intraday(df: pd.DataFrame, min_score: int, show_chase: bool) -> pd
         "YES - Firefly pass; buy only ORB/VWAP trigger",
         np.where(tier.eq("A+ Explosive 5-10% Today"), "YES - only above trigger / VWAP", "NO")
     )
-    out["Runner Trigger"] = trigger.round(2).map(lambda x: f"${x:.2f}" if x > 0 else "-")
-    out["Runner Invalid"] = invalid.round(2).map(lambda x: f"${x:.2f}" if x > 0 else "-")
-    out["Target 1 +5%"] = explosive_target_1.round(2).map(lambda x: f"${x:.2f}" if x > 0 else "-")
-    out["Target 2 +10%"] = explosive_target_2.round(2).map(lambda x: f"${x:.2f}" if x > 0 else "-")
+    sym = _currency_symbol(out)
+    out["Runner Trigger"] = trigger.round(2).map(lambda x: _fmt_price_value(x, sym))
+    out["Runner Invalid"] = invalid.round(2).map(lambda x: _fmt_price_value(x, sym))
+    out["Target 1 +5%"] = explosive_target_1.round(2).map(lambda x: _fmt_price_value(x, sym))
+    out["Target 2 +10%"] = explosive_target_2.round(2).map(lambda x: _fmt_price_value(x, sym))
     out["_tier_sort"] = tier.map({
         "A++ Firefly 5-Layer Explosive": 6,
         "A+ Explosive 5-10% Today": 5,
@@ -401,6 +543,10 @@ def _classify_swing(df: pd.DataFrame, min_score: int, show_weak: bool, market_tr
     """
     out = df.copy()
     idx = out.index
+    india_mode = _is_india_context(out)
+    sgx_mode = _is_sgx_context(out)
+    hk_mode = _is_hk_context(out)
+    sparse_asia_mode = india_mode or sgx_mode or hk_mode
 
     # ---- extract base data with safe defaults ----
     signals = _txt(out, "Signals").str.upper()
@@ -425,6 +571,22 @@ def _classify_swing(df: pd.DataFrame, min_score: int, show_weak: bool, market_tr
     sector_leader_signal = signals.str.contains(r"SEC LEAD|RS>SPY|REL STRENGTH|SECTOR LEADER", regex=True, na=False)
     sector_tailwind_ok = sector_green | sector_leader_signal
     sector_not_bad = ~sector_red | sector_leader_signal
+    india_volume_proxy = (vol >= 0.03) | (rise >= 60) | signals.str.contains(
+        r"HIGH-ACCURACY|NEXT-DAY|PRE-MOVER|BULL CANDLE|HIGHER LOWS|MACD|WKLY TREND|RS>SPY|VOL-DIP",
+        regex=True, na=False
+    )
+    sgx_hk_volume_proxy = (vol >= 0.15) | (rise >= 60) | signals.str.contains(
+        r"HIGH-ACCURACY|NEXT-DAY|PRE-MOVER|BULL CANDLE|HIGHER LOWS|MACD|WKLY TREND|RS>SPY|VOL-DIP|POCKET PIVOT|52W",
+        regex=True, na=False
+    )
+    sparse_volume_proxy = pd.Series(np.where(india_mode, india_volume_proxy, sgx_hk_volume_proxy), index=idx).astype(bool)
+    if sparse_asia_mode:
+        # Do not block Asia names just because sector heat is Mixed/unknown.
+        # Require stock-level structure/RS instead.
+        sector_tailwind_ok = sector_tailwind_ok | (signals.str.contains(
+            r"WKLY TREND|RS>SPY|HIGHER LOWS|BREAKOUT|MACD|BULL CANDLE|POCKET PIVOT|52W", regex=True, na=False
+        ) & ~sector_red)
+        sector_not_bad = ~sector_red | sector_tailwind_ok
 
     # Swing conditions
     uptrend_5d = (move5 >= 2) & (move5 <= 30)
@@ -432,7 +594,9 @@ def _classify_swing(df: pd.DataFrame, min_score: int, show_weak: bool, market_tr
     not_too_hot = (move5 <= 40) & (move20 <= 80)
     pullback_ok = (today >= -5) & (today <= 5)
     not_broken = (today > -8) & (pm > -8)
-    vol_ok = (vol >= 0.5) & (vol <= 8.0)
+    vol_ok = ((vol >= 0.5) & (vol <= 8.0))
+    if sparse_asia_mode:
+        vol_ok = vol_ok | sparse_volume_proxy
     atr_ok = (atr >= 1.5) & (atr <= 12.0)
     structure_swing = signals.str.contains(
         r"WKLY TREND|HIGHER LOWS|BREAKOUT|RS>SPY|MACD|BB BULL SQ|POCKET|HIGHER HIGHS|TREND",
@@ -503,8 +667,9 @@ def _classify_swing(df: pd.DataFrame, min_score: int, show_weak: bool, market_tr
     out["Swing Score"] = swing_score
     out["Swing Tier"] = tier
     out["Buy Decision"] = buy_decision
-    out["Stop Loss (1.5x ATR)"] = stop_loss.round(2).map(lambda x: f"${x:.2f}" if x > 0 else "-")
-    out["Target (3:1)"] = target.round(2).map(lambda x: f"${x:.2f}" if x > 0 else "-")
+    sym = _currency_symbol(out)
+    out["Stop Loss (1.5x ATR)"] = stop_loss.round(2).map(lambda x: _fmt_price_value(x, sym))
+    out["Target (3:1)"] = target.round(2).map(lambda x: _fmt_price_value(x, sym))
     out["Risk:Reward"] = risk_reward.map(lambda x: f"1:{x:.1f}" if x > 0 else "-")
     out["Sector Tailwind"] = [
         _sector_tailwind_label(out.at[i, "Sector"] if "Sector" in out.columns else "", out.at[i, "Signals"] if "Signals" in out.columns else "")
@@ -523,9 +688,9 @@ def _classify_swing(df: pd.DataFrame, min_score: int, show_weak: bool, market_tr
         out.at[i, "Swing Why"] = " | ".join(reasons[:6]) if reasons else "no swing criteria"
 
     # ---- Filtering and sorting ----
-    keep = (out["Swing Edge"] >= (min_score / 10)) | ((out["Swing Score"] >= min_score) & (tier != "Not a Swing Setup"))
+    keep = ((out["Swing Edge"] >= (min_score / 10)) | (out["Swing Score"] >= min_score)) & (tier != "Not a Swing Setup")
     if not show_weak:
-        keep &= ~tier.str.contains("CANDIDATE")
+        keep &= tier.str.contains("READY", na=False)
 
     # Sort by Swing Edge descending (best first)
     result = out[keep].sort_values("Swing Edge", ascending=False, kind="stable")
@@ -583,6 +748,10 @@ def render_momentum_runner(ctx: dict) -> None:
 
     st.markdown("## Momentum Runner / Explosive 5-10%")
     st.caption("Two modes: **Intraday Explosive** (Firefly 5‑layer, same‑day 5‑10% targets) or **Swing Setup** (multi‑day trend pullbacks with fixed stop/target).")
+    if any(x in _market_text() for x in ("INDIA", "INR", "NSE", "🇮🇳")):
+        st.caption("🇮🇳 India mode: volume ratio/sector feeds can be sparse early, so the tab uses stock-level structure, pre-mover and next-day signals as conservative fallbacks.")
+    elif any(x in _market_text() for x in ("SGX", "SINGAPORE", "SG", "🇸🇬", "HK", "HONG KONG", "HKEX", "🇭🇰")):
+        st.caption("Asia mode: SG/HK sector heat is often Mixed and relative volume can be understated, so the tab also uses stock-level structure, RS, pre-mover, 52W/pocket-pivot and operator signals as fallbacks.")
 
     mode = st.radio("Select trading style", ["Intraday Momentum Runner", "Swing Setup"], horizontal=True, key="momentum_runner_mode")
 
@@ -604,6 +773,10 @@ def render_momentum_runner(ctx: dict) -> None:
         show_buy_only = st.checkbox("Show only 'Buy?' = YES", value=False, key="runner_buy_only")
 
         ranked = _classify_intraday(src, min_score=min_score, show_chase=show_chase)
+        if ranked.empty and _is_india_context(src):
+            st.warning("India Momentum Runner has no rows after the selected filters. Lower Minimum runner score to 20–30 or switch to Swing Setup; NSE live volume/sector feeds are often sparse early in the session.")
+        elif ranked.empty and (_is_sgx_context(src) or _is_hk_context(src)):
+            st.warning("SG/HK Momentum Runner has no rows after the selected filters. Lower Minimum runner score to 25–30 or switch to Swing Setup; Yahoo sector/volume feeds can be sparse for these markets.")
         if firefly_only and "Firefly Pass" in ranked.columns:
             ranked = ranked[ranked["Firefly Pass"].eq("YES")].copy()
         if show_buy_only and "Buy?" in ranked.columns:

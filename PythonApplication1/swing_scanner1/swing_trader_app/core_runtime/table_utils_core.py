@@ -317,17 +317,22 @@ def _display_score_series(df: pd.DataFrame, prob_col: str) -> pd.Series:
 
     return base_score.fillna(0)
 
-def _fmt_price_value(value) -> str:
-    """Format a numeric price for concise trading text."""
+def _fmt_price_value(value, sym: str = "$", *args, **kwargs) -> str:
+    """Format a numeric price for concise trading text.
+
+    Backward compatible with old one-argument calls and newer calls such as
+    _fmt_price_value(price, "₹"), _fmt_price_value(price, "S$"), etc.
+    """
     try:
         x = float(value)
     except Exception:
         return ""
+    sym = "$" if sym is None else str(sym)
     if x >= 100:
-        return f"${x:.0f}"
+        return f"{sym}{x:.0f}"
     if x >= 10:
-        return f"${x:.2f}"
-    return f"${x:.3f}"
+        return f"{sym}{x:.2f}"
+    return f"{sym}{x:.3f}"
 
 
 

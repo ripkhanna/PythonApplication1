@@ -47,6 +47,36 @@ def render_long_term(ctx: dict) -> None:
         except Exception: pass
         return ""
 
+    def style_quality_decision(v):
+        s = str(v)
+        if "QUALITY BUY ZONE" in s:
+            return "background-color:#1a7a3a;color:#fff;font-weight:700"
+        if "QUALITY - WAIT" in s:
+            return "background-color:#d4edda;color:#155724;font-weight:700"
+        if "GOOD - ACCUMULATE" in s:
+            return "background-color:#fff3cd;color:#856404;font-weight:600"
+        if "DATA TOO LOW" in s:
+            return "background-color:#eeeeee;color:#555"
+        return "color:#888"
+
+    def style_quality_grade(v):
+        s = str(v).upper().strip()
+        if s == "A+": return "background-color:#1a7a3a;color:#fff;font-weight:700"
+        if s == "A":  return "background-color:#27ae60;color:#fff;font-weight:700"
+        if s == "B":  return "background-color:#fff3cd;color:#856404;font-weight:600"
+        if s in ("C","D"): return "background-color:#f8d7da;color:#721c24"
+        return ""
+
+    def style_data_quality(v):
+        try:
+            n = float(str(v).split("%")[0])
+            if n >= 80: return "background-color:#d4edda;color:#155724;font-weight:700"
+            if n >= 60: return "background-color:#e2f0d9;color:#155724"
+            if n >= 40: return "background-color:#fff3cd;color:#856404"
+            return "background-color:#f8d7da;color:#721c24"
+        except Exception:
+            return ""
+
     def style_growth(v):
         try:
             n = float(str(v).strip("+%"))
@@ -90,6 +120,9 @@ def render_long_term(ctx: dict) -> None:
         styled = sfn(style_horizon,
                      subset=[c for c in ["Horizon"] if c in df_show.columns])
         for fn, cols in [
+            (style_quality_decision, ["Quality Decision"]),
+            (style_quality_grade, ["Quality Grade"]),
+            (style_data_quality, ["Data Quality"]),
             (style_exp1y,   ["Exp 1Y Return"]),
             (style_support, ["Support"]),
             (style_rsi,     ["RSI14"]),
@@ -104,9 +137,12 @@ def render_long_term(ctx: dict) -> None:
 
     # ── Column catalogue ──────────────────────────────────────────────────────
     QUALITY_COLS = [
-        "Ticker","Name","Sector","Horizon","Exp 1Y Return","Price","Mkt Cap",
-        "Return Breakdown","Rev Growth","EPS Growth","ROE","Margin",
-        "Fwd PE","PEG","Div Yield","Beta","MA200","Target","Upside","Rec","Score",
+        "Ticker","Name","Sector",
+        "Quality Decision","Quality Grade","Quality Checklist","Data Quality",
+        "Horizon","Exp 1Y Return","Price","Mkt Cap",
+        "True Quality","Score","Return Breakdown","Quality Notes",
+        "Rev Growth","EPS Growth","ROE","Margin",
+        "Fwd PE","PEG","Div Yield","Beta","MA200","Target","Upside","Rec",
     ]
     SUPPORT_COLS = [
         "Support","SuppScore","RSI14","vsMA50%","vsMA200%",
@@ -118,6 +154,12 @@ def render_long_term(ctx: dict) -> None:
         "Ticker":           st.column_config.TextColumn("Ticker",    width=65),
         "Name":             st.column_config.TextColumn("Name",      width=130),
         "Sector":           st.column_config.TextColumn("Sector",    width=95),
+        "Quality Decision": st.column_config.TextColumn("Quality Decision", width=155),
+        "Quality Grade":    st.column_config.TextColumn("Grade", width=55),
+        "Quality Checklist": st.column_config.TextColumn("Quality Checklist", width=260),
+        "Data Quality":     st.column_config.TextColumn("Data", width=90),
+        "True Quality":     st.column_config.TextColumn("True Q", width=58),
+        "Quality Notes":    st.column_config.TextColumn("Quality Notes", width=260),
         "Sources":          st.column_config.TextColumn("Sources",   width=105),
         "ETF Count":        st.column_config.NumberColumn("ETFs",    width=42),
         "In ETFs":          st.column_config.TextColumn("In ETFs",   width=120),
@@ -194,8 +236,14 @@ def render_long_term(ctx: dict) -> None:
             )
 
         # Row 2: near-support | min support score | min upside
-        r2c1, r2c2, r2c3 = st.columns([1, 2, 2])
+        r2c1, r2c2, r2c3, r2c4 = st.columns([1.2, 1.2, 2, 2])
         with r2c1:
+            quality_only = st.checkbox(
+                "✅ Quality only",
+                key=f"{session_key}_quality_only",
+                help="Keeps QUALITY BUY ZONE, QUALITY - WAIT SUPPORT, and GOOD - ACCUMULATE rows only.",
+            )
+        with r2c2:
             near_supp = st.checkbox(
                 "📍 Near support only",
                 key=f"{session_key}_near_supp",
@@ -210,7 +258,7 @@ def render_long_term(ctx: dict) -> None:
                     "4–5 = 🟢 At support  |  2–3 = 🟡 Near"
                 ),
             )
-        with r2c2:
+        with r2c3:
             min_supp = st.slider(
                 "Min support score",
                 0, 5, 0,
@@ -218,7 +266,7 @@ def render_long_term(ctx: dict) -> None:
                 help="0 = show all.  3 = same as checkbox above.  "
                      "5 = strongest at-support picks only.",
             )
-        with r2c3:
+        with r2c4:
             min_upside = st.slider(
                 "Min analyst upside %",
                 0, 50, 0, step=5,
@@ -245,6 +293,12 @@ def render_long_term(ctx: dict) -> None:
 
         if sector_f:
             df = df[df["Sector"].isin(sector_f)]
+
+        if quality_only and "Quality Decision" in df.columns:
+            df = df[df["Quality Decision"].astype(str).str.contains(
+                "QUALITY BUY ZONE|QUALITY - WAIT SUPPORT|GOOD - ACCUMULATE",
+                regex=True, na=False
+            )]
 
         has_supp = "_supp_score" in df.columns
         effective_min = max(3, min_supp) if near_supp else min_supp
@@ -374,10 +428,10 @@ def render_long_term(ctx: dict) -> None:
         )
 
         st.caption(
-            "**Quality/10:** RevGrw(+2) EPSGrw(+2) ROE>15%(+1) Margin>15%(+1) "
-            "LowDebt(+1) AboveMA200(+1) Target(+1) BuyRated(+1)  ·  "
-            "**Support/5:** MA50zone(+1) MA200zone(+1) RSI25-58(+1) "
-            "Pullback8-45%(+1) Floor8-65%(+1)  ·  ETF Count = institutional conviction"
+            "**Quality Decision:** combines True Quality, Data Quality, Support and Expected 1Y return.  ·  "
+            "**True Quality/10:** size, sales/EPS growth, ROE/ROA, margin, FCF, debt, valuation, MA200, dividend.  ·  "
+            "**Old Score/10:** legacy growth/analyst/trend score.  ·  "
+            "**Support/5:** MA50 zone, MA200 zone, RSI25-58, 8-45% below 52W high, 8-65% above 52W low."
         )
 
     # ── Shared scan launcher (scan config only — no filters here) ─────────────
