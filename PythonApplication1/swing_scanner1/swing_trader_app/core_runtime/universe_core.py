@@ -239,6 +239,70 @@ def fetch_quote_activity_from_universe(symbols_tuple, market_name: str = "", max
     return [s for s, _ in sorted(score_map.items(), key=lambda kv: -kv[1])[:max_active]]
 
 
+
+@st.cache_data(ttl=24 * 60 * 60, show_spinner=False)
+def fetch_nse_equity_master_universe(max_symbols: int = 1800) -> list:
+    """Fetch the broad NSE cash-equity symbol master dynamically.
+
+    This avoids hard-coding individual India tickers. NSE publishes a CSV for
+    "Securities available for Equity segment"; we convert its SYMBOL column to
+    Yahoo tickers by appending .NS and keep normal equity series first.
+    """
+    import io as _io_nse_master
+    import requests as _requests_nse_master
+
+    urls = [
+        "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv",
+        "https://archives.nseindia.com/content/equities/EQUITY_L.csv",
+    ]
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "text/csv,application/csv,text/plain,*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.nseindia.com/market-data/securities-available-for-trading",
+    }
+
+    for url in urls:
+        try:
+            sess = _requests_nse_master.Session()
+            try:
+                sess.get("https://www.nseindia.com", headers=headers, timeout=10)
+            except Exception:
+                pass
+            resp = sess.get(url, headers=headers, timeout=18)
+            if not resp.ok or not resp.text.strip():
+                continue
+            df = pd.read_csv(_io_nse_master.StringIO(resp.text))
+            df.columns = [str(c).strip().upper() for c in df.columns]
+            if "SYMBOL" not in df.columns:
+                continue
+            if "SERIES" in df.columns:
+                # EQ = normal equity. BE/SM are kept after EQ only if needed.
+                eq = df[df["SERIES"].astype(str).str.strip().str.upper().eq("EQ")]
+                other = df[df["SERIES"].astype(str).str.strip().str.upper().isin(["BE", "BZ", "SM", "ST"])]
+                df = pd.concat([eq, other], ignore_index=True)
+            symbols = []
+            for raw in df["SYMBOL"].dropna().astype(str).tolist():
+                sym = raw.strip().upper()
+                if not sym or sym in ("NAN", "NONE", "SYMBOL"):
+                    continue
+                # Exclude obvious non-common-equity structures; the SERIES
+                # filter above already removes most ETFs/REITs/preference names.
+                if any(x in sym for x in (" ", "/", "^")):
+                    continue
+                ysym = _clean_symbol(sym, ".NS")
+                if ysym:
+                    symbols.append(ysym)
+            return _unique_keep_order(symbols)[:max_symbols]
+        except Exception as e:
+            try:
+                _record_app_warning("nse_equity_master", f"{type(e).__name__}: {e}")
+            except Exception:
+                pass
+            continue
+    return []
+
+
 @st.cache_data(ttl=21600)   # 6-hour cache
 def fetch_sector_constituents(target_per_sector: int = 25) -> dict:
     sectors  = {}
@@ -631,10 +695,20 @@ def fetch_sgx_market_universe(max_symbols: int = 180) -> list:
 
 @st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
 def fetch_nse_market_universe(max_symbols: int = 220) -> list:
-    """Fetch current NSE index constituents from NSE's live index API."""
+    """Fetch India/NSE universe without symbol hardcoding.
+
+    Order of preference:
+    1) today's active regional/Yahoo/NSE index names,
+    2) active names ranked from NSE's broad equity master,
+    3) NSE index constituents,
+    4) curated fallback only if live/master sources are unavailable.
+    """
     tickers = []
     scored_tickers = []
-    indices = ["NIFTY 50", "NIFTY NEXT 50", "NIFTY MIDCAP 50", "NIFTY SMALLCAP 50"]
+    indices = [
+        "NIFTY 50", "NIFTY NEXT 50", "NIFTY MIDCAP 50", "NIFTY SMALLCAP 50",
+        "NIFTY MIDCAP 100", "NIFTY SMALLCAP 100", "NIFTY 500",
+    ]
     try:
         import requests
         sess = requests.Session()
@@ -644,7 +718,6 @@ def fetch_nse_market_universe(max_symbols: int = 220) -> list:
             "Accept": "application/json,text/plain,*/*",
             "Referer": "https://www.nseindia.com/market-data/live-equity-market",
         }
-        # Warm the NSE session/cookies.
         try:
             sess.get("https://www.nseindia.com", headers=headers, timeout=10)
         except Exception:
@@ -676,13 +749,37 @@ def fetch_nse_market_universe(max_symbols: int = 220) -> list:
                 continue
     except Exception:
         pass
+
+    # Broad dynamic master from NSE, not a ticker-specific hardcoded list.
+    master_limit = max(1800, int(max_symbols) * 4)
+    master_tickers = fetch_nse_equity_master_universe(max_symbols=master_limit)
+
+    active_from_master = []
+    try:
+        # Promote moving stocks from the broad master before max_symbols trimming.
+        active_from_master = fetch_quote_activity_from_universe(
+            tuple(master_tickers), "🇮🇳 India", max_active=min(max_symbols, 220)
+        )
+    except Exception:
+        active_from_master = []
+
     if scored_tickers:
         score_map = {}
         for sym, score in scored_tickers:
             score_map[sym] = max(score_map.get(sym, 0.0), score)
-        active_first = [sym for sym, _ in sorted(score_map.items(), key=lambda kv: -kv[1])]
-        tickers = active_first + tickers
-    return _unique_keep_order(tickers)[:max_symbols]
+        active_from_indices = [sym for sym, _ in sorted(score_map.items(), key=lambda kv: -kv[1])]
+    else:
+        active_from_indices = []
+
+    # Curated fallback remains generic and low-priority; individual names should
+    # enter through live/master sources or the sidebar Always Include field.
+    try:
+        curated = _UD_INDIA_TICKERS if _UD_INDIA_TICKERS else globals().get("INDIA_TICKERS", [])
+    except Exception:
+        curated = []
+
+    tickers = _unique_keep_order(active_from_indices + active_from_master + tickers + master_tickers + curated)
+    return tickers[:max_symbols]
 
 
 
