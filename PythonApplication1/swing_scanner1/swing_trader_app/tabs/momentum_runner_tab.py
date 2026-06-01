@@ -538,8 +538,11 @@ def _classify_intraday(df: pd.DataFrame, min_score: int, show_chase: bool) -> pd
 # ----------------------------------------------------------------------
 def _classify_swing(df: pd.DataFrame, min_score: int, show_weak: bool, market_trend_ok: bool = True, debug: bool = False) -> pd.DataFrame:
     """
-    Swing trading setup classifier – relaxed version to avoid empty results.
-    Now includes 'Swing Edge' ranking column.
+    Swing setup classifier.
+
+    Separates "has a setup" from "buyable now".  Buy labels require a
+    real entry gate, clean risk, and R:R/resistance confirmation instead
+    of treating every ready-looking momentum row as actionable.
     """
     out = df.copy()
     idx = out.index
@@ -550,19 +553,29 @@ def _classify_swing(df: pd.DataFrame, min_score: int, show_weak: bool, market_tr
 
     # ---- extract base data with safe defaults ----
     signals = _txt(out, "Signals").str.upper()
+    action = _txt(out, "Action").str.upper()
     entry = _txt(out, "Entry Quality").str.upper()
     trap_label = _txt(out, "Trap Risk").str.upper()
+    pre_tier = _txt(out, "Pre-Mover Tier").str.upper()
+    expl_tier = _txt(out, "Explosion Tier").str.upper()
     today = _num(out, "Today %", 0)
     pm = _num(out, "PM Chg%", 0)
     move5 = _num(out, "5D %", 0)
     move20 = _num(out, "20D %", 0)
     move7 = _num(out, "7D Move Est", 0)
+    upside = _num(out, "Upside to Res", 0)
+    rr = _rr_num(out, "RR Est", 0)
     vol = _num(out, "Vol Ratio", 1.0)
     atr = _num(out, "ATR%", 3.0)
     quality = _num(out, "Quality Score", 5)
     seven = _num(out, "7-Star Score", 2)
     rise = _num(out, "Rise Prob", 50)
+    next_day_score = _num(out, "Next-Day Score", 0)
+    tradeable_buy = _txt(out, "Tradeable Buy").str.upper().eq("YES")
     price = _num(out, "Price", 10)
+    rsi = _num(out, "RSI", -1)
+    rsi_now = _num(out, "RSI Now", -1)
+    rsi = rsi.where(rsi >= 0, rsi_now)
     sector_txt = _txt(out, "Sector").str.upper()
 
     # Sector helpers
@@ -588,12 +601,45 @@ def _classify_swing(df: pd.DataFrame, min_score: int, show_weak: bool, market_tr
         ) & ~sector_red)
         sector_not_bad = ~sector_red | sector_tailwind_ok
 
+    # Optional market trend filter.  US uses the app-level SPY/VIX regime that
+    # app_runtime already fetched.  Asia markets use scan breadth as a no-network
+    # proxy because this tab ranks cached scan rows rather than downloading data.
+    market_filter_ok = True
+    market_filter_note = "Not applied"
+    if market_trend_ok:
+        market_filter_note = "Unknown - not applied"
+        if not sparse_asia_mode:
+            regime = str(globals().get("regime", "") or st.session_state.get("regime", "")).upper()
+            mkt = globals().get("mkt", None) or st.session_state.get("mkt", {})
+            spy = ema20 = vix = 0.0
+            if isinstance(mkt, dict):
+                try:
+                    spy = float(mkt.get("spy", 0) or 0)
+                    ema20 = float(mkt.get("spy_ema20", 0) or 0)
+                    vix = float(mkt.get("vix", 0) or 0)
+                except Exception:
+                    spy = ema20 = vix = 0.0
+            market_filter_ok = bool(regime == "BULL" or (spy > 0 and ema20 > 0 and spy > ema20 and vix < 20))
+            market_filter_note = "PASS - SPY/VIX trend" if market_filter_ok else "BLOCK - SPY/VIX trend"
+        else:
+            positive_pct = float((today > 0).mean()) if len(today) else 0.0
+            median_today = float(today.median()) if len(today) else 0.0
+            short_df = st.session_state.get("df_short_master", globals().get("df_short_master", pd.DataFrame()))
+            short_count = len(short_df) if isinstance(short_df, pd.DataFrame) else 0
+            breadth_ok = positive_pct >= 0.35 and median_today >= -1.0
+            if short_count > 0:
+                breadth_ok = breadth_ok and (len(out) >= short_count * 0.60)
+            market_filter_ok = bool(breadth_ok)
+            market_filter_note = "PASS - scan breadth proxy" if market_filter_ok else "BLOCK - scan breadth proxy"
+    market_filter = pd.Series(bool(market_filter_ok), index=idx)
+
     # Swing conditions
     uptrend_5d = (move5 >= 2) & (move5 <= 30)
     uptrend_20d = (move20 >= 3) & (move20 <= 60)
-    not_too_hot = (move5 <= 40) & (move20 <= 80)
+    not_too_hot = (move5 <= 30) & (move20 <= 60)
     pullback_ok = (today >= -5) & (today <= 5)
-    not_broken = (today > -8) & (pm > -8)
+    entry_zone_ok = (today >= -4.5) & (today <= 2.5)
+    not_broken = (today > -7) & (pm > -7)
     vol_ok = ((vol >= 0.5) & (vol <= 8.0))
     if sparse_asia_mode:
         vol_ok = vol_ok | sparse_volume_proxy
@@ -604,11 +650,31 @@ def _classify_swing(df: pd.DataFrame, min_score: int, show_weak: bool, market_tr
     )
     trap = (trap_label.str.contains("TRAP|DISTRIB|LIMIT", regex=True, na=False) |
             signals.str.contains("LIMIT-UP", regex=True, na=False))
-    avoid_entry = entry.str.contains("AVOID|SKIP|TRAP", regex=True, na=False)
-    clean = ~trap & ~avoid_entry & not_broken
+    hard_avoid = (
+        entry.str.contains("AVOID|SKIP|TRAP|BROKEN", regex=True, na=False)
+        | action.str.contains("AVOID|SKIP|TRAP RISK", regex=True, na=False)
+    )
+    wait_entry = (
+        entry.str.contains("WAIT|WATCH", regex=True, na=False)
+        | action.str.contains("WATCH|WAIT|NEED CONFIRM|LOW VOL|RR TOO LOW|NEAR RESISTANCE|MOVE NOT FEASIBLE", regex=True, na=False)
+    )
+    entry_discovery = entry.str.contains("DISCOVERY BUY|NEAR-MISS BUY", regex=True, na=False)
+    entry_full_buy = (
+        tradeable_buy
+        | (entry.str.contains(r"\bBUY\b", regex=True, na=False) & ~entry_discovery)
+    ) & ~hard_avoid
+    chase_or_extended_signal = (
+        signals.str.contains("CHASING|LIMIT-UP|MOVED ALREADY|ALREADY MOVED", regex=True, na=False)
+        | action.str.contains("CHASING|MOVE NOT FEASIBLE", regex=True, na=False)
+        | pre_tier.str.contains("MOVED ALREADY", regex=False, na=False)
+        | expl_tier.str.contains("MOVED ALREADY", regex=False, na=False)
+    )
+    rsi_overheated = (rsi > 72) & (rsi >= 0)
+    extended_for_buy = chase_or_extended_signal | (today > 2.5) | (move5 > 25) | (move20 > 55) | rsi_overheated
+    clean = ~trap & ~hard_avoid & not_broken
     quality_ok = (quality >= 5) | (seven >= 3) | (rise >= 55)
 
-    # Swing Score (original)
+    # Swing Score: setup quality, with explicit penalties for chase/poor entry.
     swing_score = pd.Series(0.0, index=idx)
     swing_score += np.minimum(move5.clip(lower=0), 25) / 25 * 20
     swing_score += np.minimum(move20.clip(lower=0), 50) / 50 * 15
@@ -618,58 +684,116 @@ def _classify_swing(df: pd.DataFrame, min_score: int, show_weak: bool, market_tr
     swing_score += quality_ok.astype(int) * 10
     swing_score += sector_tailwind_ok.astype(int) * 10
     swing_score -= (sector_red & ~sector_leader_signal).astype(int) * 12
-    swing_score -= (trap | avoid_entry).astype(int) * 25
-    swing_score -= ((today < -5) | (move5 > 40)).astype(int) * 15
+    swing_score += entry_full_buy.astype(int) * 5
+    swing_score -= (trap | hard_avoid).astype(int) * 25
+    swing_score -= wait_entry.astype(int) * 8
+    swing_score -= extended_for_buy.astype(int) * 18
+    swing_score -= ((today < -5) | (move5 > 30) | (move20 > 60)).astype(int) * 15
+    swing_score -= (~market_filter).astype(int) * 35
     swing_score = swing_score.clip(0, 100).round(1)
 
-    # Tiers
-    ready_core = (uptrend_5d & uptrend_20d & pullback_ok & clean & quality_ok & sector_not_bad)
-    ready_extra = vol_ok & atr_ok & structure_swing & sector_tailwind_ok
-    swing_ready = ready_core & ready_extra
-    swing_candidate = (ready_core & ~ready_extra & (swing_score >= 45))
-    tier = pd.Series("Not a Swing Setup", index=idx)
-    tier.loc[swing_ready] = "✅ SWING READY (pullback entry)"
-    tier.loc[swing_candidate] = "🟡 SWING CANDIDATE (check volume/structure)"
-
-    # Risk management
+    # Risk management. Prefer the scanner's Best Stop / RR Est / Upside to Res
+    # when available. Fall back to an ATR stop only when upstream data is absent.
     atr_dollar = atr / 100 * price
-    stop_loss = price - 1.5 * atr_dollar
-    target = price + 4.5 * atr_dollar
+    atr_stop = price - 1.5 * atr_dollar
+    upstream_stop = _num(out, "Best Stop", 0)
+    valid_upstream_stop = upstream_stop.where((upstream_stop > 0) & (upstream_stop < price), atr_stop)
+    stop_loss = pd.Series(np.maximum.reduce([atr_stop, valid_upstream_stop, price * 0.94]), index=idx)
     risk_amount = price - stop_loss
-    reward_amount = target - price
-    risk_reward = np.where(risk_amount > 0, reward_amount / risk_amount, 0)
-    risk_reward = pd.Series(risk_reward, index=idx).round(2).replace([np.inf, -np.inf], 0).fillna(0)
+    risk_floor = price * 0.001
+    risk_amount = risk_amount.where(risk_amount > risk_floor, risk_floor)
+    rr_for_target = rr.where(rr > 0, 3.0).clip(lower=0, upper=5)
+    target = price + risk_amount * rr_for_target
+    fallback_rr = ((target - price) / risk_amount).replace([np.inf, -np.inf], 0).fillna(0).clip(0, 5)
+    risk_reward = rr.where(rr > 0, fallback_rr).clip(0, 5).round(2)
+    resistance_ok = (upside >= 6.0) | (upside <= 0)
+    risk_reward_ok = (risk_reward >= 2.0) & resistance_ok
+
+    # Tiers
+    setup_core = (
+        uptrend_5d & uptrend_20d & not_too_hot & pullback_ok &
+        clean & quality_ok & sector_not_bad & market_filter
+    )
+    ready_extra = vol_ok & atr_ok & structure_swing & sector_tailwind_ok
+    rsi_ok = (rsi <= 72) | (rsi < 0)
+    strong_discovery = (
+        entry_discovery & (quality >= 12) & (next_day_score >= 10) &
+        (rise >= 80) & risk_reward_ok & entry_zone_ok & ~extended_for_buy
+    )
+    actionable_entry = ((entry_full_buy & ~wait_entry) | strong_discovery)
+    swing_buy = (
+        setup_core & ready_extra & risk_reward_ok & actionable_entry &
+        entry_zone_ok & ~extended_for_buy & rsi_ok
+    )
+    swing_ready_watch = setup_core & ready_extra & ~swing_buy & (swing_score >= 40)
+    swing_candidate = setup_core & ~ready_extra & (swing_score >= 45)
+    tier = pd.Series("Not a Swing Setup", index=idx)
+    tier.loc[swing_candidate] = "SWING CANDIDATE - needs volume/structure"
+    tier.loc[swing_ready_watch] = "SWING WATCH READY - wait for entry"
+    tier.loc[swing_buy] = "SWING BUY READY - confirmed pullback"
 
     # Buy Decision
-    buy_decision = pd.Series("⚪ IGNORE - no swing edge", index=idx, dtype="object")
-    buy_decision.loc[swing_ready & (risk_reward >= 2.5)] = "✅ SWING BUY - limit near pullback / 20EMA"
-    buy_decision.loc[swing_ready & (risk_reward < 2.5)] = "⏳ SWING WATCH - poor R:R, wait for better level"
-    buy_decision.loc[swing_candidate] = "🔍 SWING CANDIDATE - monitor for pullback or volume"
-    buy_decision.loc[trap | avoid_entry] = "🚫 SKIP - trap or avoid signal"
-    buy_decision.loc[~not_broken] = "🚫 SKIP - broken move"
+    buy_decision = pd.Series("IGNORE - no swing edge", index=idx, dtype="object")
+    buy_decision.loc[swing_candidate] = "CANDIDATE - monitor for pullback/volume"
+    buy_decision.loc[swing_ready_watch] = "WATCH - setup ready, wait for clean entry"
+    buy_decision.loc[swing_ready_watch & ~risk_reward_ok] = "WAIT - poor R:R or too near resistance"
+    buy_decision.loc[swing_ready_watch & extended_for_buy] = "WAIT - extended/chasing; wait pullback"
+    buy_decision.loc[swing_ready_watch & wait_entry & ~extended_for_buy] = "WAIT - upstream scanner says wait/watch"
+    buy_decision.loc[swing_buy] = "SWING BUY - limit near pullback / 20EMA"
+    buy_decision.loc[swing_buy & strong_discovery] = "SMALL SWING BUY - strong discovery pullback"
+    buy_decision.loc[trap | hard_avoid] = "SKIP - trap or avoid signal"
+    buy_decision.loc[~not_broken] = "SKIP - broken move"
+    buy_decision.loc[~market_filter] = "SKIP - market trend filter"
 
-    out["Buy?"] = np.where(buy_decision.str.contains("BUY"), "YES", "NO")
+    out["Buy?"] = np.select(
+        [swing_buy, swing_ready_watch],
+        ["YES", "WATCH"],
+        default="NO",
+    )
 
-    # ---- NEW: Swing Edge ranking (composite of momentum, volume, volatility, R:R, structure, sector) ----
-    # Normalize components to 0-10 scale
+    # ---- Swing Edge ranking ----
+    # Normalize components to 0-10 scale and penalize names that already moved.
     norm_5d = np.minimum(move5.clip(lower=0), 25) / 25 * 10
     norm_20d = np.minimum(move20.clip(lower=0), 50) / 50 * 10
     norm_vol = np.minimum(vol.clip(lower=0), 4) / 4 * 10
     norm_atr = np.minimum(atr.clip(lower=0), 10) / 10 * 10
     norm_rr = np.minimum(risk_reward.clip(lower=0), 5) / 5 * 10
-    # Bonus for structure and sector (each adds up to 2 points, max 4)
     bonus = (structure_swing.astype(int) + sector_tailwind_ok.astype(int)) * 2
-    # Weighted average: 5D and 20D combined weight 40%, vol+atr+rr 60%
     edge = (norm_5d + norm_20d) / 2 * 0.4 + (norm_vol + norm_atr + norm_rr) / 3 * 0.6 + bonus
-    out["Swing Edge"] = edge.round(1)
+    edge += actionable_entry.astype(int) * 1.5
+    edge -= extended_for_buy.astype(int) * 2.5
+    edge -= wait_entry.astype(int) * 1.0
+    edge -= (~risk_reward_ok).astype(int) * 2.0
+    edge -= hard_avoid.astype(int) * 4.0
+    edge -= (~market_filter).astype(int) * 5.0
+    out["Swing Edge"] = edge.clip(0, 12).round(1)
 
     # ---- Additional columns ----
     out["Swing Score"] = swing_score
     out["Swing Tier"] = tier
     out["Buy Decision"] = buy_decision
+    out["Entry Gate"] = np.select(
+        [
+            swing_buy,
+            hard_avoid | trap,
+            extended_for_buy,
+            wait_entry,
+            ~risk_reward_ok,
+        ],
+        [
+            "PASS - actionable",
+            "BLOCK - avoid/trap",
+            "BLOCK - extended/chasing",
+            "WAIT - upstream wait/watch",
+            "WAIT - R:R/resistance",
+        ],
+        default="WATCH - setup only",
+    )
+    out["Market Filter"] = market_filter_note
     sym = _currency_symbol(out)
-    out["Stop Loss (1.5x ATR)"] = stop_loss.round(2).map(lambda x: _fmt_price_value(x, sym))
-    out["Target (3:1)"] = target.round(2).map(lambda x: _fmt_price_value(x, sym))
+    out["Stop Loss"] = stop_loss.round(2).map(lambda x: _fmt_price_value(x, sym))
+    out["Stop Loss (1.5x ATR)"] = out["Stop Loss"]
+    out["Target (R:R)"] = target.round(2).map(lambda x: _fmt_price_value(x, sym))
     out["Risk:Reward"] = risk_reward.map(lambda x: f"1:{x:.1f}" if x > 0 else "-")
     out["Sector Tailwind"] = [
         _sector_tailwind_label(out.at[i, "Sector"] if "Sector" in out.columns else "", out.at[i, "Signals"] if "Signals" in out.columns else "")
@@ -685,12 +809,16 @@ def _classify_swing(df: pd.DataFrame, min_score: int, show_weak: bool, market_tr
         if sector_tailwind_ok.loc[i]: reasons.append("sector leader")
         if atr_ok.loc[i]: reasons.append(f"ATR {atr.loc[i]:.1f}%")
         if vol_ok.loc[i]: reasons.append(f"vol {vol.loc[i]:.1f}x")
+        if risk_reward_ok.loc[i]: reasons.append(f"R:R 1:{risk_reward.loc[i]:.1f}")
+        if extended_for_buy.loc[i]: reasons.append("extended/wait pullback")
+        if wait_entry.loc[i]: reasons.append("upstream wait")
+        if not market_filter.loc[i]: reasons.append("market filter block")
         out.at[i, "Swing Why"] = " | ".join(reasons[:6]) if reasons else "no swing criteria"
 
     # ---- Filtering and sorting ----
     keep = ((out["Swing Edge"] >= (min_score / 10)) | (out["Swing Score"] >= min_score)) & (tier != "Not a Swing Setup")
     if not show_weak:
-        keep &= tier.str.contains("READY", na=False)
+        keep &= tier.str.contains("READY", case=False, na=False)
 
     # Sort by Swing Edge descending (best first)
     result = out[keep].sort_values("Swing Edge", ascending=False, kind="stable")
@@ -699,6 +827,7 @@ def _classify_swing(df: pd.DataFrame, min_score: int, show_weak: bool, market_tr
         st.write("Debug: Swing Edge distribution", result["Swing Edge"].describe())
         st.write("Counts by tier:", result["Swing Tier"].value_counts())
         st.write("Number of rows after filtering:", len(result))
+        st.write("Market filter:", market_filter_note)
 
     return result
 
@@ -716,8 +845,8 @@ def _show(df: pd.DataFrame, key: str, swing_mode: bool = False) -> None:
         # Swing Edge is the most important ranking. Show Price and Today % immediately after it
         # so the grid reads: decision -> edge score -> current price/action -> risk/why.
         primary_cols = ["Ticker", "Buy?", "Buy Decision", "Swing Edge", "Price", "Today %"]
-        risk_cols = ["Stop Loss (1.5x ATR)", "Target (3:1)", "Risk:Reward"]
-        secondary_cols = ["Swing Tier", "Swing Score", "Swing Why", "Sector Tailwind", "Sector"]
+        risk_cols = ["Stop Loss", "Target (R:R)", "Risk:Reward", "RR Est", "Upside to Res"]
+        secondary_cols = ["Swing Tier", "Swing Score", "Entry Gate", "Swing Why", "Market Filter", "Sector Tailwind", "Sector"]
         other_cols = ["5D %", "20D %", "Vol Ratio", "ATR%", "Signals", "Entry Quality"]
         all_cols = primary_cols + risk_cols + secondary_cols + other_cols
     else:
@@ -844,20 +973,22 @@ Use **Buy Decision** as the final decision column:
             """)
 
     else:  # Swing Setup mode
-        st.info("Swing mode looks for trending stocks in pullback (today -5% to +5%) with healthy 5D/20D gains. It provides a 1.5× ATR stop loss and 3:1 target. Ideal for holding several days to weeks.")
+        st.info("Swing mode looks for trending stocks in pullback, then separates BUY, WATCH, and CANDIDATE rows using upstream entry quality, chase flags, R:R, and resistance room.")
         c1, c2 = st.columns(2)
         with c1:
             min_score = st.slider("Minimum swing score", 0, 100, 45, step=5, key="swing_min_score")
         with c2:
             show_weak = st.checkbox("Show 'Swing Candidate' names", value=False, key="swing_show_weak")
         show_buy_only = st.checkbox("Show only 'Buy?' = YES", value=False, key="swing_buy_only")
-        market_trend = st.checkbox("Apply market trend filter (SPY/NIFTY above 20MA & RSI<70)", value=False, key="swing_market_trend")
+        market_trend = st.checkbox("Apply market trend / breadth filter", value=False, key="swing_market_trend")
         show_n = st.slider("Show top N", 10, 150, 60, step=10, key="swing_show_n")
 
         with st.expander("Advanced options"):
             debug_swing = st.checkbox("Show debug info (why stocks are filtered)", value=False, key="swing_debug")
 
         ranked = _classify_swing(src, min_score=min_score, show_weak=show_weak, market_trend_ok=market_trend, debug=debug_swing)
+        if market_trend and ranked.empty:
+            st.warning("Market trend / breadth filter removed the current swing rows. Disable it to see watchlist candidates.")
         if show_buy_only and "Buy?" in ranked.columns:
             ranked = ranked[ranked["Buy?"] == "YES"].copy()
 
@@ -872,12 +1003,15 @@ Use **Buy Decision** as the final decision column:
 
         ready = ranked[ranked["Swing Tier"].str.contains("READY", na=False)].head(show_n)
         candidate = ranked[ranked["Swing Tier"].str.contains("CANDIDATE", na=False)].head(show_n)
+        buy_ready_count = int((ready.get("Buy?", pd.Series(dtype=str)) == "YES").sum()) if not ready.empty else 0
+        watch_ready_count = int((ready.get("Buy?", pd.Series(dtype=str)) == "WATCH").sum()) if not ready.empty else 0
 
-        col1, col2 = st.columns(2)
-        col1.metric("✅ SWING READY", len(ready))
-        col2.metric("🟡 SWING CANDIDATE", len(candidate))
+        col1, col2, col3 = st.columns(3)
+        col1.metric("✅ BUY READY", buy_ready_count)
+        col2.metric("⏳ WATCH READY", watch_ready_count)
+        col3.metric("🟡 CANDIDATE", len(candidate))
 
-        st.markdown("### ✅ Swing Ready Setups")
+        st.markdown("### Swing Ready Setups")
         _show(ready, "swing_ready", swing_mode=True)
 
         with st.expander(f"🟡 Swing Candidate ({len(candidate)})", expanded=False):
@@ -886,11 +1020,11 @@ Use **Buy Decision** as the final decision column:
         with st.expander("Swing Setup Criteria Explained"):
             st.markdown("""
 - **Trend**: 5D % between 2% and 30%, 20D % between 3% and 60% – steady uptrend, not vertical.
-- **Pullback**: Today's change between -5% and +5% – you enter on a pause or small dip.
+- **Pullback**: Today's change between -5% and +5%; **Buy? = YES** requires a cleaner entry zone, not a chase.
 - **Volume**: Vol Ratio 0.5–8.0 – enough liquidity but not a one‑day spike.
 - **Volatility**: ATR% 1.5–12% – reasonable movement for swing stops.
 - **Structure**: Weekly trend, higher lows, breakout, or RS>SPY.
 - **Sector**: Green sector or stock is a sector leader.
-- **Risk management**: Stop loss = 1.5 × ATR below entry, target = 4.5 × ATR above entry (3:1 reward:risk).
-- **Buy?** = YES only for "SWING BUY" decisions.
+- **Risk management**: Uses upstream Best Stop / RR Est / Upside to Resistance when available; ATR is only the fallback.
+- **Buy?** = YES only when entry quality, R:R, resistance room, and chase filters all pass.
             """)
