@@ -33,6 +33,22 @@ def _num(df: pd.DataFrame, col: str, default: float = 0.0) -> pd.Series:
     ).fillna(default)
 
 
+def _rr_num(df: pd.DataFrame, col: str, default: float = 0.0) -> pd.Series:
+    if col not in df.columns:
+        return pd.Series([default] * len(df), index=df.index, dtype="float64")
+    raw = df[col].astype(str).str.strip()
+    ratio = raw.str.extract(r"1\s*[:/]\s*(-?\d+(?:\.\d+)?)")[0]
+    fallback = (
+        raw.str.replace("%", "", regex=False)
+        .str.replace("+", "", regex=False)
+        .str.replace("$", "", regex=False)
+        .str.replace(",", "", regex=False)
+        .str.replace("x", "", regex=False)
+        .str.extract(r"(-?\d+(?:\.\d+)?)")[0]
+    )
+    return pd.to_numeric(ratio.fillna(fallback), errors="coerce").fillna(default)
+
+
 def _txt(df: pd.DataFrame, col: str) -> pd.Series:
     if col not in df.columns:
         return pd.Series([""] * len(df), index=df.index)
@@ -125,16 +141,24 @@ def _rank_big_money(df: pd.DataFrame) -> pd.DataFrame:
     quality = _num(out, "Quality Score", 0)
     next_day = _num(out, "Next-Day Score", 0)
     rise_prob = _num(out, "Rise Prob", 0)
+    rr = _rr_num(out, "RR Est", 0)
+    upside = _num(out, "Upside to Res", 0)
     today = _num(out, "Today %", 0)
     move5 = _num(out, "5D %", 0)
     move20 = _num(out, "20D %", 0)
+    price = _num(out, "Price", 0)
     atr = _num(out, "ATR%", 0)
     rsi = _num(out, "RSI", 0)
     if "RSI" not in out.columns and "RSI Now" in out.columns:
         rsi = _num(out, "RSI Now", 0)
     vwap = _txt(out, "VWAP").str.upper()
     trap = (_txt(out, "Trap Risk") + " " + _txt(out, "Operator")).str.upper()
-    risk_text = (trap + " " + _txt(out, "Action") + " " + _txt(out, "Entry Quality") + " " + joined).str.upper()
+    action = _txt(out, "Action").str.upper()
+    entry = _txt(out, "Entry Quality").str.upper()
+    tradeable_buy = _txt(out, "Tradeable Buy").str.upper().eq("YES")
+    pre_tier = _txt(out, "Pre-Mover Tier").str.upper()
+    expl_tier = _txt(out, "Explosion Tier").str.upper()
+    risk_text = (trap + " " + action + " " + entry + " " + joined).str.upper()
 
     above_vwap = vwap.str.contains("ABOVE", na=False)
     below_vwap = vwap.str.contains("BELOW", na=False)
@@ -148,12 +172,45 @@ def _rank_big_money(df: pd.DataFrame) -> pd.DataFrame:
     relative_strength = joined.str.contains(r"RS>|RS MOM|WKLY TREND|SEC LEAD|HIGHER LOWS", regex=True, na=False)
     compression = joined.str.contains(r"BB BULL SQ|SQUEEZE|NR7|INSIDE|COIL|VCP|CUP|HANDLE|TIGHT", regex=True, na=False)
     catalyst = joined.str.contains(r"EARN|PEAD|CATALYST|NEWS|CONTRACT|ORDER|CALL FLOW|SQUEEZE", regex=True, na=False)
-    bad_risk = risk_text.str.contains(
-        r"DISTRIB|FALSE BO|BULL TRAP|GAP CHASE|AVOID|SKIP|CHASING|FAILED BRKDN",
-        regex=True,
-        na=False,
+    distribution_risk = risk_text.str.contains(
+        r"DISTRIB|FALSE BO|BULL TRAP|GAP CHASE|LIMIT-UP|MA60-BREAK",
+        regex=True, na=False,
     )
-    already_moved = (today >= 8) | (move5 >= 25) | (move20 >= 55) | _txt(out, "Pre-Mover Tier").str.upper().str.contains("MOVED ALREADY", na=False)
+    hard_avoid = (
+        entry.str.contains("AVOID|SKIP|TRAP|BROKEN", regex=True, na=False)
+        | action.str.contains("AVOID|SKIP|TRAP RISK", regex=True, na=False)
+        | distribution_risk
+    )
+    wait_entry = (
+        entry.str.contains("WAIT|WATCH", regex=True, na=False)
+        | action.str.contains("WATCH|WAIT|NEED CONFIRM|LOW VOL|RR TOO LOW|NEAR RESISTANCE|MOVE NOT FEASIBLE", regex=True, na=False)
+    )
+    entry_discovery = entry.str.contains("DISCOVERY BUY|NEAR-MISS BUY", regex=True, na=False)
+    entry_full_buy = (tradeable_buy | (entry.str.contains(r"\bBUY\b", regex=True, na=False) & ~entry_discovery)) & ~hard_avoid
+    already_moved = (
+        (today >= 8) | (move5 >= 25) | (move20 >= 55)
+        | pre_tier.str.contains("MOVED ALREADY", na=False)
+        | expl_tier.str.contains("MOVED ALREADY", na=False)
+        | risk_text.str.contains("CHASING|ALREADY MOVED|LIMIT-UP", regex=True, na=False)
+    )
+    medium_extension = (~already_moved) & ((today >= 3.5) | (move5 >= 18) | (move20 >= 45))
+    market = _market_token()
+    min_price = {"us": 2.0, "india": 20.0, "sgx": 0.05, "hk": 0.50}.get(market, 1.0)
+    price_ok = price >= min_price
+    rr_ok = rr >= 2.0
+    resistance_ok = (upside >= 6.0) | (upside <= 0) | (upside >= 95.0)
+    upside_for_score = upside.where(upside < 95.0, 12.0)
+    participation_ok = (above_vwap & (vol >= 0.75)) | (op >= 4) | strong_operator | (volume_confirm & accumulation_words)
+    move_feasible = (atr >= (1.8 if market in {"india", "sgx", "hk"} else 2.5)) | (move5 >= 4) | (pre >= 60)
+    strong_discovery = (
+        entry_discovery & (quality >= 12) & (next_day >= 10) &
+        (rise_prob >= 80) & rr_ok & resistance_ok & ~already_moved
+    )
+    actionable_setup = (
+        price_ok & above_vwap & participation_ok & move_feasible &
+        rr_ok & resistance_ok & ~already_moved & ~hard_avoid &
+        (entry_full_buy | strong_discovery)
+    )
 
     sponsor_score = (
         _clip(op, 0, 6) * 4.0 +
@@ -174,6 +231,8 @@ def _rank_big_money(df: pd.DataFrame) -> pd.DataFrame:
         _clip(next_day, -15, 20).clip(lower=0) * 0.9 +
         _clip(rise_prob - 55, 0, 45) * 0.18 +
         _clip(atr, 0, 9) * 1.2 +
+        _clip(rr, 0, 5) * 3.0 +
+        _clip(upside_for_score, 0, 15) * 0.8 +
         catalyst.astype(int) * 6.0
     )
 
@@ -185,31 +244,67 @@ def _rank_big_money(df: pd.DataFrame) -> pd.DataFrame:
 
     penalty = pd.Series(0.0, index=out.index)
     penalty += below_vwap.astype(int) * 8.0
-    penalty += bad_risk.astype(int) * 14.0
-    penalty += already_moved.astype(int) * 18.0
+    penalty += hard_avoid.astype(int) * 18.0
+    penalty += wait_entry.astype(int) * 8.0
+    penalty += (~price_ok).astype(int) * 18.0
+    penalty += ((rr > 0) & ~rr_ok).astype(int) * 14.0
+    penalty += ((upside > 0) & ~resistance_ok).astype(int) * 12.0
+    penalty += (~move_feasible).astype(int) * 8.0
+    penalty += already_moved.astype(int) * 22.0
+    penalty += medium_extension.astype(int) * 8.0
     penalty += (rsi >= 78).astype(int) * 8.0
-    penalty += (vol < 0.55).astype(int) * 6.0
+    penalty += ((vol < 0.55) & ~participation_ok).astype(int) * 6.0
 
     score = (sponsor_score * 0.52 + move_score * 0.38 + setup_bonus - penalty).round(1)
     out["Big Money Score"] = score.clip(lower=0, upper=100)
     out["Sponsor Score"] = sponsor_score.round(1).clip(lower=0, upper=100)
     out["Move Potential"] = move_score.round(1).clip(lower=0, upper=100)
     out["Extension Risk"] = np.select(
-        [already_moved, today >= 5, move5 >= 18],
-        ["High - wait reset", "Medium - chase risk", "Medium - extended"],
+        [already_moved, medium_extension, today >= 3.5],
+        ["High - wait reset", "Medium - extended", "Medium - chase risk"],
         default="Controlled",
+    )
+    out["Big Money Buy?"] = np.select(
+        [actionable_setup, (~hard_avoid & ~already_moved & price_ok & participation_ok)],
+        ["YES", "WATCH"],
+        default="NO",
+    )
+    out["Setup Verdict"] = np.select(
+        [
+            actionable_setup,
+            hard_avoid,
+            already_moved,
+            ~price_ok,
+            ~rr_ok & (rr > 0),
+            ~resistance_ok & (upside > 0),
+            wait_entry,
+            ~participation_ok,
+            ~move_feasible,
+        ],
+        [
+            "PASS - sponsor + upside + entry",
+            "BLOCK - trap/avoid/distribution",
+            "WAIT - extended/chasing",
+            "BLOCK - below price floor",
+            "WAIT - R:R below 1:2",
+            "WAIT - resistance too close",
+            "WAIT - scanner says wait/watch",
+            "WAIT - participation not strong",
+            "WAIT - move not feasible yet",
+        ],
+        default="WATCH - needs cleaner trigger",
     )
 
     tier = np.select(
         [
-            (out["Big Money Score"] >= 78) & above_vwap & ~already_moved & ~bad_risk,
-            (out["Big Money Score"] >= 66) & ~already_moved & ~bad_risk,
-            (out["Big Money Score"] >= 55) & ~bad_risk,
+            (out["Big Money Score"] >= 70) & actionable_setup,
+            (out["Big Money Score"] >= 62) & ~already_moved & ~hard_avoid & price_ok & participation_ok & (rr >= 1.6) & resistance_ok,
+            (out["Big Money Score"] >= 52) & ~already_moved & ~hard_avoid & price_ok & (participation_ok | relative_strength | compression),
             already_moved,
         ],
         [
-            "A - Big Money + Short-Term",
-            "B - Institutional Watch",
+            "A - Sponsored Rise Setup",
+            "B - Big Money Watch",
             "C - Early Sponsorship",
             "D - Extended / Wait Reset",
         ],
@@ -239,20 +334,35 @@ def _rank_big_money(df: pd.DataFrame) -> pd.DataFrame:
             parts.append("relative strength")
         if catalyst.iloc[i]:
             parts.append("catalyst/fuel")
+        if rr.iloc[i] >= 2:
+            parts.append(f"R:R 1:{rr.iloc[i]:.1f}")
+        if upside.iloc[i] >= 6:
+            parts.append(f"room {upside.iloc[i]:.1f}%")
         if already_moved.iloc[i]:
             parts.append("already extended")
-        if bad_risk.iloc[i]:
+        if hard_avoid.iloc[i]:
             parts.append("trap/distribution risk")
         reasons.append(" | ".join(parts[:6]) if parts else "needs stronger institutional evidence")
 
         trigger = str(row.get("Buy Condition", "") or "").strip()
         if not trigger or trigger.lower() in {"nan", "none", "-"}:
-            trigger = "Use only after VWAP reclaim/hold plus volume expansion; avoid chasing extended candles."
+            if actionable_setup.iloc[i]:
+                trigger = "Buy only on VWAP hold/reclaim with volume confirmation; stop below latest support."
+            elif already_moved.iloc[i]:
+                trigger = "Wait reset: do not chase; require pullback/inside-day or VWAP reclaim."
+            elif (rr.iloc[i] > 0 and rr.iloc[i] < 2) or (upside.iloc[i] > 0 and upside.iloc[i] < 6):
+                trigger = "Watch only: upside/R:R is not enough; wait for lower entry or resistance break."
+            else:
+                trigger = "Use only after VWAP reclaim/hold plus volume expansion; avoid chasing extended candles."
         triggers.append(trigger)
 
     out["Big Money Why"] = reasons
     out["Trigger / Risk Plan"] = triggers
-    return out.sort_values(["Big Money Score", "Sponsor Score", "Move Potential"], ascending=[False, False, False]).reset_index(drop=True)
+    out["_bm_buy_sort"] = pd.Series(out["Big Money Buy?"]).map({"YES": 2, "WATCH": 1, "NO": 0}).fillna(0)
+    return out.sort_values(
+        ["_bm_buy_sort", "Big Money Score", "Sponsor Score", "Move Potential"],
+        ascending=[False, False, False, False],
+    ).reset_index(drop=True)
 
 
 @st.cache_data(ttl=60 * 60 * 12, show_spinner=False)
@@ -335,8 +445,8 @@ def render_big_money(ctx: dict) -> None:
     with f1:
         tier_filter = st.multiselect(
             "Tier",
-            ["A - Big Money + Short-Term", "B - Institutional Watch", "C - Early Sponsorship", "D - Extended / Wait Reset", "Watch Only"],
-            default=["A - Big Money + Short-Term", "B - Institutional Watch", "C - Early Sponsorship"],
+            ["A - Sponsored Rise Setup", "B - Big Money Watch", "C - Early Sponsorship", "D - Extended / Wait Reset", "Watch Only"],
+            default=["A - Sponsored Rise Setup", "B - Big Money Watch", "C - Early Sponsorship"],
             key="big_money_tier_filter",
         )
     with f2:
@@ -351,18 +461,20 @@ def render_big_money(ctx: dict) -> None:
         view = view[view["Big Money Tier"].isin(tier_filter)]
     view = view[view["Big Money Score"] >= float(min_score)]
     if hide_extended:
-        view = view[~view["Extension Risk"].astype(str).str.contains("High|chase", case=False, na=False)]
+        view = view[~view["Extension Risk"].astype(str).str.contains("High|Medium|chase|extended", case=False, na=False)]
     if search:
         view = view[view["Ticker"].astype(str).str.contains(search, case=False, na=False)]
 
-    a_count = int((ranked["Big Money Tier"] == "A - Big Money + Short-Term").sum())
-    b_count = int((ranked["Big Money Tier"] == "B - Institutional Watch").sum())
+    a_count = int((ranked["Big Money Tier"] == "A - Sponsored Rise Setup").sum())
+    b_count = int((ranked["Big Money Tier"] == "B - Big Money Watch").sum())
     c_count = int((ranked["Big Money Tier"] == "C - Early Sponsorship").sum())
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("A candidates", a_count)
-    m2.metric("B watch", b_count)
-    m3.metric("Early", c_count)
-    m4.metric("Shown", len(view))
+    buy_count = int((ranked["Big Money Buy?"] == "YES").sum())
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Buy-ready", buy_count)
+    m2.metric("A setups", a_count)
+    m3.metric("B watch", b_count)
+    m4.metric("Early", c_count)
+    m5.metric("Shown", len(view))
 
     if view.empty:
         st.info("No rows match the current filters. Lower Min score or uncheck Hide extended/chase risk.")
@@ -383,10 +495,11 @@ def render_big_money(ctx: dict) -> None:
         h2.caption("Yahoo holder snapshot is delayed and may be unavailable for some tickers.")
 
     display_cols = [
-        "Ticker", "Big Money Tier", "Big Money Score", "Sponsor Score", "Move Potential",
-        "Extension Risk", "Price", "Today %", "5D %", "20D %", "Vol Ratio", "ATR%",
-        "Operator", "Op Score", "VWAP", "Pre-Mover Score", "Pre-Mover Tier",
-        "Quality Score", "Next-Day Score", "Rise Prob", "Big Money Why",
+        "Ticker", "Big Money Buy?", "Setup Verdict", "Big Money Tier", "Big Money Score",
+        "Sponsor Score", "Move Potential", "Extension Risk", "Price", "Today %", "5D %",
+        "20D %", "Vol Ratio", "ATR%", "RR Est", "Upside to Res", "Entry Quality",
+        "Tradeable Buy", "Action", "Operator", "Op Score", "VWAP", "Pre-Mover Score",
+        "Pre-Mover Tier", "Quality Score", "Next-Day Score", "Rise Prob", "Big Money Why",
         "Trigger / Risk Plan", "Holder Snapshot", "Top Holders", "Holder Date",
     ]
     display_cols = [c for c in display_cols if c in view.columns]
@@ -398,6 +511,8 @@ def render_big_money(ctx: dict) -> None:
 
     col_cfg = {
         "Ticker": st.column_config.TextColumn("Ticker", width=70),
+        "Big Money Buy?": st.column_config.TextColumn("Buy?", width=70),
+        "Setup Verdict": st.column_config.TextColumn("Verdict", width=210),
         "Big Money Tier": st.column_config.TextColumn("Tier", width=190),
         "Big Money Score": st.column_config.NumberColumn("BM Score", width=80),
         "Sponsor Score": st.column_config.NumberColumn("Sponsor", width=80),
@@ -409,6 +524,11 @@ def render_big_money(ctx: dict) -> None:
         "20D %": st.column_config.TextColumn("20D", width=65),
         "Vol Ratio": st.column_config.TextColumn("Vol", width=60),
         "ATR%": st.column_config.TextColumn("ATR", width=60),
+        "RR Est": st.column_config.TextColumn("R:R", width=60),
+        "Upside to Res": st.column_config.TextColumn("Room", width=70),
+        "Entry Quality": st.column_config.TextColumn("Entry", width=120),
+        "Tradeable Buy": st.column_config.TextColumn("Tradeable", width=80),
+        "Action": st.column_config.TextColumn("Action", width=160),
         "Operator": st.column_config.TextColumn("Operator", width=120),
         "Op Score": st.column_config.NumberColumn("Op", width=50),
         "VWAP": st.column_config.TextColumn("VWAP", width=60),
@@ -439,8 +559,9 @@ def render_big_money(ctx: dict) -> None:
         st.markdown(
             """
 - **Sponsor Score**: operator accumulation, VWAP control, volume expansion, pocket-pivot/accumulation clues, relative strength, and compression.
-- **Move Potential**: pre-mover score, explosion score, 7-star score, quality, next-day score, ATR, rise probability, and catalyst/fuel words.
-- **Penalties**: below VWAP, distribution/trap risk, low participation, RSI exhaustion, and stocks already up too much over today/5D/20D.
+- **Move Potential**: pre-mover score, explosion score, quality, next-day score, ATR, rise probability, R:R, upside room, and catalyst/fuel words.
+- **A tier / Buy? YES**: requires sponsorship plus VWAP control, participation, feasible movement, clean entry, R:R >= 1:2, and enough room to resistance.
+- **Penalties**: below VWAP, distribution/trap risk, weak R:R, nearby resistance, low participation, RSI exhaustion, and stocks already up too much over today/5D/20D.
 - **Holder snapshot**: optional Yahoo institutional/mutual-fund holder names. It is delayed and should confirm sponsorship, not replace the technical setup.
             """
         )
