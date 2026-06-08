@@ -615,7 +615,7 @@ def show_table(df, label, prob_col="Rise Prob"):
     else:
         wanted = [
             "Rank", "Ticker", "Action", "View", "Buy Condition",
-            "Entry Quality", "Tradeable Buy", "Trade Tier", "7-Star Score", "7-Star Tier", "7-Star Why", "Explosion Score", "Explosion Tier", "Explosion Why", "Pre-Mover Score", "Pre-Mover Tier", "Pre-Mover Why", "Quality Score", "Next-Day Score", "Next-Day Rating", "Next-Day Move", "7D Move Est", "Upside to Res", "RR Est", "Setup Type", "Today %", "5D %", "20D %", "Rise Prob", "Swing Rank Score", "Pro Score", "PI Proxy", "Tier", "Why Buy",
+            "Entry Quality", "Tradeable Buy", "Trade Tier", "7-Star Score", "7-Star Tier", "7-Star Why", "Explosion Score", "Explosion Tier", "Explosion Why", "Pre-Mover Score", "Pre-Mover Tier", "Pre-Mover Why", "Quality Score", "Next-Day Score", "Next-Day Rating", "Next-Day Move", "7D Move Est", "Upside to Res", "RR Est", "Setup Type", "Today %", "5D %", "20D %", "Rise Prob", "Swing Rank Score", "Pro Pillars", "Pro Score", "Pro Validation", "Pro Why", "PI Proxy", "Tier", "Why Buy",
             "Operator", "VWAP", "Trap Risk", "Price", "MA60 Stop", "Best Stop",
             "TP1 +10%", "TP2 +15%", "TP3 +20%", "Target Est.", "Hold Est.",
             "Vol Ratio", "ATR%", "Vol Quality", "PSM Quality", "PSS Score", "PSS Label", "Op Score", "Score",
@@ -673,7 +673,10 @@ def show_table(df, label, prob_col="Rise Prob"):
         "Score":         st.column_config.TextColumn("Score",         width=50),
         # PSM Strategy columns
         "PI Proxy":      st.column_config.TextColumn("PI",            width=80),
+        "Pro Pillars":   st.column_config.TextColumn("Pillars",       width=65),
         "Pro Score":     st.column_config.NumberColumn("ProScore",    width=70),
+        "Pro Validation": st.column_config.TextColumn("Validation",    width=190),
+        "Pro Why":       st.column_config.TextColumn("Pro Why",       width=260),
         "Tier":          st.column_config.TextColumn("Tier",          width=120),
         "Why Buy":       st.column_config.TextColumn("Why Buy",       width=260),
         "ATR%":          st.column_config.TextColumn("ATR%",          width=55),

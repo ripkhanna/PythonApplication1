@@ -514,6 +514,7 @@ for _runtime_piece in [
     "core_runtime/swing_picks_core.py",
     "core_runtime/trade_desk_core.py",
     "core_runtime/strategy_core.py",
+    "core_runtime/strategy_finder_core.py",
     "core_runtime/long_term_core.py",
     "core_runtime/cache_management_core.py",
 ]:
@@ -546,7 +547,7 @@ _SIDEBAR_DEFAULTS = {
     "ui_top_n_sectors":       3,
     "ui_min_prob_long":       62,
     "ui_min_prob_short":      60,
-    "ui_swing_mode":          "Balanced",  # Options: Strict/Balanced/Discovery/Support Entry/Premarket Momentum/High Volume/High Conviction/PSM Strategy
+    "ui_swing_mode":          "Balanced",  # Options: Pro 70 / 2.5R/A+ Precision/Strict/Balanced/Discovery/Support Entry/Premarket Momentum/High Volume/High Conviction/PSM Strategy
     "ui_skip_earnings":       False,
     "ui_use_live_universe":   True,
     "ui_max_live_universe":   150,   # v15.10: reduced from 350 — 150 live + 746 curated = ~700 combined (fast)
@@ -653,9 +654,11 @@ min_prob_short = st.sidebar.slider(
 )
 swing_mode = st.sidebar.selectbox(
     "📊 Swing strategy",
-    ["Strict", "Balanced", "Discovery", "Support Entry", "Premarket Momentum", "High Volume", "High Conviction", "PSM Strategy"],
+    ["Pro 70 / 2.5R", "A+ Precision", "Strict", "Balanced", "Discovery", "Support Entry", "Premarket Momentum", "High Volume", "High Conviction", "PSM Strategy"],
     key="ui_swing_mode",
     help=(
+        "**Pro 70 / 2.5R** — professional-style high-selectivity strategy requiring multi-pillar confirmation and at least 1:2.5 R:R. SGX uses market-aware price/volume gates. Paper-test first; no win rate is guaranteed.\n\n"
+        "**A+ Precision** — fails closed. Shows only clean high-confluence setups with good entry, RR/runway, volume/operator confirmation and no chase/trap risk.\n\n"
         "**Strict** — A+ setups only. High probability + full confirmation.\n\n"
         "**Balanced** — practical live candidates (default). Trend + volume + operator.\n\n"
         "**Discovery** — wider watchlist for quiet markets. More results, use Trade Desk to filter.\n\n"
@@ -692,7 +695,21 @@ st.session_state["_last_seen_swing_mode"] = swing_mode
 
 # Show strategy context banner under the selectbox
 _sm_upper = swing_mode.upper()
-if _sm_upper == "SUPPORT ENTRY":
+if _sm_upper == "PRO 70 / 2.5R":
+    st.sidebar.info(
+        "Pro 70 / 2.5R\n\n"
+        "Professional-style 7-of-8 pillar strategy: trend, relative strength, "
+        "momentum, institutional activity, structure, entry, R:R/runway, and clean risk. "
+        "Requires R:R >= 2.5 and fails closed. Paper-test before live use; no win rate is guaranteed."
+    )
+elif _sm_upper == "A+ PRECISION":
+    st.sidebar.info(
+        "A+ Precision mode\n\n"
+        "Trade-quality mode only. Requires clean entry, no trap/chase risk, "
+        "good RR/runway, multi-signal confluence, and volume/operator confirmation. "
+        "If nothing passes, it shows no trade instead of falling back to weaker rows."
+    )
+elif _sm_upper == "SUPPORT ENTRY":
     st.sidebar.info(
         "📍 **Support Entry mode**\n\n"
         "Shows only stocks AT support (MA20/MA60/VWAP/swing low). "
@@ -1235,17 +1252,186 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
         # Exclude WATCH – CANDIDATE (master-only rows) from all non-Discovery modes
         not_candidate = ~action.str.contains("CANDIDATE", na=False, regex=False)
 
-        if mode == "STRICT":
-            mask = (p >= max(float(min_prob_long), 76.0)) & (score >= 7) & not_candidate
-            mask &= action.str.contains("STRONG BUY|STRICT|DISCOVERY QUALITY", na=False, regex=True) | signals.str.contains("🎯HIGH-ACCURACY|VOL BREAKOUT|POCKET PIVOT", na=False, regex=True)
+        def _scan_num_col(col_name, default=0.0):
+            if col_name not in df_long.columns:
+                return pd.Series([default] * len(df_long), index=df_long.index)
+            return pd.to_numeric(
+                df_long[col_name].astype(str)
+                    .str.replace("$", "", regex=False)
+                    .str.replace("%", "", regex=False)
+                    .str.replace("+", "", regex=False)
+                    .str.replace("x", "", regex=False)
+                    .str.replace(",", "", regex=False)
+                    .str.extract(r"([-]?\d+(?:\.\d+)?)", expand=False),
+                errors="coerce",
+            ).fillna(default)
+
+        def _scan_rr_col(col_name):
+            if col_name not in df_long.columns:
+                return pd.Series([0.0] * len(df_long), index=df_long.index)
+            txt = df_long[col_name].astype(str).str.replace("1:", "", regex=False)
+            return pd.to_numeric(txt.str.extract(r"([-]?\d+(?:\.\d+)?)", expand=False), errors="coerce").fillna(0.0)
+
+        op_score_scan = _scan_num_col("Op Score", 0.0)
+        if not op_score_scan.gt(0).any():
+            op_score_scan = _scan_num_col("Operator Score", 0.0)
+        pss_scan = _scan_num_col("PSS Score", 0.0)
+        atr_scan = _scan_num_col("ATR%", 0.0)
+        rr_scan = _scan_rr_col("RR Est")
+        upside_scan = _scan_num_col("Upside to Res", 0.0)
+        price_scan = _scan_num_col("Price", 999.0)
+        ticker_scan = df_long.get("Ticker", pd.Series([""] * len(df_long), index=df_long.index)).astype(str).str.upper().str.strip()
+        is_sgx_row = ticker_scan.str.endswith(".SI")
+        entry_scan = df_long.get("Entry Quality", pd.Series([""] * len(df_long), index=df_long.index)).astype(str).str.upper()
+        setup_scan = df_long.get("Setup Type", pd.Series([""] * len(df_long), index=df_long.index)).astype(str).str.upper()
+        trap_upper = trap_text.astype(str).str.upper().str.strip()
+        action_upper = action.astype(str).str.upper()
+        clean_trap_mark = trap_upper.isin(["-", "", "NAN", "NONE", "–", "—", "−", "â€“"])
+        trend_sig = signals.str.contains("WKLY TREND|RS>SPY|52W HIGH|GC|MA STACK|TREND", na=False, regex=True)
+        momentum_sig = signals.str.contains("STOCH|MACD|RSI|MOMENTUM|HIGHER LOWS|RS>", na=False, regex=True)
+        volume_sig = signals.str.contains("VOL BREAKOUT|VOL SURGE|POCKET PIVOT|OBV|OPERATOR|ACCUM|ACTIVE VOLUME|HIGH VOLUME", na=False, regex=True) | (vol_ratio >= 1.2)
+        structure_sig = signals.str.contains("VWAP|SUPPORT|CLOSE|CANDLE|BREAKOUT|BASE|PULLBACK|TIGHT", na=False, regex=True)
+        relative_sig = signals.str.contains("RS>|REL|SECTOR|LEADER", na=False, regex=True)
+        category_count = trend_sig.astype(int) + momentum_sig.astype(int) + volume_sig.astype(int) + structure_sig.astype(int) + relative_sig.astype(int)
+        support_zone = (
+            (supp_num > 0) |
+            (~support_tier.astype(str).isin(["â€“", "–", "-", "", "nan", "None"])) |
+            entry_scan.str.contains("SUPPORT|MA20|MA60|VWAP", na=False, regex=True) |
+            setup_scan.str.contains("SUPPORT|PULLBACK|MA20|MA60|VWAP", na=False, regex=True)
+        )
+        trap_clean = clean_trap_mark & (~action_upper.str.contains("TRAP", na=False))
+        entry_ok = ~((entry_scan + " " + setup_scan).str.contains("EXTENDED|AVOID|WAIT|TRAP|CHASE", na=False, regex=True))
+        rr_ok = (rr_scan >= 1.8) | (upside_scan >= 6.0)
+        atr_available = atr_scan.gt(0).any()
+        atr_ok = ((atr_scan >= 1.5) & (atr_scan <= 9.0)) if atr_available else pd.Series([True] * len(df_long), index=df_long.index)
+        price_ok = price_scan >= pd.Series([5.0] * len(df_long), index=df_long.index).mask(is_sgx_row, 0.10)
+        no_chase = (today_pct >= -2.5) & (today_pct <= 6.0)
+        sg_institutional = (op_score_scan >= 2) | ((vol_ratio >= 0.80) & (vol_ratio <= 5.0))
+        sg_today_ok = (today_pct >= -4.5) & (today_pct <= 6.0)
+        op_or_volume = ((op_score_scan >= 4) | volume_sig).mask(is_sgx_row, sg_institutional)
+        precision_core = not_candidate & trap_clean & entry_ok & rr_ok & atr_ok & price_ok & no_chase & op_or_volume & (category_count >= 3)
+        precision_elite = precision_core & (p >= 82) & (score >= 8) & (quality_score >= 10) & (nd_score >= 9) & (category_count >= 4) & (rr_scan >= 2.0)
+        precision_support = precision_core & support_zone & (p >= 75) & (score >= 7) & (quality_score >= 9) & (nd_score >= 8) & (today_pct <= 4.0) & ((vol_ratio >= 0.6) | (op_score_scan >= 4))
+        precision_breakout = precision_core & trend_sig & momentum_sig & volume_sig & structure_sig & (p >= 78) & (score >= 7) & (quality_score >= 9) & (nd_score >= 8) & (today_pct >= 0.0) & (today_pct <= 6.0)
+        precision_psm = precision_core & (p >= 76) & (score >= 7) & (pss_scan >= 4) & (quality_score >= 9) & (nd_score >= 8) & (vol_ratio >= 0.8)
+        sg_precision = (
+            is_sgx_row & not_candidate & trap_clean & entry_ok & atr_ok & price_ok & sg_today_ok &
+            trend_sig & sg_institutional & ((rr_scan >= 2.5) & (upside_scan >= 6.0)) &
+            (p >= 78) & (score >= 5) & (quality_score >= 12) & (nd_score >= 12) &
+            ((category_count >= 2) | support_zone)
+        )
+        precision_mask = precision_elite | precision_support | precision_breakout | precision_psm | sg_precision
+        precision_support = precision_support | (sg_precision & support_zone)
+
+        entry_ideal = (entry_scan + " " + setup_scan).str.contains("A\\+|IDEAL|SUPPORT|MA20|MA60|VWAP|BUY|PULLBACK|NR7|NEAR-MISS", na=False, regex=True)
+        pro_trend = trend_sig
+        pro_relative = relative_sig
+        pro_momentum = momentum_sig
+        pro_institutional = ((op_score_scan >= 4) | (volume_sig & (vol_ratio >= 1.2) & (vol_ratio <= 4.0))).mask(is_sgx_row, sg_institutional)
+        pro_structure = structure_sig | support_zone
+        pro_entry = entry_ideal & entry_ok & ((today_pct >= -1.5) & (today_pct <= 5.0)).mask(is_sgx_row, sg_today_ok)
+        pro_rr = ((rr_scan >= 2.5) & (upside_scan >= 7.0)).mask(is_sgx_row, (rr_scan >= 2.5) & (upside_scan >= 6.0))
+        pro_clean_risk = trap_clean & atr_ok & price_ok & ((today_pct >= -1.5) & (today_pct <= 5.0)).mask(is_sgx_row, sg_today_ok)
+        pro_pillars = (
+            pro_trend.astype(int) + pro_relative.astype(int) + pro_momentum.astype(int) +
+            pro_institutional.astype(int) + pro_structure.astype(int) + pro_entry.astype(int) +
+            pro_rr.astype(int) + pro_clean_risk.astype(int)
+        )
+        us_pro_70_gate = (
+            (pro_pillars >= 7) & pro_trend & pro_institutional & pro_rr & pro_clean_risk &
+            (p >= 80) & (score >= 8) & (quality_score >= 10) & (nd_score >= 9) &
+            (category_count >= 4) & not_candidate & (~is_sgx_row)
+        )
+        sg_pro_70_gate = (
+            is_sgx_row & (pro_pillars >= 6) & pro_trend & pro_institutional & pro_rr & pro_clean_risk &
+            (p >= 78) & (score >= 5) & (quality_score >= 12) & (nd_score >= 12) &
+            (category_count >= 2) & not_candidate
+        )
+        pro_70_gate = us_pro_70_gate | sg_pro_70_gate
+        pro_70_elite = pro_70_gate & (pro_pillars >= 8) & (p >= 85) & (rr_scan >= 3.0) & (op_score_scan >= 4)
+        pro_70_support = pro_70_gate & support_zone & (today_pct <= 3.5)
+        pro_70_breakout = pro_70_gate & (~support_zone) & volume_sig & structure_sig & (today_pct >= 0.0)
+        pro_70_score = (
+            pro_pillars * 10.0 +
+            p.clip(0, 100) * 0.20 +
+            quality_score.clip(0, 15) * 1.5 +
+            nd_score.clip(0, 15) * 1.5 +
+            rr_scan.clip(0, 5) * 3.0 +
+            op_score_scan.clip(0, 10) * 1.0
+        ).round(1)
+
+        if mode == "PRO 70 / 2.5R":
+            pro_70_near_miss = pd.Series([False] * len(df_long), index=df_long.index)
+            if not bool(pro_70_gate.any()):
+                pro_70_near_miss = (
+                    (~pro_70_gate) & not_candidate & trap_clean & entry_ok & price_ok &
+                    ((today_pct >= -3.0) & (today_pct <= 7.0)).mask(is_sgx_row, sg_today_ok) &
+                    ((rr_scan >= 2.5) & (upside_scan >= 6.0)) &
+                    (pro_pillars >= 5) & (pro_trend | pro_structure) &
+                    (pro_institutional | (op_score_scan >= 3) | (vol_ratio >= 1.0)) &
+                    (p >= 70) & (quality_score >= 9) & (nd_score >= 7)
+                )
+            df_long = df_long[pro_70_gate | pro_70_near_miss].copy()
+            if not df_long.empty:
+                near_r = pro_70_near_miss.reindex(df_long.index).fillna(False)
+                exact_r = pro_70_gate.reindex(df_long.index).fillna(False)
+                df_long["Action"] = "WATCH - PRO 70 NEAR MISS"
+                df_long.loc[exact_r, "Action"] = "BUY - PRO 70 / 2.5R"
+                df_long.loc[pro_70_support.reindex(df_long.index).fillna(False), "Action"] = "BUY - PRO 70 SUPPORT"
+                df_long.loc[pro_70_breakout.reindex(df_long.index).fillna(False), "Action"] = "BUY - PRO 70 BREAKOUT"
+                df_long.loc[pro_70_elite.reindex(df_long.index).fillna(False), "Action"] = "STRONG BUY - PRO 70 ELITE"
+                df_long["Pro Pillars"] = pro_pillars.reindex(df_long.index).astype(int).astype(str) + "/8"
+                df_long["Pro Score"] = pro_70_score.reindex(df_long.index).round(1)
+                df_long["Pro Validation"] = "PAPER-TEST BEFORE LIVE"
+                df_long.loc[near_r, "Pro Validation"] = "NEAR MISS - WAIT"
+                df_long["Pro Why"] = (
+                    "P=" + p.reindex(df_long.index).round(0).astype(int).astype(str) +
+                    " RR=" + rr_scan.reindex(df_long.index).round(2).astype(str) +
+                    " Upside=" + upside_scan.reindex(df_long.index).round(1).astype(str) +
+                    "% Pillars=" + pro_pillars.reindex(df_long.index).astype(int).astype(str) + "/8"
+                )
+                df_long = (
+                    df_long.assign(_pro=pro_70_score.reindex(df_long.index).fillna(0))
+                    .sort_values("_pro", ascending=False, kind="stable")
+                    .drop(columns=["_pro"], errors="ignore")
+                )
+
+        elif mode == "A+ PRECISION":
+            df_long = df_long[precision_mask].copy()
+            if not df_long.empty:
+                df_long["Action"] = "BUY - A+ PRECISION"
+                df_long.loc[precision_support.reindex(df_long.index).fillna(False), "Action"] = "BUY - A+ SUPPORT ENTRY"
+                df_long.loc[precision_breakout.reindex(df_long.index).fillna(False), "Action"] = "BUY - A+ BREAKOUT"
+                df_long.loc[precision_elite.reindex(df_long.index).fillna(False), "Action"] = "STRONG BUY - A+ ELITE"
+                df_long["Precision Gate"] = "PASS"
+                df_long["Precision Why"] = (
+                    "P=" + p.reindex(df_long.index).round(0).astype(int).astype(str) +
+                    " Score=" + score.reindex(df_long.index).round(0).astype(int).astype(str) +
+                    " Q/N=" + quality_score.reindex(df_long.index).round(0).astype(int).astype(str) +
+                    "/" + nd_score.reindex(df_long.index).round(0).astype(int).astype(str) +
+                    " RR=" + rr_scan.reindex(df_long.index).round(2).astype(str) +
+                    " Cat=" + category_count.reindex(df_long.index).astype(int).astype(str)
+                )
+
+        elif mode == "STRICT":
+            mask = precision_mask | (
+                precision_core & (p >= max(float(min_prob_long), 80.0)) &
+                (score >= 8) & (quality_score >= 9) & (nd_score >= 8)
+            )
+            mask &= precision_core | precision_mask
             df_long = df_long[mask].copy()
             if not df_long.empty:
                 # Normalise labels
-                df_long["Action"] = "WATCH – STRICT QUALITY"
-                strong = (p.reindex(df_long.index).fillna(0) >= max(float(min_prob_long), 80.0)) & (score.reindex(df_long.index).fillna(0) >= 8)
-                df_long.loc[strong, "Action"] = "STRONG BUY – STRICT"
+                df_long["Action"] = "BUY - STRICT QUALITY"
+                strong = (
+                    (p.reindex(df_long.index).fillna(0) >= max(float(min_prob_long), 84.0)) &
+                    (score.reindex(df_long.index).fillna(0) >= 8) &
+                    (quality_score.reindex(df_long.index).fillna(0) >= 10) &
+                    (nd_score.reindex(df_long.index).fillna(0) >= 9)
+                )
+                df_long.loc[strong, "Action"] = "STRONG BUY - STRICT A+"
                 earn_s = signals.reindex(df_long.index).fillna("").str.contains("EARNINGS GAP|PEAD", na=False, regex=True)
-                df_long.loc[strong & earn_s, "Action"] = "STRONG BUY – EARNINGS GAP"
+                df_long.loc[strong & earn_s, "Action"] = "STRONG BUY - EARNINGS GAP"
 
         elif mode == "BALANCED":
             # v2 fix: lowered score gate from 5 to 4 so weak-market sessions still show results.
@@ -1532,7 +1718,8 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
             # driven and harder to manage with technical swing stops.
             common_quality = (
                 price_ok & atr_ok & entry_ok & sector_ok & not_candidate &
-                not_breaking_down & confirmation_ok & (~biotech_flag)
+                not_breaking_down & confirmation_ok & trap_clean & rr_ok &
+                no_chase & (category_count >= 3) & (~biotech_flag)
             )
 
             # Elite / Strong / Qualified tiers.
@@ -1542,31 +1729,32 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
             # are not perfect. Biotech/event-driven names remain excluded.
             elite_ok = (
                 common_quality & not_chasing &
-                (psm_quality >= 82) &
-                (pi_proxy >= 2.7) &
-                (pss_col >= 4) &
-                (p >= 64) &
+                (psm_quality >= 88) &
+                (pi_proxy >= 3.0) &
+                (pss_col >= 5) &
+                (p >= 82) &
                 (vol_ratio >= 1.3) &
                 ((op_score_num >= 4) | volume_signal | (pss_col >= 5))
             )
 
             strong_ok = (
                 common_quality & not_chasing &
-                (psm_quality >= 70) &
-                (pi_proxy >= 1.8) &
-                (pss_col >= 3) &
-                (p >= 59) &
+                (psm_quality >= 82) &
+                (pi_proxy >= 2.5) &
+                (pss_col >= 4) &
+                (p >= 76) &
                 (vol_ratio >= 1.0) &
-                ((op_score_num >= 3) | volume_signal | momentum_signal | (pss_col >= 4))
+                ((op_score_num >= 4) | volume_signal | (pss_col >= 4))
             )
 
             qualified_ok = (
                 common_quality &
-                (psm_quality >= 62) &
-                (pi_proxy >= 1.3) &
-                (p >= 56) &
+                (psm_quality >= 76) &
+                (pi_proxy >= 2.0) &
+                (pss_col >= 3) &
+                (p >= 70) &
                 (vol_ratio >= 0.8) &
-                ((pss_col >= 2) | confirmation_ok) &
+                ((op_score_num >= 4) | volume_signal | (pss_col >= 4)) &
                 (~slow_flag)
             )
 
@@ -1576,23 +1764,8 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
 
             mask = elite_ok | strong_ok | qualified_ok
 
-            # If market conditions are weak and no stock passes the three normal
-            # tiers, still return a small "best available" quality shortlist.
-            # This avoids a blank PSM grid while keeping the same hard exclusions:
-            # no biotech, no bad entry, no breakdown, no unusable/cheap names.
-            if not mask.any():
-                fallback_ok = (
-                    price_ok & entry_ok & not_candidate & not_breaking_down &
-                    (~biotech_flag) & (~slow_flag) &
-                    (psm_quality >= 56) & (pi_proxy >= 1.0) & (p >= 54) &
-                    (vol_ratio >= 0.7) & ((pss_col >= 2) | confirmation_ok | (op_score_num >= 2))
-                )
-                if fallback_ok.any():
-                    fallback_rank = psm_quality.where(fallback_ok, -1).sort_values(ascending=False)
-                    keep_idx = fallback_rank.head(15).index
-                    qualified_ok = pd.Series(False, index=idx)
-                    qualified_ok.loc[keep_idx] = True
-                    mask = qualified_ok
+            # Fail closed. If no PSM setup passes the quality gates, show no trade
+            # instead of filling the grid with weak "best available" rows.
 
             df_long = df_long[mask].copy()
 
@@ -1646,7 +1819,7 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
         # ── Emergency fallback: never show a completely blank long tab ─────────
         # If a non-Discovery mode filtered everything out, show the top Discovery
         # rows with a note so the user knows WHY results are limited.
-        if df_long.empty and not df_long_master.empty and mode not in ("DISCOVERY",):
+        if df_long.empty and not df_long_master.empty and mode not in ("DISCOVERY", "PRO 70 / 2.5R", "A+ PRECISION", "STRICT", "PSM STRATEGY"):
             top_n = min(20, len(df_long_master))
             master_p = _pct_to_num(df_long_master["Rise Prob"], 0) if "Rise Prob" in df_long_master.columns else pd.Series([0.0] * len(df_long_master))
             df_long = df_long_master.sort_values(master_p.name if hasattr(master_p, "name") and master_p.name in df_long_master.columns else df_long_master.columns[0], ascending=False).head(top_n).copy()
@@ -1870,11 +2043,12 @@ with tab_long_term:
     ])
 
 with tab_advanced:
-    tab_swing_710, tab_swing_picks, tab_pro_setups, tab_both, tab_strategy, tab_backtest, tab_perf, tab_tests, tab_diag = st.tabs([
+    tab_swing_710, tab_swing_picks, tab_pro_setups, tab_both, tab_strategy_finder, tab_strategy, tab_backtest, tab_perf, tab_tests, tab_diag = st.tabs([
         "7-10% Swing",
         "Swing Picks",
         "Pro Setups",
         "Side by Side",
+        "Strategy Finder",
         "Strategy Lab",
         "Accuracy Lab",
         "Performance Tracker",
@@ -1902,6 +2076,7 @@ from swing_trader_app.tabs.operator_activity_tab import render_operator_activity
 from swing_trader_app.tabs.big_money_tab import render_big_money
 from swing_trader_app.tabs.scan_results_tabs import render_long, render_short, render_both
 from swing_trader_app.tabs.sectors_tab import render_sectors
+from swing_trader_app.tabs.strategy_finder_tab import render_strategy_finder
 from swing_trader_app.tabs.stock_analysis_tab import render_stock_analysis
 from swing_trader_app.tabs.strategy_lab_tab import render_strategy_lab
 from swing_trader_app.tabs.test_cases_tab import render_test_cases
@@ -2741,6 +2916,10 @@ with tab_trade_desk:
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB — STRATEGY LAB / OPTIONAL ML QUALITY FILTER
 # ─────────────────────────────────────────────────────────────────────────────
+with tab_strategy_finder:
+    _safe_render_tab('strategy_finder', render_strategy_finder)
+
+
 with tab_strategy:
     _safe_render_tab('strategy', render_strategy_lab)
 

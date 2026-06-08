@@ -783,7 +783,15 @@ def render_long(ctx: dict) -> None:
         )
 
     if df_long.empty:
-        st.info("Run the scan to see long setups.")
+        master_long = st.session_state.get("df_long_master", pd.DataFrame())
+        if isinstance(master_long, pd.DataFrame) and not master_long.empty:
+            st.info(
+                f"No **{swing_mode}** long setups passed for **{last_market}**. "
+                "The broad scan has rows, but this strategy/filter is stricter. "
+                "Use Discovery, Balanced, Support Entry, or High Volume for a wider watchlist."
+            )
+        else:
+            st.info("Run the scan to see long setups.")
         return
 
     action_s = df_long.get("Action", pd.Series([""] * len(df_long))).astype(str)
@@ -899,6 +907,50 @@ def render_long(ctx: dict) -> None:
                 show_table(hv_d, "hv_unusual", "Vol Ratio" if "Vol Ratio" in hv_d.columns else "Rise Prob")
         if hv_a.empty and hv_b.empty and hv_c.empty and hv_d.empty:
             show_table(df_long, "hv_all_candidates", "Vol Ratio" if "Vol Ratio" in df_long.columns else "Rise Prob")
+
+    elif m == "PRO 70 / 2.5R":
+        action_s = df_long.get("Action", pd.Series([""] * len(df_long))).astype(str)
+        elite_df = df_long[action_s.str.contains("ELITE", na=False)]
+        support_df = df_long[action_s.str.contains("SUPPORT", na=False)]
+        breakout_df = df_long[action_s.str.contains("BREAKOUT", na=False)]
+        near_df = df_long[action_s.str.contains("NEAR MISS", na=False)]
+        base_df = df_long[
+            ~df_long.index.isin(elite_df.index)
+            & ~df_long.index.isin(support_df.index)
+            & ~df_long.index.isin(breakout_df.index)
+            & ~df_long.index.isin(near_df.index)
+        ]
+
+        st.caption(
+            f"Elite: {len(elite_df)} | Support: {len(support_df)} | "
+            f"Breakout: {len(breakout_df)} | Near miss: {len(near_df)} | "
+            f"Sectors: {df_long['Sector'].nunique() if 'Sector' in df_long.columns else '-'}"
+        )
+        st.info(
+            "**Pro 70 / 2.5R** requires 7 of 8 pillars, estimated R:R >= 2.5, upside room >= 7%, "
+            "clean risk, institutional/volume confirmation, and strong probability/quality scores. "
+            "It targets high selectivity, but no future win rate is guaranteed. Paper-test it before live use."
+        )
+
+        if not elite_df.empty:
+            st.markdown(f"#### Pro 70 Elite - {len(elite_df)} stock{'s' if len(elite_df) != 1 else ''}")
+            st.caption("All 8 pillars or stronger risk/reward and institutional confirmation.")
+            show_table(elite_df, "pro70_elite", "Pro Score")
+        if not support_df.empty:
+            st.markdown(f"#### Pro 70 Support - {len(support_df)} stock{'s' if len(support_df) != 1 else ''}")
+            st.caption("Strict setup that is still near support/MA/VWAP instead of extended.")
+            show_table(support_df, "pro70_support", "Pro Score")
+        if not breakout_df.empty:
+            st.markdown(f"#### Pro 70 Breakout - {len(breakout_df)} stock{'s' if len(breakout_df) != 1 else ''}")
+            st.caption("Strict setup with breakout structure and volume confirmation.")
+            show_table(breakout_df, "pro70_breakout", "Pro Score")
+        if not base_df.empty:
+            st.markdown(f"#### Pro 70 Qualified - {len(base_df)} stock{'s' if len(base_df) != 1 else ''}")
+            show_table(base_df, "pro70_qualified", "Pro Score")
+        if not near_df.empty:
+            st.markdown(f"#### Pro 70 Near Miss Watch - {len(near_df)} stock{'s' if len(near_df) != 1 else ''}")
+            st.caption("Closest candidates only. These are not Pro 70 buys; wait for the missing confirmation.")
+            show_table(near_df, "pro70_near_miss", "Pro Score")
 
     elif m == "HIGH CONVICTION":
         hc_strong = df_long[action_s.str.contains(
