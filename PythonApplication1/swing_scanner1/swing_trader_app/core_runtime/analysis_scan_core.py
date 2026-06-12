@@ -248,12 +248,15 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         "skipped_batch_miss_no_fallback": 0,
         "options_enriched": 0,
         "options_skipped_speed_cap": 0,
+        "meta_prefetch_targets": 0,
+        "fast_meta_candidates": 0,
         # v15.6: per-phase timing breakdown
         "timing": {
             "spy_sector_fetch_s":   0.0,
             "intraday_fetch_s":     0.0,
             "batch_ohlcv_s":        0.0,
             "meta_prefetch_s":      0.0,
+            "meta_prefilter_s":    0.0,
             "signal_loop_s":        0.0,
             "total_s":              0.0,
         },
@@ -620,6 +623,128 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         min_prob_strong_short  = 0.64 if regime in ("BEAR", "CAUTION") else 0.68
 
     # ─────────────────────────────────────────────────────────────────────────
+    # v16 speed: compute a cheap candidate set BEFORE Yahoo metadata calls.
+    #
+    # The batch OHLCV download is comparatively fast. The slowest step on broad
+    # scans is usually yf.Ticker(...).info/calendar for every symbol. Most
+    # symbols later fail the cheap price/volume/structure gate, so fetching rich
+    # metadata for all of them is wasted time. This prefilter mirrors the cheap
+    # gate used in the signal loop and limits metadata fetches to plausible
+    # candidates, while still scanning price/volume for the whole universe.
+    # ─────────────────────────────────────────────────────────────────────────
+    def _fast_meta_prefilter_ok(_ticker, _df):
+        try:
+            if _df is None or _df.empty or len(_df) < 60:
+                return False
+            _close = _df["Close"].squeeze().ffill()
+            _high  = _df["High"].squeeze().ffill()
+            _low   = _df["Low"].squeeze().ffill()
+            _vol   = _df["Volume"].squeeze().ffill()
+            if len(_close) < 60 or _close.dropna().empty:
+                return False
+            _vol_avg_s = float(_vol.rolling(20).mean().iloc[-1])
+            _p_chk     = float(_close.iloc[-1])
+            if _p_chk <= 0 or _vol_avg_s <= 0:
+                return False
+            try:
+                _prev_close = _close.shift(1)
+                _tr_fast = pd.concat([
+                    (_high - _low).abs(),
+                    (_high - _prev_close).abs(),
+                    (_low - _prev_close).abs(),
+                ], axis=1).max(axis=1)
+                _atr_pct = float(_tr_fast.tail(14).mean()) / _p_chk * 100
+            except Exception:
+                _atr_pct = float((_high.tail(14).max() - _low.tail(14).min()) / _p_chk * 100 / 3)
+
+            _tu = str(_ticker).upper()
+            if _tu.endswith(".SI"):
+                _min_turnover = 120_000; _min_atr_pct = 0.30
+            elif _tu.endswith(".NS"):
+                _min_turnover = 250_000; _min_atr_pct = 0.50
+            else:
+                _min_turnover = 500_000; _min_atr_pct = 0.80
+
+            if swing_mode == "HIGH VOLUME":
+                _liquid_ok = True
+            elif swing_mode in ("SUPPORT ENTRY", "PREMARKET MOMENTUM"):
+                _liquid_ok = (_p_chk * _vol_avg_s >= max(_min_turnover * 0.25, 50_000)
+                              and _atr_pct >= max(_min_atr_pct * 0.35, 0.15))
+            else:
+                _liquid_ok = (_p_chk * _vol_avg_s >= _min_turnover and _atr_pct >= _min_atr_pct)
+            if not _liquid_ok:
+                return False
+
+            _c_now = float(_close.iloc[-1])
+            _c_prev = float(_close.iloc[-2]) if len(_close) >= 2 and float(_close.iloc[-2]) != 0 else _c_now
+            _today_pct_fast = (_c_now / _c_prev - 1.0) * 100 if _c_prev else 0.0
+            _ma20_fast = float(_close.tail(20).mean()) if len(_close) >= 20 else _c_now
+            _ma60_fast = float(_close.tail(60).mean()) if len(_close) >= 60 else _ma20_fast
+            _hi20_fast = float(_high.tail(20).max()) if len(_high) >= 20 else _c_now
+            _lo20_fast = float(_low.tail(20).min()) if len(_low) >= 20 else _c_now
+            _vol20_fast = float(_vol.tail(21).iloc[:-1].mean()) if len(_vol) >= 21 else _vol_avg_s
+            _vr_fast = float(_vol.iloc[-1]) / _vol20_fast if _vol20_fast > 0 else 0.0
+            _range_fast = max(float(_high.iloc[-1]) - float(_low.iloc[-1]), 0.0)
+            _close_pos_fast = ((_c_now - float(_low.iloc[-1])) / _range_fast) if _range_fast > 0 else 0.5
+            _near_support_fast = (
+                (_ma20_fast > 0 and abs(_c_now / _ma20_fast - 1.0) <= 0.045) or
+                (_ma60_fast > 0 and abs(_c_now / _ma60_fast - 1.0) <= 0.055) or
+                (_lo20_fast > 0 and _c_now <= _lo20_fast * 1.08)
+            )
+            _breakout_fast = (_hi20_fast > 0 and _c_now >= _hi20_fast * 0.985)
+            _breakdown_fast = (_lo20_fast > 0 and _c_now <= _lo20_fast * 1.015)
+            _trend_fast = (_c_now >= _ma20_fast * 0.99 and _ma20_fast >= _ma60_fast * 0.985)
+            _long_candidate_fast = (
+                _today_pct_fast >= 1.2 or _vr_fast >= 1.25 or _breakout_fast or
+                _trend_fast or _near_support_fast
+            )
+            _short_candidate_fast = (
+                _today_pct_fast <= -1.2 or _breakdown_fast or
+                (_vr_fast >= 1.35 and _close_pos_fast <= 0.40) or
+                (_c_now < _ma20_fast * 0.985 and _ma20_fast < _ma60_fast)
+            )
+            if abs(_today_pct_fast) >= 5.0 and _vr_fast >= 1.5:
+                return True
+            if swing_mode == "HIGH VOLUME":
+                return (_vr_fast >= 1.05 or abs(_today_pct_fast) >= 0.8 or _vol_avg_s > 0)
+            if swing_mode == "SUPPORT ENTRY":
+                return (_near_support_fast or _vr_fast >= 1.10 or abs(_today_pct_fast) >= 0.8)
+            if swing_mode == "PREMARKET MOMENTUM":
+                return (_today_pct_fast >= 0.2 or _vr_fast >= 1.10 or _breakout_fast or _trend_fast)
+            return bool(_long_candidate_fast or _short_candidate_fast)
+        except Exception:
+            # Fail open for metadata only; the main loop still has its own gate.
+            return True
+
+    _meta_targets = list(all_tickers)
+    try:
+        if total >= 300 and not skip_earnings:
+            _candidate_set = {t for t, _df in batch_cache.items() if _fast_meta_prefilter_ok(t, _df)}
+            # Always include forced tickers typed by the user.
+            try:
+                _forced = set(always_include_tickers + extra_tickers)
+            except Exception:
+                _forced = set()
+            _candidate_set |= {t for t in all_tickers if t in _forced}
+            _meta_targets = [t for t in all_tickers if t in _candidate_set]
+            scan_debug["fast_meta_candidates"] = int(len(_candidate_set))
+        else:
+            scan_debug["fast_meta_candidates"] = int(len(all_tickers))
+    except Exception:
+        _meta_targets = list(all_tickers)
+        scan_debug["fast_meta_candidates"] = int(len(all_tickers))
+
+    # Limit rich metadata on very broad scans. Missing metadata fields are shown
+    # as '–' but price/technical signals still run normally.
+    if total >= 700 and len(_meta_targets) > 350 and not skip_earnings:
+        _meta_targets = _meta_targets[:350]
+
+    scan_debug["meta_prefetch_targets"] = int(len(_meta_targets))
+    _t_now = _time_mod.perf_counter()
+    scan_debug["timing"]["meta_prefilter_s"] = round(_t_now - _t_phase, 1)
+    _t_phase = _t_now
+
+    # ─────────────────────────────────────────────────────────────────────────
     # SPEED FIX: parallel pre-fetch of .calendar / .info / .fast_info
     #
     # Uses a SHARED requests.Session so every worker thread uses the same
@@ -733,18 +858,18 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         return t, result
 
     status_text.text(
-        f"⚡ Pre-fetching meta for {len(all_tickers)} tickers "
+        f"⚡ Pre-fetching meta for {len(_meta_targets)}/{len(all_tickers)} tickers "
         f"({_WORKERS} parallel workers)…"
     )
     try:
         with ThreadPoolExecutor(max_workers=_WORKERS) as _pool:
-            _futs = {_pool.submit(_fetch_one_meta, t): t for t in all_tickers}
+            _futs = {_pool.submit(_fetch_one_meta, t): t for t in _meta_targets}
             _done = 0
             for _fut in _as_completed(_futs):
                 _done += 1
                 if _done % 50 == 0:
                     status_text.text(
-                        f"⚡ Pre-fetching meta {_done}/{len(all_tickers)}…"
+                        f"⚡ Pre-fetching meta {_done}/{len(_meta_targets)}…"
                     )
                 try:
                     _t, _res = _fut.result(timeout=15)
@@ -2598,7 +2723,12 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "5D %":           f"{_recent_5d_pct:+.2f}%",
                     "20D %":          f"{_recent_20d_pct:+.2f}%",
                     "Price":          f"${p:.2f}",
+                    "MA5":            f"${raw.get('ma5', p):.2f}",
+                    "MA10":           f"${raw.get('ma10', p):.2f}",
                     "MA20":           f"${raw['ma20']:.2f}",
+                    "MA5 Rising":     "YES" if raw.get("ma5_rising") else "NO",
+                    "MA10 Rising":    "YES" if raw.get("ma10_rising") else "NO",
+                    "MA5/10 Cross":   "BULL" if raw.get("ma5_cross_up_ma10") else "–",
                     "MA60 Stop":      f"${l_ma60_stop:.2f}",
                     "Best Stop":      f"${l_stop:.2f}",
                     "TP1 +10%":       f"${l_pt_short:.2f}",

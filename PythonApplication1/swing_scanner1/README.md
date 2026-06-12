@@ -77,5 +77,40 @@ streamlit run main.py
 - `swing_trader_app/core_runtime/` — scanner engine (analysis_scan_core.py patched)
 
 ## v15.0 additions
+- Pro 70 / 2.5R strategy mode: a fail-closed, professional-style live filter
+  requiring at least 7 of 8 confirmation pillars, including trend,
+  institutional participation, clean risk, and both estimated R:R >= 2.5 and
+  upside room >= 7%. It also requires strong probability, quality,
+  next-day, and multi-category confirmation. It is separate from Strategy
+  Finder and should be paper-tested before live use; no future win rate is
+  guaranteed.
+- SGX strategy filtering fix: Pro 70 / 2.5R, A+ Precision, and Strict now use
+  Singapore-aware price and volume/operator gates for `.SI` tickers. This
+  prevents SGX scans from going blank just because Singapore stocks often trade
+  below the US $5 price gate and with lower volume ratios.
+- Pro 70 / 2.5R now has a near-miss watch layer. If no exact Pro 70 buy passes,
+  the live strategy can show closest candidates as `WATCH - PRO 70 NEAR MISS`
+  with `NEAR MISS - WAIT`, instead of leaving the Long tab blank. These rows are
+  not buy signals.
+- A+ Precision strategy mode: a live scanner mode for high-selectivity setups.
+  It requires clean entry, no trap/chase risk, RR/runway, ATR sanity,
+  multi-signal confluence, and volume/operator confirmation. It fails closed:
+  if nothing passes, it shows no trade instead of falling back to weak
+  Discovery rows.
+- Strict and PSM Strategy gates were tightened. They now use the same
+  precision-quality ideas and no longer promote weak "best available" rows
+  when high-quality setups are absent.
+- Strategy Finder tab: historical strategy-template search in Advanced.
+  It replays candles with the existing signal engine, compares Balanced,
+  Strict, High Conviction, Support Entry, High Volume, Operator Accumulation,
+  PSM Proxy and Early Breakout style templates, then ranks by target-before-stop
+  win rate, expectancy, PI, drawdown behavior and sample count. The default
+  qualification gate is 70% win rate; broad templates below that are marked
+  "Below 70%" and the finder generates stricter HP70 variants before showing
+  any setup as qualified.
+- Strategy Finder now also includes an Improved Exit Profiles section. It tests
+  target/stop/horizon combinations such as +3/-3, +4/-4 and +5/-5 across the
+  selected max hold window, and qualifies only profiles that clear the 70% gate
+  with positive expectancy.
 - ㉑ ⭐ Pro Setups tab: professional confluence scoring, ranked trade cards
 - ㉒ 📦 Range Trader tab: detects oscillating stocks with exact buy/sell/stop levels

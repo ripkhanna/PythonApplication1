@@ -2043,9 +2043,10 @@ with tab_long_term:
     ])
 
 with tab_advanced:
-    tab_swing_710, tab_swing_picks, tab_pro_setups, tab_both, tab_strategy_finder, tab_strategy, tab_backtest, tab_perf, tab_tests, tab_diag = st.tabs([
+    tab_swing_710, tab_swing_picks, tab_pullback_reclaim, tab_pro_setups, tab_both, tab_strategy_finder, tab_strategy, tab_backtest, tab_perf, tab_tests, tab_diag = st.tabs([
         "7-10% Swing",
         "Swing Picks",
+        "Pullback Reclaim",
         "Pro Setups",
         "Side by Side",
         "Strategy Finder",
@@ -2084,6 +2085,7 @@ from swing_trader_app.tabs.performance_tracker_tab import render_performance_tra
 from swing_trader_app.tabs.swing_710_tab import render_swing_710
 from swing_trader_app.tabs.best_710_tab import render_best_710
 from swing_trader_app.tabs.swing_picks_tab import render_swing_picks
+from swing_trader_app.tabs.pullback_reclaim_tab import render_pullback_reclaim
 from swing_trader_app.tabs.trade_desk_tab import render_trade_desk
 from swing_trader_app.tabs.top_movers_tab import render_top_movers
 from swing_trader_app.tabs.pre_movers_tab import render_pre_movers
@@ -3058,6 +3060,9 @@ with tab_breakout:
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 8 — HELP
 # ─────────────────────────────────────────────────────────────────────────────
+with tab_pullback_reclaim:
+    _safe_render_tab('pullback_reclaim', render_pullback_reclaim)
+
 with tab_pro_setups:
     _safe_render_tab('pro_setups', render_pro_setups)
 

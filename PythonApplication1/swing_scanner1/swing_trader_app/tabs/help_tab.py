@@ -304,6 +304,24 @@ Entry Quality alone is not enough. A+ entry with weak volume or trap risk should
             """
         )
 
+
+    st.markdown(
+        """
+### Pullback Reclaim strategy
+
+Use **Advanced → Pullback Reclaim** for stocks that rallied strongly and are now correcting toward support.
+
+**MA5/MA10 timing:** below both = watch only; reclaim MA5 = early rebound; above MA5 and MA10 with MA5 > MA10 = confirmed short-term recovery. A fresh market scan is required to populate these values.
+
+- **BUY ABOVE RECLAIM**: support held, momentum improved, reclaim and volume evidence are present. Buy only after the displayed trigger holds.
+- **SMALL ENTRY / CONFIRM RECLAIM**: early and higher risk; use smaller size.
+- **WATCH SUPPORT**: not a buy yet.
+- **SKIP – SUPPORT BROKEN**: setup is invalid.
+
+Decision order: `Pullback Decision → Pullback Checklist → Reclaim Trigger → Invalidation → Targets`.
+        """
+    )
+
     st.markdown("---")
     st.caption(
         "This scanner is a decision-support tool, not financial advice. "

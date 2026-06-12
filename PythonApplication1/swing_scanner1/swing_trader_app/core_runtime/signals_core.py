@@ -9,6 +9,10 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
     spy_close:    optional SPY Close series for relative strength calculation
     sector_close: optional sector ETF Close series for sector leader calculation
     """
+    # Short-term simple moving averages used by Pullback Reclaim.
+    # MA5 = first sign of a rebound; MA10 = confirmation that the rebound is stabilising.
+    ma5    = close.rolling(5).mean()
+    ma10   = close.rolling(10).mean()
     ema8   = ta.trend.ema_indicator(close, window=8)
     ema21  = ta.trend.ema_indicator(close, window=21)
     ema50  = ta.trend.ema_indicator(close, window=50)
@@ -28,6 +32,16 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
 
     # ── Scalars ───────────────────────────────────────────────────────────────
     p    = to_float(close.iloc[-1])
+    ma5_val = to_float(ma5.iloc[-1]) if len(close) >= 5 else p
+    ma10_val = to_float(ma10.iloc[-1]) if len(close) >= 10 else p
+    ma5_prev = to_float(ma5.iloc[-2]) if len(close) >= 6 else ma5_val
+    ma10_prev = to_float(ma10.iloc[-2]) if len(close) >= 11 else ma10_val
+    ma5_rising = ma5_val > ma5_prev
+    ma10_rising = ma10_val > ma10_prev
+    above_ma5 = p > ma5_val
+    above_ma10 = p > ma10_val
+    ma5_cross_up_ma10 = (ma5_val > ma10_val) and (ma5_prev <= ma10_prev)
+    short_ma_bull_stack = above_ma5 and above_ma10 and (ma5_val >= ma10_val)
     e8   = to_float(ema8.iloc[-1])
     e21  = to_float(ema21.iloc[-1])
     e50  = to_float(ema50.iloc[-1])
@@ -763,8 +777,16 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
         "full_ma_stack":     full_ma_stack,
         "momentum_3d":       momentum_3d,
         # Strategy fields (entry quality only — not scored)
+        "ma5":               ma5_val,
+        "ma10":              ma10_val,
         "ma20":              ma20_val,
         "ma60":              ma60_val,
+        "ma5_rising":        ma5_rising,
+        "ma10_rising":       ma10_rising,
+        "above_ma5":         above_ma5,
+        "above_ma10":        above_ma10,
+        "ma5_cross_up_ma10": ma5_cross_up_ma10,
+        "short_ma_bull_stack": short_ma_bull_stack,
         "dip_to_ma20":       _strat["dip_to_ma20"],
         "dip_to_ma60":       _strat["dip_to_ma60"],
         "not_chasing":       not_chasing,
