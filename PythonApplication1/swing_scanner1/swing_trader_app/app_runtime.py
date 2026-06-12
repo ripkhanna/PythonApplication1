@@ -551,6 +551,7 @@ _SIDEBAR_DEFAULTS = {
     "ui_skip_earnings":       False,
     "ui_use_live_universe":   True,
     "ui_max_live_universe":   150,   # v15.10: reduced from 350 — 150 live + 746 curated = ~700 combined (fast)
+    "ui_slow_enrich_v2":      False,
     "ui_always_include":      "",
     # Options layer
     "ui_enable_options":      False,
@@ -817,12 +818,12 @@ max_combined_tickers = st.sidebar.slider(
 )
 enable_slow_universe_enrichment = st.sidebar.checkbox(
     "Enable slow enrichment (options/finviz/earnings)",
-    value=True,
-    key="ui_slow_enrich",
+    key="ui_slow_enrich_v2",
     help=(
         "When ON: fetches unusual options activity, Finviz screener, and earnings universe. "
         "These add signal but each takes 15-60s on cold cache. "
-        "Recommended: OFF for quick scans, ON once per session for full signal set."
+        "The normal scan still evaluates price, volume, and technical signals for every ticker. "
+        "Recommended: OFF for quick scans, ON once per session for extra discovery sources."
     ),
 )
 
@@ -2727,6 +2728,7 @@ if run:
                 "yahoo_delay_note": "Yahoo quotes may still be exchange-delayed; app cache TTL is shortened during market hours.",
                 "always_include_tickers": ", ".join(always_include_tickers),
                 "always_include_count": len(always_include_tickers),
+                "scan_debug": st.session_state.get("last_scan_debug", {}),
             },
         )
         if _saved_cache_meta:

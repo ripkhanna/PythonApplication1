@@ -200,6 +200,45 @@ def summarize_traps(traps):
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN SCANNER  — v5 signal logic + v7 batch OHLCV pre-fetch
 # ─────────────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=4 * 3600, show_spinner=False)
+def _download_daily_history_chunk_cached(chunk_tuple):
+    """Cache stable one-year daily bars; live intraday bars are overlaid later."""
+    chunk = list(chunk_tuple)
+    out = {}
+    err = ""
+    try:
+        raw = yf.download(
+            chunk if len(chunk) > 1 else chunk[0],
+            period="1y", interval="1d",
+            progress=False, group_by="ticker", threads=True, auto_adjust=True,
+        )
+        if raw is None or getattr(raw, "empty", True):
+            return out, "empty"
+        for tkr in chunk:
+            try:
+                if isinstance(raw.columns, pd.MultiIndex):
+                    lvl1 = raw.columns.get_level_values(1)
+                    lvl0 = raw.columns.get_level_values(0)
+                    if tkr in lvl1:
+                        df_t = raw.xs(tkr, axis=1, level=1).copy()
+                    elif tkr in lvl0:
+                        df_t = raw[tkr].copy()
+                    else:
+                        continue
+                elif len(chunk) == 1:
+                    df_t = raw.copy()
+                else:
+                    continue
+                df_t = _clean_scan_ohlcv(df_t)
+                if len(df_t) >= 60:
+                    out[tkr] = df_t
+            except Exception:
+                continue
+    except Exception as e:
+        err = f"{type(e).__name__}: {e}"
+    return out, err
+
+
 @st.cache_data(ttl=3600)
 def fetch_analysis(green_sectors, red_sectors, regime,
                    skip_earnings, top_n_sectors, strategy_mode="Balanced", live_sectors=None,
@@ -436,21 +475,34 @@ def fetch_analysis(green_sectors, red_sectors, regime,
     if _market_is_open:
         status_text.text(f"📥 Fetching latest 5-minute bars for {total} stocks...")
         try:
+            _intraday_tickers = list(all_tickers)
+            if total >= 700:
+                _live_intraday_count = min(
+                    total, max(50, int(st.session_state.get("ui_max_live_universe", 150)))
+                )
+                _forced_intraday = (
+                    list(globals().get("always_include_tickers", []) or [])
+                    + list(globals().get("extra_tickers", []) or [])
+                )
+                _intraday_tickers = list(dict.fromkeys(
+                    list(all_tickers[:_live_intraday_count]) + _forced_intraday
+                ))
             raw_intraday = yf.download(
-                all_tickers, period="1d", interval="5m",
+                _intraday_tickers, period="1d", interval="5m",
                 progress=False, group_by="ticker", threads=True, auto_adjust=True,
                 prepost=True,
             )
             latest_bars = []
-            for tkr in all_tickers:
+            for tkr in _intraday_tickers:
                 try:
-                    idf = _extract_from_yf_batch(raw_intraday, tkr, len(all_tickers))
+                    idf = _extract_from_yf_batch(raw_intraday, tkr, len(_intraday_tickers))
                     idf = _clean_scan_ohlcv(idf).dropna(how="all") if not idf.empty else pd.DataFrame()
                     if len(idf) >= 1 and "Close" in idf.columns and idf["Close"].notna().any():
                         intraday_cache[tkr] = idf
                         latest_bars.append(str(pd.Timestamp(idf.index[-1])))
                 except Exception:
                     continue
+            scan_debug["intraday_requested"] = int(len(_intraday_tickers))
             scan_debug["intraday_loaded"] = int(len(intraday_cache))
             scan_debug["latest_intraday_bar"] = max(latest_bars) if latest_bars else ""
         except Exception as e:
@@ -481,40 +533,11 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             yield list(seq[_i:_i + n])
 
     def _download_daily_chunk(chunk, chunk_no=0):
-        out = {}
-        err = ""
-        try:
-            raw = yf.download(
-                chunk if len(chunk) > 1 else chunk[0],
-                period="1y", interval="1d",  # 1y is needed for MA200 Support Entry detection
-                progress=False, group_by="ticker", threads=True, auto_adjust=True,
-            )
-            if raw is None or getattr(raw, "empty", True):
-                return out, "empty"
-            for tkr in chunk:
-                try:
-                    if isinstance(raw.columns, pd.MultiIndex):
-                        lvl1 = raw.columns.get_level_values(1)
-                        lvl0 = raw.columns.get_level_values(0)
-                        if tkr in lvl1:
-                            df_t = raw.xs(tkr, axis=1, level=1).copy()
-                        elif tkr in lvl0:
-                            df_t = raw[tkr].copy()
-                        else:
-                            continue
-                    elif len(chunk) == 1:
-                        df_t = raw.copy()
-                    else:
-                        continue
-                    df_t = _clean_scan_ohlcv(df_t)
-                    if tkr in intraday_cache:
-                        df_t = _overlay_intraday_daily(df_t, intraday_cache[tkr])
-                    if len(df_t) >= 60:
-                        out[tkr] = df_t
-                except Exception:
-                    continue
-        except Exception as e:
-            err = f"{type(e).__name__}: {e}"
+        out, err = _download_daily_history_chunk_cached(tuple(chunk))
+        out = {tkr: df_t.copy() for tkr, df_t in out.items()}
+        for tkr, intra_df in intraday_cache.items():
+            if tkr in out:
+                out[tkr] = _overlay_intraday_daily(out[tkr], intra_df)
         return out, err
 
     try:
@@ -522,12 +545,26 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         # batch, but not so many connections that Yahoo starts throttling.
         if total >= 900:
             _chunk_size, _dl_workers = 225, 4
+        elif total >= 700:
+            _chunk_size, _dl_workers = 225, 4
         elif total >= 400:
             _chunk_size, _dl_workers = 225, 3
         else:
             _chunk_size, _dl_workers = max(total, 1), 1
 
-        _ticker_chunks = list(_chunks(all_tickers, _chunk_size))
+        if total >= 400:
+            # Stable buckets preserve daily-history cache hits even when a few
+            # live mover symbols enter or leave the universe between refreshes.
+            import zlib as _zlib
+            _stable_buckets = [[] for _ in range(4)]
+            for _ticker in sorted(set(all_tickers)):
+                _bucket_idx = _zlib.crc32(_ticker.encode("utf-8")) % len(_stable_buckets)
+                _stable_buckets[_bucket_idx].append(_ticker)
+            _ticker_chunks = [bucket for bucket in _stable_buckets if bucket]
+            scan_debug["batch_stable_buckets"] = int(len(_ticker_chunks))
+        else:
+            _ticker_chunks = list(_chunks(all_tickers, _chunk_size))
+            scan_debug["batch_stable_buckets"] = 0
         scan_debug["batch_chunk_size"] = int(_chunk_size)
         scan_debug["batch_chunk_workers"] = int(_dl_workers)
         scan_debug["batch_chunks"] = int(len(_ticker_chunks))
@@ -736,8 +773,8 @@ def fetch_analysis(green_sectors, red_sectors, regime,
 
     # Limit rich metadata on very broad scans. Missing metadata fields are shown
     # as '–' but price/technical signals still run normally.
-    if total >= 700 and len(_meta_targets) > 350 and not skip_earnings:
-        _meta_targets = _meta_targets[:350]
+    if total >= 700 and len(_meta_targets) > 75 and not skip_earnings:
+        _meta_targets = _meta_targets[:75]
 
     scan_debug["meta_prefetch_targets"] = int(len(_meta_targets))
     _t_now = _time_mod.perf_counter()
@@ -778,6 +815,13 @@ def fetch_analysis(green_sectors, red_sectors, regime,
     _in_batch   = set(batch_cache.keys())   # only fetch meta for tickers with OHLCV
     _WORKERS    = 5           # keep low — Yahoo crumb invalidates under heavy parallelism
 
+    _stable_meta_cache = globals().setdefault("_analysis_stable_meta_cache_v1", {})
+    _stable_meta_ttl_s = 4 * 3600
+    _stable_meta_fields = (
+        "cal_days", "float_shares", "short_pct", "pe", "cash_ratio",
+        "analyst_rec", "industry", "sector_detail", "quote_type",
+    )
+
     def _fetch_one_meta(t):
         result = {
             "cal_days": None, "float_shares": None,
@@ -789,10 +833,21 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             "sector_detail": "",
             "quote_type":    "",   # "ETF" | "EQUITY" | ""
         }
+        _stable_ready = False
+        try:
+            _cached_stable = _stable_meta_cache.get(t, {})
+            if _cached_stable and (_time.time() - float(_cached_stable.get("saved_at", 0))) < _stable_meta_ttl_s:
+                result.update(_cached_stable.get("data", {}))
+                _stable_ready = True
+        except Exception:
+            _stable_ready = False
+
         for _attempt in range(2):   # retry once on 401
             try:
                 tkr_obj = (yf.Ticker(t, session=_shared_session)
                            if _shared_session else yf.Ticker(t))
+                if _stable_ready and _market_is_open:
+                    break
 
                 # ── calendar ────────────────────────────────────────────
                 try:
@@ -827,6 +882,12 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                         result["quote_type"]    = str(_inf.get("quoteType", "") or "")
                     except Exception:
                         pass
+                    if not _stable_ready:
+                        with _meta_lock:
+                            _stable_meta_cache[t] = {
+                                "saved_at": _time.time(),
+                                "data": {field: result.get(field) for field in _stable_meta_fields},
+                            }
                     try:
                         _fi = getattr(tkr_obj, "fast_info", None)
                         if _fi is not None:
@@ -888,6 +949,72 @@ def fetch_analysis(green_sectors, red_sectors, regime,
     scan_debug["timing"]["meta_prefetch_s"] = round(_t_now - _t_phase, 1)
     _t_phase = _t_now
 
+    # Screen every symbol cheaply, then reserve expensive deep analysis for
+    # the strongest dynamic candidates on very broad live scans.
+    _deep_signal_targets = set(all_tickers)
+    if total >= 700:
+        try:
+            _live_priority_count = min(
+                total, max(0, int(st.session_state.get("ui_max_live_universe", 150)))
+            )
+            _forced_signal_targets = set(
+                list(globals().get("always_include_tickers", []) or [])
+                + list(globals().get("extra_tickers", []) or [])
+            )
+            _deep_ranked = []
+            _must_deep_scan = set(all_tickers[:_live_priority_count]) | _forced_signal_targets
+            for _rank_ticker in all_tickers:
+                _rank_df = batch_cache.get(_rank_ticker)
+                if _rank_df is None or _rank_df.empty or len(_rank_df) < 60:
+                    continue
+                _rank_close = _rank_df["Close"].squeeze().ffill()
+                _rank_high = _rank_df["High"].squeeze().ffill()
+                _rank_low = _rank_df["Low"].squeeze().ffill()
+                _rank_vol = _rank_df["Volume"].squeeze().ffill()
+                _rank_p = float(_rank_close.iloc[-1])
+                _rank_prev = float(_rank_close.iloc[-2]) if float(_rank_close.iloc[-2]) else _rank_p
+                _rank_today = (_rank_p / _rank_prev - 1.0) * 100 if _rank_prev else 0.0
+                _rank_vavg = float(_rank_vol.tail(21).iloc[:-1].mean())
+                _rank_vr = float(_rank_vol.iloc[-1]) / _rank_vavg if _rank_vavg > 0 else 0.0
+                _rank_ma20 = float(_rank_close.tail(20).mean())
+                _rank_ma60 = float(_rank_close.tail(60).mean())
+                _rank_hi20 = float(_rank_high.tail(20).max())
+                _rank_lo20 = float(_rank_low.tail(20).min())
+                _rank_breakout = _rank_hi20 > 0 and _rank_p >= _rank_hi20 * 0.985
+                _rank_breakdown = _rank_lo20 > 0 and _rank_p <= _rank_lo20 * 1.015
+                _rank_support = (
+                    (_rank_ma20 > 0 and abs(_rank_p / _rank_ma20 - 1.0) <= 0.025)
+                    or (_rank_ma60 > 0 and abs(_rank_p / _rank_ma60 - 1.0) <= 0.035)
+                )
+                _rank_trend = _rank_p >= _rank_ma20 and _rank_ma20 >= _rank_ma60
+                _rank_score = (
+                    abs(_rank_today) * 12.0
+                    + max(0.0, _rank_vr - 0.8) * 18.0
+                    + (18.0 if _rank_breakout or _rank_breakdown else 0.0)
+                    + (6.0 if _rank_support else 0.0)
+                    + (3.0 if _rank_trend else 0.0)
+                )
+                if abs(_rank_today) >= 5.0 or _rank_vr >= 2.0:
+                    _must_deep_scan.add(_rank_ticker)
+                _deep_ranked.append((_rank_score, _rank_ticker))
+
+            _deep_scan_cap = min(
+                total, max(_live_priority_count + 50, int(round(total * 0.25)))
+            )
+            _deep_ranked.sort(reverse=True)
+            _deep_signal_targets = set(_must_deep_scan)
+            _deep_signal_targets.update(t for _, t in _deep_ranked[:_deep_scan_cap])
+            scan_debug["deep_signal_cap"] = int(_deep_scan_cap)
+            scan_debug["deep_signal_targets"] = int(len(_deep_signal_targets))
+            scan_debug["deep_signal_full_universe_screened"] = int(total)
+        except Exception as _deep_rank_e:
+            _deep_signal_targets = set(all_tickers)
+            scan_debug["deep_signal_rank_error"] = f"{type(_deep_rank_e).__name__}: {_deep_rank_e}"
+    else:
+        scan_debug["deep_signal_cap"] = int(total)
+        scan_debug["deep_signal_targets"] = int(total)
+        scan_debug["deep_signal_full_universe_screened"] = int(total)
+
     # v15.8 speed: cap expensive option-chain HTTP calls during broad
     # master scans. Price/volume signals still run for the whole universe;
     # options are only additive and should not dominate scan time.
@@ -899,6 +1026,10 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         try:
             _options_bullish = False
             _scan_progress(i, f"Scanning {ticker} ({i+1}/{total})...")
+            if ticker not in _deep_signal_targets:
+                scan_debug["cheap_prefilter_skipped"] += 1
+                _scan_progress(i)
+                continue
 
             # ── Earnings guard — pre-fetched calendar cache ──────────────
             if skip_earnings:
@@ -2922,7 +3053,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 _record_app_error("scan_ticker", e, ticker=ticker, extra={"index": i + 1, "total": total})
             except Exception:
                 pass
-        _scan_progress(i, force=True)
+        _scan_progress(i)
 
     status_text.empty()
     progress_bar.empty()
@@ -2970,6 +3101,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         st.session_state["last_scan_debug"] = scan_debug
     except Exception:
         pass
+    globals()["_last_scan_debug_global"] = scan_debug
     return (df_long_out, df_short_out, df_operator_out)
 
 
