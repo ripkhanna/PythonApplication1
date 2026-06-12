@@ -22,7 +22,7 @@ def render_earnings(ctx: dict) -> None:
     elif "India" in earn_market:
         _earn_placeholder = "RELIANCE.NS, TCS.NS, INFY.NS"
     elif "HK" in earn_market or "Hong Kong" in earn_market:
-        _earn_placeholder = "0700.HK, 9988.HK, 3690.HK"
+        _earn_placeholder = "e.g. 4-digit-code.HK"
 
     ec1, ec3, ec4 = st.columns([1, 1, 2])
     with ec1:
@@ -47,7 +47,8 @@ def render_earnings(ctx: dict) -> None:
     elif earn_market == "🇸🇬 SGX":
         earn_base = list(SG_TICKERS)
     elif earn_market == "🇭🇰 HK":
-        earn_base = list(HK_TICKERS)
+        _hk_dynamic_fn = globals().get("fetch_hk_market_universe")
+        earn_base = list(_hk_dynamic_fn(max_symbols=500)) if callable(_hk_dynamic_fn) else []
     else:
         earn_base = list(INDIA_TICKERS)
 
@@ -292,4 +293,3 @@ def render_earnings(ctx: dict) -> None:
             "Never hold full position through earnings. "
             "Best strategy: buy the dip AFTER earnings on good results."
         )
-

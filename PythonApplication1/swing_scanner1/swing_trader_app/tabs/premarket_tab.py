@@ -485,7 +485,7 @@ def _market_placeholder(market_sel: str) -> str:
     if "India" in market_sel:
         return "RELIANCE.NS, TCS.NS, INFY.NS"
     if "HK" in market_sel or "Hong Kong" in market_sel:
-        return "0700.HK, 9988.HK, 3690.HK"
+        return "e.g. 4-digit-code.HK"
     return "IREN, NVDA, TSLA"
 
 
@@ -565,7 +565,9 @@ def render_premarket(g: dict) -> None:
             st.rerun()
 
     # ── Ticker universe — selected market only ────────────────────────────
-    if get_tickers_for_market is not None:
+    if market_name == "Hong Kong" and callable(g.get("fetch_hk_market_universe")):
+        selected_tickers = list(g["fetch_hk_market_universe"](max_symbols=500))
+    elif get_tickers_for_market is not None:
         selected_tickers = list(get_tickers_for_market(market_sel))
     else:
         selected_tickers = _fallback_tickers_from_globals(g, market_sel)

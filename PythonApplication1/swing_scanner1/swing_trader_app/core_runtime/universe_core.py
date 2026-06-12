@@ -3,8 +3,7 @@ Loaded by app_runtime with exec(..., globals()) to preserve the original single-
 """
 
 # universe_data is the single source of truth for all ticker lists.
-# Import here so fetch_hk_market_universe / fetch_sgx_market_universe
-# can use the merged lists as their authoritative fallback.
+# Import configured lists for markets that retain static fallback coverage.
 import sys as _sys_uc, pathlib as _pl_uc
 _app_root = _pl_uc.Path(__file__).resolve().parent.parent
 if str(_app_root) not in _sys_uc.path if hasattr(_sys_uc, 'path') else True:
@@ -12,14 +11,12 @@ if str(_app_root) not in _sys_uc.path if hasattr(_sys_uc, 'path') else True:
 try:
     from swing_trader_app.tabs.universe_data import (
         US_TICKERS as _UD_US_TICKERS,
-        HK_TICKERS as _UD_HK_TICKERS,
         SG_TICKERS as _UD_SG_TICKERS,
         INDIA_TICKERS as _UD_INDIA_TICKERS,
     )
     _universe_data_available = True
 except ImportError:
     _UD_US_TICKERS = []
-    _UD_HK_TICKERS = []
     _UD_SG_TICKERS = []
     _UD_INDIA_TICKERS = []
     _universe_data_available = False
@@ -451,9 +448,14 @@ def fetch_yahoo_market_movers(max_per_screener: int = 250) -> list:
         "most_actives", "day_gainers", "day_losers",
         "undervalued_growth_stocks", "growth_technology_stocks",
         "aggressive_small_caps", "small_cap_gainers", "most_shorted_stocks",
-        "portfolio_anchors", "undervalued_large_caps",
-        "solid_large_growth_funds", "high_yield_bond", "top_mutual_funds",
+        "undervalued_large_caps",
     )
+
+    def _is_stock_or_etf_quote(quote):
+        quote_type = str(
+            quote.get("quoteType") or quote.get("typeDisp") or ""
+        ).strip().upper()
+        return not quote_type or quote_type in ("EQUITY", "ETF")
 
     # ── Path 1: yfinance.screen() — parallel ──────────────────────────────
     yf_tickers: list = []
@@ -462,7 +464,11 @@ def fetch_yahoo_market_movers(max_per_screener: int = 250) -> list:
             try:
                 res = yf.screen(scr, count=min(max_per_screener, 100))
                 quotes = res.get("quotes", []) if isinstance(res, dict) else []
-                return [_clean_symbol(q.get("symbol", "")) for q in quotes if q.get("symbol")]
+                return [
+                    _clean_symbol(q.get("symbol", ""))
+                    for q in quotes
+                    if q.get("symbol") and _is_stock_or_etf_quote(q)
+                ]
             except Exception:
                 return []
 
@@ -490,6 +496,8 @@ def fetch_yahoo_market_movers(max_per_screener: int = 250) -> list:
                                 .get("result", [{}])[0])
                                 .get("quotes", []) or [])
             for q in quotes:
+                if not _is_stock_or_etf_quote(q):
+                    continue
                 sym = _clean_symbol(q.get("symbol", ""))
                 if sym:
                     results.append(sym)
@@ -556,6 +564,9 @@ def fetch_yahoo_region_movers(region: str, suffix: str = "", max_per_screener: i
 @st.cache_data(ttl=12 * 60 * 60, show_spinner=False)
 def fetch_us_index_universe(max_symbols: int = 450) -> list:
     """Fetch current US index constituents from public index tables."""
+    import io as _io_us_index
+    import requests as _requests_us_index
+
     tickers = []
     sources = [
         ("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", ["Symbol", "Ticker symbol"]),
@@ -564,7 +575,14 @@ def fetch_us_index_universe(max_symbols: int = 450) -> list:
     ]
     for url, cols in sources:
         try:
-            for tbl in pd.read_html(url):
+            response = _requests_us_index.get(
+                url,
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=20,
+            )
+            if not response.ok:
+                continue
+            for tbl in pd.read_html(_io_us_index.StringIO(response.text)):
                 col = next((c for c in cols if c in tbl.columns), None)
                 if not col:
                     continue
@@ -783,26 +801,64 @@ def fetch_nse_market_universe(max_symbols: int = 220) -> list:
 
 
 
-@st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
-def fetch_hk_market_universe(max_symbols: int = 160) -> list:
-    """Return Hong Kong watchlist. Yahoo HK live universe is unreliable, so use curated liquid .HK names."""
+@st.cache_data(ttl=24 * 60 * 60, show_spinner=False)
+def fetch_hk_equity_master_universe(max_symbols: int = 4000) -> list:
+    """Fetch the current official HKEX equity master and convert codes for Yahoo."""
     try:
-        # Use universe_data merged list; fall back to globals for older exec() contexts
-        base = _UD_HK_TICKERS if _UD_HK_TICKERS else globals().get("HK_TICKERS", [])
-        # Normalize numeric HK tickers to 4 digits for Yahoo, e.g. 700.HK -> 0700.HK.
-        out = []
-        for t in base:
-            s = str(t or "").strip().upper()
-            if not s:
+        import io as _io_hk
+        import requests as _requests_hk
+
+        url = "https://www.hkex.com.hk/eng/services/trading/securities/securitieslists/ListOfSecurities.xlsx"
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,*/*",
+            "Referer": "https://www.hkex.com.hk/",
+        }
+        response = _requests_hk.get(url, headers=headers, timeout=30)
+        if not response.ok:
+            return []
+
+        securities = pd.read_excel(
+            _io_hk.BytesIO(response.content),
+            sheet_name="ListOfSecurities",
+            header=2,
+            usecols=["Stock Code", "Category"],
+            dtype=str,
+            engine="openpyxl",
+        )
+        if securities.empty:
+            return []
+
+        equities = securities[
+            securities["Category"].fillna("").str.strip().str.casefold().eq("equity")
+        ]
+        tickers = []
+        for raw_code in equities["Stock Code"].dropna():
+            code = str(raw_code).strip()
+            if not code.isdigit() or int(code) <= 0:
                 continue
-            if s.endswith(".HK"):
-                code = s[:-3]
-                if code.isdigit():
-                    s = f"{int(code):04d}.HK"
-            out.append(s)
-        return _unique_keep_order(out)[:max_symbols]
+            tickers.append(f"{int(code):04d}.HK")
+        return _unique_keep_order(tickers)[:max_symbols]
     except Exception:
         return []
+
+
+@st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
+def fetch_hk_market_universe(max_symbols: int = 160) -> list:
+    """Return active HK names from the official HKEX equity master."""
+    master_limit = max(3500, int(max_symbols) * 6)
+    master_tickers = fetch_hk_equity_master_universe(max_symbols=master_limit)
+
+    active_from_master = []
+    if master_tickers:
+        try:
+            active_from_master = fetch_quote_activity_from_universe(
+                tuple(master_tickers), "HK", max_active=min(int(max_symbols), 300)
+            )
+        except Exception:
+            active_from_master = []
+
+    return _unique_keep_order(active_from_master + master_tickers)[:max_symbols]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1315,7 +1371,7 @@ def fetch_live_market_universe(market_name: str, max_symbols: int = 350,
             tuple(base_pool), market_name, max_active=min(120, max_symbols)
         )
         tickers = _unique_keep_order(regional_movers + quote_active + active_from_universe + base_pool)
-        source = "Hong Kong live quote activity + active volume/volatility + expanded .HK watchlist"
+        source = "Hong Kong live quote activity + official HKEX equity master"
     else:
         regional_movers = fetch_yahoo_region_movers("IN", ".NS", max_per_screener=100)
         base_pool = _unique_keep_order(

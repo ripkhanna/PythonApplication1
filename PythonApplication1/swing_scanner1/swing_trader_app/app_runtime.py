@@ -788,8 +788,8 @@ use_live_universe = st.sidebar.checkbox(
     key="ui_use_live_universe",
     help="When ON, the scanner and Operator Activity tab fetch the market universe "
          "from live/public market sources first (Yahoo movers + index constituents, "
-         "SGX securities feed, NSE index API), then merges them with the full existing "
-         "curated ticker list. Tickers in 'Always include tickers' are also forced in. "
+         "SGX securities feed, NSE index API, HKEX official equity master). HK uses only dynamic HKEX/live discovery; "
+         "other markets may also merge their existing curated lists. Tickers in 'Always include tickers' are also forced in. "
          "This means stocks like UUUU/APP remain scanned even if they are not in today's movers.",
 )
 max_live_universe = st.sidebar.slider(
@@ -800,18 +800,19 @@ max_live_universe = st.sidebar.slider(
         "150 (default) = fast 15-30s. "
         "300 = moderate 30-60s. "
         "400 = slow 60-120s. "
-        "The existing curated watchlist (~746) is always scanned on top — "
-        "lowering this only reduces the number of *new* live tickers added."
+        "For HK this controls the complete activity-ranked pool from the official HKEX equity master. "
+        "For other markets, existing curated lists may also be scanned."
     ),
 )
 # FIX v15.10: hard cap on combined (live + curated) universe size
 max_combined_tickers = st.sidebar.slider(
-    "Max total tickers to scan", 200, 1200, 750, 50,
+    "Max total tickers to scan", 200, 1200, 950, 50,
     key="ui_max_combined",
     help=(
         "Hard cap on the combined (live + curated) universe. "
-        "750 (default) = ~60-90s. 500 = ~40-60s. 300 = ~25-40s. "
-        "Highest-signal tickers (live breakouts, gappers) are kept first."
+        "950 (default) keeps the full configured US universe plus live discoveries. "
+        "750 = ~60-90s. 500 = ~40-60s. 300 = ~25-40s. "
+        "When lowered, highest-signal live tickers are kept first."
     ),
 )
 enable_slow_universe_enrichment = st.sidebar.checkbox(
@@ -1144,9 +1145,8 @@ market_sel = st.session_state.get("market_selector", market_sel)
 _clear_stale_scan_status_for_market(market_sel)
 
 # ── Single source of truth: universe_data.get_tickers_for_market() ──────────
-# All ticker lists are now merged (existing curated + index components) and
-# defined once in universe_data.py.  Every tab receives the same merged list
-# via g["US_TICKERS"] / g["SG_TICKERS"] etc. (populated by config_core exec).
+# Configured ticker lists are defined once in universe_data.py. HK intentionally
+# has no configured list and is populated only from HKEX/live discovery.
 # Map selection → ticker list, sector map, currency symbol
 if market_sel == "🇺🇸 US":
     _active_tickers = get_tickers_for_market("US");  _active_sectors = SECTOR_ETFS
@@ -2442,10 +2442,15 @@ with col_info:
         gn = sdf_preview[sdf_preview["Today %"] >  0.1]["Sector"].tolist()
         rn = sdf_preview[sdf_preview["Today %"] < -0.1]["Sector"].tolist()
         _always_note = f" + {len(always_include_tickers)} always-include" if always_include_tickers else ""
+        _hk_dynamic = "HK" in str(market_sel).upper()
         universe_note = (
-            f"Yahoo/live up to {max_live_universe} + existing {len(_active_tickers)} stocks{_always_note}"
-            if use_live_universe else
-            f"existing curated watchlist · {len(_active_tickers)} stocks{_always_note}"
+            f"official HKEX dynamic universe up to {max_live_universe}{_always_note}"
+            if _hk_dynamic else
+            (
+                f"Yahoo/live up to {max_live_universe} + existing {len(_active_tickers)} stocks{_always_note}"
+                if use_live_universe else
+                f"existing curated watchlist · {len(_active_tickers)} stocks{_always_note}"
+            )
         )
         st.info(
             f"**{market_sel}** · {universe_note} · "
@@ -2505,11 +2510,9 @@ if run:
                         for sn, sd in live_sectors.items()]
                 st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
-        # Build active ticker list. In live mode this is deliberately:
-        #   Yahoo/live market tickers + the full existing curated ticker list
-        # Then forced tickers are added on top. This prevents existing names
-        # such as UUUU or APP from disappearing from the scan/Diagnostics tab.
-        if use_live_universe:
+        # HK is exclusively dynamic; other markets may retain configured lists.
+        _hk_dynamic = "HK" in str(market_sel).upper()
+        if use_live_universe or _hk_dynamic:
             _show_top_status(f"Fetching {market_sel} stock universe from Yahoo/live sources...", stage="Fetch", icon="📥")
             live_tickers, live_source = fetch_live_market_universe(
                 market_sel, max_symbols=max_live_universe,
@@ -2526,18 +2529,21 @@ if run:
                         _record_app_warning("sgx_native_active_feed", f"{type(_sgx_active_e).__name__}: {_sgx_active_e}")
                     except Exception:
                         pass
-            # Merge live + curated, then apply combined cap.
-            # Do NOT hard-code a priority watchlist here. Activity-based names
-            # should enter through the live universe/movers/earnings-gapper feeds,
-            # and user-specific names should enter through Always include / Add tickers.
-            active_tickers = _unique_keep_order(list(live_tickers) + list(_active_tickers))
+            active_tickers = (
+                _unique_keep_order(list(live_tickers))
+                if _hk_dynamic else
+                _unique_keep_order(list(live_tickers) + list(_active_tickers))
+            )
             if len(active_tickers) > max_combined_tickers:
                 active_tickers = active_tickers[:max_combined_tickers]
-            universe_source = (
-                f"{live_source} + existing curated watchlist"
-                if live_tickers else
-                "existing curated watchlist — live market universe unavailable"
-            )
+            if _hk_dynamic:
+                universe_source = live_source if live_tickers else "official HKEX dynamic universe unavailable"
+            else:
+                universe_source = (
+                    f"{live_source} + existing curated watchlist"
+                    if live_tickers else
+                    "existing curated watchlist — live market universe unavailable"
+                )
         else:
             live_tickers = []
             active_tickers = list(_active_tickers)

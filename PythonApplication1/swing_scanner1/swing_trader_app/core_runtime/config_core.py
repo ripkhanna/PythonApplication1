@@ -5,7 +5,7 @@ v-refactor: Ticker universe is now imported from universe_data.py (single source
 US_TICKERS  = existing curated watchlist  +  S&P 500  +  NASDAQ-100  (merged, deduplicated)
 SG_TICKERS  = existing SGX blue-chips/REITs/growth  +  SGX Mainboard liquid
 INDIA_TICKERS = existing curated  +  Nifty 50  +  Nifty Next-50  +  Midcap-50
-HK_TICKERS  = existing curated  +  Hang Seng  +  HSI Tech constituents
+HK_TICKERS  = empty compatibility alias; HK coverage comes from the official HKEX equity master
 """
 import sys as _sys, pathlib as _pathlib
 

@@ -31,6 +31,13 @@ def _event_market_token(market: str) -> str:
 
 
 def _market_tickers_for_event(token: str) -> list[str]:
+    if token == "HK":
+        dynamic_hk = globals().get("fetch_hk_market_universe")
+        if callable(dynamic_hk):
+            try:
+                return list(dynamic_hk(max_symbols=500))
+            except Exception:
+                return []
     getter = globals().get("get_tickers_for_market")
     try:
         if callable(getter):
@@ -270,7 +277,7 @@ def render_event_predictor(ctx: dict) -> None:
     elif ev_token == "India":
         _ev_placeholder = "RELIANCE.NS, TCS.NS, INFY.NS"
     elif ev_token == "HK":
-        _ev_placeholder = "0700.HK, 9988.HK, 3690.HK"
+        _ev_placeholder = "e.g. 4-digit-code.HK"
 
     ev1, ev3 = st.columns([1, 2])
     with ev1:

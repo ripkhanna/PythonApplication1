@@ -5,8 +5,8 @@ SINGLE SOURCE OF TRUTH for all ticker universes across every tab.
 
 Design
 ------
-* Each market has a BASE list  (existing curated/high-beta watchlist from config_core)
-  PLUS an INDEX list            (actual S&P 500 / NASDAQ-100 / Nifty / HSI components).
+* US, SGX, and India retain configured lists.
+* Hong Kong is intentionally empty here and is discovered dynamically from HKEX.
 * The merged result is deduplicated, order-preserved, and exposed via simple
   get_tickers() / get_universe() helpers.
 * config_core.py imports US_TICKERS / SG_TICKERS / HK_TICKERS / INDIA_TICKERS
@@ -19,7 +19,7 @@ Adding new tickers
   US  → append to _US_BASE or _US_SP500 / _US_NDX100
   SGX → append to _SGX_BASE
   India → append to _INDIA_BASE
-  HK  → append to _HK_BASE
+  HK  → do not add tickers here; use the official HKEX dynamic source
 """
 from __future__ import annotations
 
@@ -117,8 +117,8 @@ _US_SP500: list[str] = [
     "AMCR","AEE","AAL","AEP","AXP","AIG","AMT","AWK","AMP","AME","AMGN","APH",
     "ADI","ANSS","AON","APA","AAPL","AMAT","APTV","ACGL","ADM","ANET","AJG",
     "AIZ","T","ATO","ADSK","ADP","AVB","AVY","AXON","BKR","BALL","BAC","BAX",
-    "BDX","BRK.B","BBY","TECH","BIIB","BLK","BX","BA","BCO","BSX","BMY","AVGO",
-    "BR","BRO","BF.B","BLDR","BG","CDNS","CZR","CPT","CPB","COF","CAH","KMX",
+    "BDX","BRK-B","BBY","TECH","BIIB","BLK","BX","BA","BCO","BSX","BMY","AVGO",
+    "BR","BRO","BF-B","BLDR","BG","CDNS","CZR","CPT","CPB","COF","CAH","KMX",
     "CCL","CARR","CTLT","CAT","CBOE","CBRE","CDW","CE","COR","CNC","CNX","CDAY",
     "CF","CRL","SCHW","CHTR","CVX","CMG","CB","CHD","CI","CINF","CTAS","CSCO",
     "C","CFG","CLX","CME","CMS","KO","CTSH","CL","CMCSA","CMA","CAG","COP",
@@ -265,38 +265,11 @@ INDIA_TICKERS: list[str] = _dedup(_INDIA_BASE + _INDIA_INDEX)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Hong Kong  ─  existing curated  +  Hang Seng + HSI Tech constituents
+# Hong Kong ticker discovery is dynamic via the official HKEX equity master.
 # ═════════════════════════════════════════════════════════════════════════════
 
-_HK_BASE: list[str] = [
-    # Original curated volatile / high-beta list from config_core
-    "0700.HK","9988.HK","3690.HK","1810.HK","1024.HK","9618.HK",
-    "9888.HK","9999.HK","2015.HK","9868.HK","1211.HK","0981.HK",
-    "2382.HK","2018.HK","6618.HK","1347.HK","0241.HK","9961.HK",
-    "3888.HK","6690.HK","0772.HK","6611.HK","6060.HK","9992.HK",
-    "2318.HK","0388.HK","2331.HK","2333.HK","0175.HK","1929.HK",
-    "0001.HK","0002.HK","0003.HK","0005.HK","0006.HK","0011.HK",
-    "0012.HK","0016.HK","0017.HK","0027.HK","0066.HK","0101.HK",
-    "0267.HK","0291.HK","0316.HK","0322.HK","0386.HK","0669.HK",
-    "0688.HK","0728.HK","0762.HK","0788.HK","0823.HK","0836.HK",
-    "0857.HK","0868.HK","0881.HK","0883.HK","0939.HK","0960.HK",
-    "0968.HK","0992.HK","1038.HK","1044.HK","1088.HK","1093.HK",
-    "1109.HK","1113.HK","1177.HK","1209.HK","1299.HK","1378.HK",
-    "1398.HK","1800.HK","1876.HK","1919.HK","1928.HK","1997.HK",
-    "2020.HK","2313.HK","2319.HK","2388.HK","2628.HK","2688.HK",
-    "2888.HK","2899.HK","3968.HK","3988.HK","9633.HK",
-    "0268.HK","0285.HK","0522.HK","0986.HK","1478.HK","1801.HK",
-    "1833.HK","1877.HK","2013.HK","2238.HK","2268.HK","2269.HK",
-    "2359.HK","3800.HK","3808.HK","6160.HK","6699.HK","6862.HK",
-    "6969.HK","9863.HK","9866.HK","9896.HK","9926.HK","9969.HK",
-    "0606.HK","0607.HK","0683.HK","0880.HK","1128.HK","1336.HK",
-    "1339.HK","1658.HK","1776.HK","1918.HK","2007.HK","2282.HK",
-    "2600.HK","3323.HK","3900.HK","6030.HK","6066.HK","6098.HK",
-    "6178.HK","6666.HK","6881.HK","6886.HK","9600.HK","9869.HK",
-]
-
-HK_TICKERS: list[str] = _dedup(_HK_BASE)
-# Alias used by universe_core fallback
+HK_TICKERS: list[str] = []
+# Legacy alias retained for imports; HK coverage is populated dynamically.
 HK_VOLATILE_TICKERS: list[str] = HK_TICKERS
 
 
@@ -332,7 +305,7 @@ MARKET_UNIVERSES: dict[str, list[tuple[str, str, list[str]]]] = {
         ("nifty150",   "Nifty 150  (50 + Next50 + Mid50)",   INDIA_TICKERS),
     ],
     "Hong Kong": [
-        ("hsi_full",   "Hang Seng + HSI Tech  (~130 stocks)", HK_TICKERS),
+        ("hkex_dynamic", "Official HKEX equity master (dynamic)", []),
     ],
 }
 
