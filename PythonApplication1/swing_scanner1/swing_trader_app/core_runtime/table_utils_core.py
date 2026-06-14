@@ -523,7 +523,10 @@ def show_table(df, label, prob_col="Rise Prob"):
     # Prefer practical Swing Rank Score when a strategy panel supplies it.
     # This keeps the displayed Rank aligned with the Monday-style swing view,
     # rather than sorting only by Pro Score / probability.
-    if "Quality Score" in df.columns or "Next-Day Score" in df.columns:
+    if prob_col == "Stage 2 Rank Score" and "Stage 2 Rank Score" in df.columns:
+        df["_prob_sort"] = _display_num(df["Stage 2 Rank Score"], 0)
+        df = df.sort_values("_prob_sort", ascending=False)
+    elif "Quality Score" in df.columns or "Next-Day Score" in df.columns:
         df["_prob_sort"] = _display_num(df.get("Quality Score", df.get("Next-Day Score", 0)), 0)
         df["_nds_sort"] = _display_num(df.get("Next-Day Score", 0), 0)
         if "Entry Quality" in df.columns:
@@ -616,6 +619,9 @@ def show_table(df, label, prob_col="Rise Prob"):
         wanted = [
             "Rank", "Ticker", "Action", "View", "Buy Condition",
             "Entry Quality", "Tradeable Buy", "Trade Tier", "7-Star Score", "7-Star Tier", "7-Star Why", "Explosion Score", "Explosion Tier", "Explosion Why", "Pre-Mover Score", "Pre-Mover Tier", "Pre-Mover Why", "Quality Score", "Next-Day Score", "Next-Day Rating", "Next-Day Move", "7D Move Est", "Upside to Res", "RR Est", "Setup Type", "Today %", "5D %", "20D %", "Rise Prob", "Swing Rank Score", "Pro Pillars", "Pro Score", "Pro Validation", "Pro Why", "PI Proxy", "Tier", "Why Buy",
+            "Stage 2 Rank Score", "Early Score", "Stage 2 Score", "Stage 2 Phase", "Base Weeks", "Base Range%",
+            "Contraction", "VDU Ratio", "Pivot", "Pivot Dist%", "Flat Top Touches",
+            "RS Lead", "Sector Lead", "EPS Rev 60D", "EPS Revision Confirm", "Early Missing", "Early Why", "Stage 2 Why",
             "Operator", "VWAP", "Trap Risk", "Price", "MA60 Stop", "Best Stop",
             "TP1 +10%", "TP2 +15%", "TP3 +20%", "Target Est.", "Hold Est.",
             "Vol Ratio", "ATR%", "Vol Quality", "PSM Quality", "PSS Score", "PSS Label", "Op Score", "Score",
@@ -656,6 +662,24 @@ def show_table(df, label, prob_col="Rise Prob"):
         "Upside to Res": st.column_config.TextColumn("Room",           width=60),
         "RR Est": st.column_config.TextColumn("R:R",                   width=55),
         "Swing Rank Score": st.column_config.NumberColumn("SwingRank", width=70),
+        "Stage 2 Rank Score": st.column_config.NumberColumn("S2 Rank", width=70),
+        "Early Score": st.column_config.NumberColumn("Early", width=60),
+        "Stage 2 Score": st.column_config.NumberColumn("S2 Tech", width=65),
+        "Stage 2 Phase": st.column_config.TextColumn("S2 Phase", width=145),
+        "Base Weeks": st.column_config.NumberColumn("Base Wk", width=65),
+        "Base Range%": st.column_config.NumberColumn("Base %", width=65),
+        "Contraction": st.column_config.NumberColumn("Contract", width=65),
+        "VDU Ratio": st.column_config.NumberColumn("VDU", width=55),
+        "Pivot": st.column_config.TextColumn("Pivot", width=70),
+        "Pivot Dist%": st.column_config.TextColumn("To Pivot", width=70),
+        "Flat Top Touches": st.column_config.NumberColumn("Top Touch", width=70),
+        "RS Lead": st.column_config.TextColumn("RS Lead", width=60),
+        "Sector Lead": st.column_config.TextColumn("Sec Lead", width=60),
+        "EPS Rev 60D": st.column_config.TextColumn("EPS Rev", width=70),
+        "EPS Revision Confirm": st.column_config.TextColumn("EPS Confirm", width=80),
+        "Stage 2 Why": st.column_config.TextColumn("Stage 2 Why", width=300),
+        "Early Why": st.column_config.TextColumn("Early Why", width=300),
+        "Early Missing": st.column_config.TextColumn("Missing", width=220),
         "Fall Prob":     st.column_config.TextColumn("Fall%",         width=55),
         "Operator":      st.column_config.TextColumn("Operator",      width=120),
         "VWAP":          st.column_config.TextColumn("VWAP",          width=60),

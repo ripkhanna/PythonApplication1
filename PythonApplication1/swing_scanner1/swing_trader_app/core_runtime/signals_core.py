@@ -558,6 +558,136 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
 
     pss_triggered = pss_score >= 3   # minimum threshold for a valid Pro Swing Setup
 
+    # Stage 1 -> Stage 2 base-breakout model. It is ticker-agnostic and uses
+    # only the OHLCV, market, and sector series already downloaded by the scan.
+    stage2_base_days = 0
+    stage2_base_range_pct = 99.0
+    stage2_pivot = p
+    stage2_base_low = p
+    stage2_contraction_ratio = 1.0
+    stage2_volume_dryup_ratio = 1.0
+    stage2_flat_top_touches = 0
+    _stage2_ranges = {}
+    if len(close) >= 21:
+        for _window in (20, 30, 40, 60):
+            if len(close) < _window + 1:
+                continue
+            _base_high = float(high.iloc[-(_window + 1):-1].max())
+            _base_low = float(low.iloc[-(_window + 1):-1].min())
+            _base_range = ((_base_high / max(_base_low, 0.01)) - 1.0) * 100.0
+            _stage2_ranges[_window] = (_base_range, _base_high, _base_low)
+            if _base_range <= 15.0:
+                stage2_base_days = _window
+                stage2_base_range_pct = _base_range
+                stage2_pivot = _base_high
+                stage2_base_low = _base_low
+
+        # Keep useful diagnostics even when no window meets the base gate.
+        if stage2_base_days == 0 and 20 in _stage2_ranges:
+            stage2_base_range_pct, stage2_pivot, stage2_base_low = _stage2_ranges[20]
+
+        try:
+            _inner_high = float(high.iloc[-11:-1].max())
+            _inner_low = float(low.iloc[-11:-1].min())
+            _inner_range_pct = ((_inner_high / max(_inner_low, 0.01)) - 1.0) * 100.0
+            stage2_contraction_ratio = _inner_range_pct / max(stage2_base_range_pct, 0.01)
+        except Exception:
+            stage2_contraction_ratio = 1.0
+
+        try:
+            _quiet_vol = float(vol.iloc[-11:-1].mean())
+            _prior_vol = float(vol.iloc[-31:-11].mean())
+            stage2_volume_dryup_ratio = _quiet_vol / max(_prior_vol, 1.0)
+        except Exception:
+            stage2_volume_dryup_ratio = 1.0
+
+        try:
+            _touch_window = min(max(stage2_base_days, 20), 60)
+            _prior_highs = high.iloc[-(_touch_window + 1):-1]
+            stage2_flat_top_touches = int((_prior_highs >= stage2_pivot * 0.985).sum())
+        except Exception:
+            stage2_flat_top_touches = 0
+
+    stage2_base_weeks = round(stage2_base_days / 5.0, 1)
+    stage2_pivot_distance_pct = round(((p / max(stage2_pivot, 0.01)) - 1.0) * 100.0, 2)
+    stage2_trend = bool(
+        p > e50
+        and (ma200_val <= 0 or p > ma200_val)
+        and (e200 <= 0 or e50 > e200)
+    )
+    stage2_base_ok = bool(
+        stage2_base_days >= 20
+        and stage2_base_range_pct <= 15.0
+        and p >= stage2_base_low * 1.03
+    )
+    stage2_contraction = bool(stage2_contraction_ratio <= 0.72 or vcp_tightness)
+    stage2_volume_dryup = bool(stage2_volume_dryup_ratio <= 0.80 or pss_vdu)
+    stage2_flat_top = bool(stage2_flat_top_touches >= 2)
+    stage2_rs_lead = bool(rel_strength or rs_momentum)
+    stage2_sector_lead = bool(sector_leader)
+    stage2_breakout = bool(
+        stage2_trend
+        and stage2_base_ok
+        and p >= stage2_pivot * 1.001
+        and vr >= 1.5
+        and strong_close
+    )
+    try:
+        _stage2_5d_pct = ((p / float(close.iloc[-6])) - 1.0) * 100.0 if len(close) >= 6 else 0.0
+        _stage2_20d_pct = ((p / float(close.iloc[-21])) - 1.0) * 100.0 if len(close) >= 21 else 0.0
+    except Exception:
+        _stage2_5d_pct, _stage2_20d_pct = 0.0, 0.0
+    stage2_pre_pivot = bool(-5.0 <= stage2_pivot_distance_pct <= -0.75)
+    stage2_quiet_now = bool(vr <= 1.30)
+    stage2_not_moved = bool(
+        -2.5 <= today_chg_pct <= 2.0
+        and -4.0 <= _stage2_5d_pct <= 4.0
+        and -8.0 <= _stage2_20d_pct <= 8.0
+    )
+    stage2_ready = bool(
+        stage2_trend
+        and stage2_base_ok
+        and stage2_contraction
+        and stage2_volume_dryup
+        and stage2_rs_lead
+        and stage2_pre_pivot
+        and stage2_quiet_now
+        and stage2_not_moved
+    )
+    _stage2_early_components = {
+        "Trend>50/200": stage2_trend,
+        "TightBase": stage2_base_ok,
+        "Contracting": stage2_contraction,
+        "VolumeDryUp": stage2_volume_dryup,
+        "BelowPivot": stage2_pre_pivot,
+        "QuietNow": stage2_quiet_now,
+        "NotMoved": stage2_not_moved,
+        "RSLead": stage2_rs_lead,
+        "SectorLead": stage2_sector_lead,
+    }
+    stage2_early_score = sum(1 for _ok in _stage2_early_components.values() if _ok)
+    _stage2_components = {
+        "Trend>50/200": stage2_trend,
+        "Base4W+": stage2_base_ok,
+        "Contracting": stage2_contraction,
+        "VolumeDryUp": stage2_volume_dryup,
+        "FlatTop": stage2_flat_top,
+        "RSLead": stage2_rs_lead,
+        "SectorLead": stage2_sector_lead,
+        "BreakoutVol150": stage2_breakout,
+    }
+    stage2_score = sum(1 for _ok in _stage2_components.values() if _ok)
+    if stage2_ready:
+        stage2_phase = "EARLY COIL"
+    elif stage2_breakout:
+        stage2_phase = "BREAKOUT - TOO LATE"
+    elif stage2_trend and stage2_base_ok and stage2_score >= 4:
+        stage2_phase = "BASE BUILDING"
+    else:
+        stage2_phase = "NOT STAGE 2"
+    stage2_why = ", ".join(k for k, v in _stage2_components.items() if v) or "No Stage 2 confirmations"
+    stage2_early_why = ", ".join(k for k, v in _stage2_early_components.items() if v) or "No early confirmations"
+
     # ══════════════════════════════════════════════════════════════════════════
     # v15: HIGH WIN-RATE PROFESSIONAL STRATEGIES
     # All computed from existing OHLCV — no extra API calls required.
@@ -810,6 +940,31 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
         "pss_label":         pss_label,
         "pss_active":        pss_active,
         "pss_breakdown":     _pss_components,
+        # Stage 1 -> Stage 2 base-breakout fields
+        "stage2_score":              stage2_score,
+        "stage2_early_score":        stage2_early_score,
+        "stage2_phase":              stage2_phase,
+        "stage2_base_weeks":         stage2_base_weeks,
+        "stage2_base_range_pct":     round(stage2_base_range_pct, 2),
+        "stage2_contraction_ratio":  round(stage2_contraction_ratio, 2),
+        "stage2_volume_dryup_ratio": round(stage2_volume_dryup_ratio, 2),
+        "stage2_pivot":              round(stage2_pivot, 4),
+        "stage2_pivot_distance_pct": stage2_pivot_distance_pct,
+        "stage2_flat_top_touches":   stage2_flat_top_touches,
+        "stage2_trend":              stage2_trend,
+        "stage2_base_ok":            stage2_base_ok,
+        "stage2_contraction":        stage2_contraction,
+        "stage2_volume_dryup":       stage2_volume_dryup,
+        "stage2_flat_top":           stage2_flat_top,
+        "stage2_rs_lead":            stage2_rs_lead,
+        "stage2_sector_lead":        stage2_sector_lead,
+        "stage2_ready":              stage2_ready,
+        "stage2_breakout":           stage2_breakout,
+        "stage2_pre_pivot":          stage2_pre_pivot,
+        "stage2_quiet_now":          stage2_quiet_now,
+        "stage2_not_moved":          stage2_not_moved,
+        "stage2_why":                stage2_why,
+        "stage2_early_why":          stage2_early_why,
         # ── v15.2: ATR% volatility filter fields ─────────────────────────────
         "atr_pct":              round(atr_pct, 2),
         "has_enough_volatility": has_enough_volatility,

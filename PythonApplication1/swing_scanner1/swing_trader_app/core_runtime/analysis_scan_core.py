@@ -702,9 +702,10 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             else:
                 _min_turnover = 500_000; _min_atr_pct = 0.80
 
+            _ui_strategy_mode = str(st.session_state.get("ui_swing_mode", swing_mode)).upper()
             if swing_mode == "HIGH VOLUME":
                 _liquid_ok = True
-            elif swing_mode in ("SUPPORT ENTRY", "PREMARKET MOMENTUM"):
+            elif swing_mode in ("SUPPORT ENTRY", "PREMARKET MOMENTUM") or _ui_strategy_mode == "STAGE 2 BREAKOUT":
                 _liquid_ok = (_p_chk * _vol_avg_s >= max(_min_turnover * 0.25, 50_000)
                               and _atr_pct >= max(_min_atr_pct * 0.35, 0.15))
             else:
@@ -777,6 +778,12 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         _meta_targets = _meta_targets[:75]
 
     scan_debug["meta_prefetch_targets"] = int(len(_meta_targets))
+    # EPS revision history is useful for Stage 2 confirmation, but it requires
+    # an extra Yahoo fundamentals request. Keep it optional, cached, and capped
+    # so selecting other strategies does not slow broad US scans.
+    _stage2_eps_requested = str(st.session_state.get("ui_swing_mode", "")).upper() == "STAGE 2 BREAKOUT"
+    _stage2_eps_targets = set(_meta_targets[:30]) if _stage2_eps_requested else set()
+    scan_debug["stage2_eps_targets"] = int(len(_stage2_eps_targets))
     _t_now = _time_mod.perf_counter()
     scan_debug["timing"]["meta_prefilter_s"] = round(_t_now - _t_phase, 1)
     _t_phase = _t_now
@@ -820,6 +827,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
     _stable_meta_fields = (
         "cal_days", "float_shares", "short_pct", "pe", "cash_ratio",
         "analyst_rec", "industry", "sector_detail", "quote_type",
+        "eps_revision_60d", "eps_revision_available",
     )
 
     def _fetch_one_meta(t):
@@ -829,6 +837,8 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             "pm_chg": 0.0, "pm_price": 0.0, "pm_ok": False,
             "cash_ratio":    None,
             "analyst_rec":   None,
+            "eps_revision_60d": None,
+            "eps_revision_available": False,
             "industry":      "",
             "sector_detail": "",
             "quote_type":    "",   # "ETF" | "EQUITY" | ""
@@ -846,7 +856,8 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             try:
                 tkr_obj = (yf.Ticker(t, session=_shared_session)
                            if _shared_session else yf.Ticker(t))
-                if _stable_ready and _market_is_open:
+                _eps_ready = (t not in _stage2_eps_targets) or bool(result.get("eps_revision_available"))
+                if _stable_ready and _market_is_open and _eps_ready:
                     break
 
                 # ── calendar ────────────────────────────────────────────
@@ -882,7 +893,28 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                         result["quote_type"]    = str(_inf.get("quoteType", "") or "")
                     except Exception:
                         pass
-                    if not _stable_ready:
+                    if t in _stage2_eps_targets and not result.get("eps_revision_available"):
+                        try:
+                            _eps_getter = getattr(tkr_obj, "get_eps_trend", None)
+                            _eps_trend = _eps_getter() if callable(_eps_getter) else getattr(tkr_obj, "eps_trend", None)
+                            if isinstance(_eps_trend, pd.DataFrame) and not _eps_trend.empty:
+                                _eps_rows = ["0q", "+1q", "0y", "+1y"]
+                                for _eps_row in _eps_rows:
+                                    if _eps_row not in _eps_trend.index:
+                                        continue
+                                    _cur = pd.to_numeric(_eps_trend.loc[_eps_row].get("current"), errors="coerce")
+                                    _old = pd.to_numeric(_eps_trend.loc[_eps_row].get("60daysAgo"), errors="coerce")
+                                    if pd.notna(_cur) and pd.notna(_old) and abs(float(_old)) >= 0.01:
+                                        result["eps_revision_60d"] = round(
+                                            (float(_cur) - float(_old)) / abs(float(_old)) * 100.0, 1
+                                        )
+                                        result["eps_revision_available"] = True
+                                        break
+                        except Exception:
+                            pass
+                    if not _stable_ready or (
+                        t in _stage2_eps_targets and result.get("eps_revision_available")
+                    ):
                         with _meta_lock:
                             _stable_meta_cache[t] = {
                                 "saved_at": _time.time(),
@@ -1297,6 +1329,8 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             # v14.1: new fundamental fields
             cash_ratio   = _m.get("cash_ratio")     # totalCash/marketCap
             analyst_rec  = _m.get("analyst_rec")    # 1=Strong Buy … 5=Sell
+            eps_revision_60d = _m.get("eps_revision_60d")
+            eps_revision_available = bool(_m.get("eps_revision_available"))
             industry     = _m.get("industry", "")
             sector_detail= _m.get("sector_detail", "")
 
@@ -1319,6 +1353,11 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 else:                    analyst_label = "🔴 Sell"
             else:
                 analyst_label = "–"
+            eps_revision_str = (
+                f"{float(eps_revision_60d):+.1f}%"
+                if eps_revision_available and eps_revision_60d is not None
+                else "Unavailable"
+            )
 
             # ── Biotech / high-risk sector flag ──────────────────────────────
             _high_risk_industries = {
@@ -2485,6 +2524,10 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                         l_action = "STRONG BUY – DISCOVERY"
                     elif actionable_long:
                         l_action = "WATCH – DISCOVERY QUALITY"
+                    elif raw.get("stage2_phase") in ("EARLY COIL", "BREAKOUT - TOO LATE", "BASE BUILDING"):
+                        # Discovery is the reusable master scan. Preserve valid
+                        # Stage 2 bases even when short-term momentum is still quiet.
+                        l_action = "WATCH – STAGE 2 BASE"
                     elif trap_risk and l_score >= 4 and l_prob >= 0.58:
                         l_action = "WATCH – TRAP RISK"
                     elif l_score >= 4 and l_prob >= 0.55:
@@ -2576,6 +2619,10 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 if not raw.get("not_chasing", True):  strat_tags.append("⚠️CHASING")
                 if not raw.get("not_limit_up", True): strat_tags.append("🚫LIMIT-UP")
                 if raw.get("ma60_stop_triggered"):     strat_tags.append("🛑MA60-BREAK")
+                if raw.get("stage2_ready"):             strat_tags.append("STAGE2 EARLY COIL")
+                elif raw.get("stage2_breakout"):        strat_tags.append("STAGE2 BREAKOUT LATE")
+                elif raw.get("stage2_phase") == "BASE BUILDING":
+                    strat_tags.append("STAGE2 BASE")
 
                 # Strategy entry quality
                 is_ideal_dip = (raw.get("dip_to_ma20") or raw.get("dip_to_ma60")) and \
@@ -2883,6 +2930,22 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "PSS Score":      f"{raw.get('pss_score', 0)}/8",
                     "PSS Label":      raw.get("pss_label", "–"),
                     "PSS Triggers":   " · ".join(raw.get("pss_active", [])) or "–",
+                    # Stage 1 -> Stage 2 base-breakout context
+                    "Stage 2 Score":  int(raw.get("stage2_score", 0)),
+                    "Early Score":    int(raw.get("stage2_early_score", 0)),
+                    "Stage 2 Phase":  raw.get("stage2_phase", "NOT STAGE 2"),
+                    "Base Weeks":     raw.get("stage2_base_weeks", 0),
+                    "Base Range%":    raw.get("stage2_base_range_pct", 99.0),
+                    "Contraction":    raw.get("stage2_contraction_ratio", 1.0),
+                    "VDU Ratio":      raw.get("stage2_volume_dryup_ratio", 1.0),
+                    "Pivot":          f"${raw.get('stage2_pivot', p):.2f}",
+                    "Pivot Dist%":    f"{raw.get('stage2_pivot_distance_pct', 0.0):+.1f}%",
+                    "Flat Top Touches": int(raw.get("stage2_flat_top_touches", 0)),
+                    "RS Lead":        "YES" if raw.get("stage2_rs_lead") else "NO",
+                    "Sector Lead":    "YES" if raw.get("stage2_sector_lead") else "NO",
+                    "EPS Rev 60D":    eps_revision_str,
+                    "Stage 2 Why":    raw.get("stage2_why", "–"),
+                    "Early Why":      raw.get("stage2_early_why", "–"),
                     # ── v14.1: Fundamental context ────────────────────────────
                     "Cash/MCap":      cash_floor_str,
                     "Analyst":        analyst_label,

@@ -37,6 +37,12 @@ def _mode_banner(m: str) -> None:
             "📊 **High Volume mode** — stocks with unusual volume / volume breakout / pocket pivot.  \n"
             "Tier A = extreme volume, Tier B = breakout volume, Tier C = pocket pivot, Tier D = unusual volume watchlist."
         )
+    elif m == "STAGE 2 BREAKOUT":
+        st.info(
+            "**Stage 2 Breakout mode** — early pre-breakout scan. "
+            "It shows tight, quiet bases before the move and excludes stocks already at/above the pivot "
+            "or already moving strongly. It also includes an Emerging Base Radar for stocks waiting on trend confirmation."
+        )
 
 
 
@@ -763,6 +769,11 @@ def render_long(ctx: dict) -> None:
             "📐 **High Volume** — Focus: unusual activity + price confirmation · "
             "Use Trade Desk for exact entry/stop before buying."
         )
+    elif m == "STAGE 2 BREAKOUT":
+        st.info(
+            "**Stage 2 Breakout** — these are early watchlist candidates, not buys yet. "
+            "Enter only after price clears the pivot on at least 1.5x average volume."
+        )
     else:
         st.info(
             "📐 **Strategy** — Stop: MA60 · Targets: TP1 +10% · TP2 +15% · TP3 +20% | "
@@ -784,6 +795,12 @@ def render_long(ctx: dict) -> None:
 
     if df_long.empty:
         master_long = st.session_state.get("df_long_master", pd.DataFrame())
+        if m == "STAGE 2 BREAKOUT":
+            st.info(
+                "No strict, near-early, or emerging-base candidates passed today. Already-moved and above-pivot "
+                "stocks remain excluded. Run a fresh scan later as bases and relative strength develop."
+            )
+            return
         if isinstance(master_long, pd.DataFrame) and not master_long.empty:
             st.info(
                 f"No **{swing_mode}** long setups passed for **{last_market}**. "
@@ -951,6 +968,35 @@ def render_long(ctx: dict) -> None:
             st.markdown(f"#### Pro 70 Near Miss Watch - {len(near_df)} stock{'s' if len(near_df) != 1 else ''}")
             st.caption("Closest candidates only. These are not Pro 70 buys; wait for the missing confirmation.")
             show_table(near_df, "pro70_near_miss", "Pro Score")
+
+    elif m == "STAGE 2 BREAKOUT":
+        action_stage2 = df_long.get("Action", pd.Series([""] * len(df_long))).astype(str)
+        strict_df = df_long[action_stage2.str.contains("EARLY STAGE 2 COIL", na=False)]
+        near_df = df_long[action_stage2.str.contains("NEAR EARLY STAGE 2", na=False)]
+        emerging_df = df_long[action_stage2.str.contains("EMERGING BASE RADAR", na=False)]
+        st.caption(
+            f"Strict early: {len(strict_df)} | Trend-confirmed near-early: {len(near_df)} | "
+            f"Emerging bases: {len(emerging_df)} | Sectors: "
+            f"{df_long['Sector'].nunique() if 'Sector' in df_long.columns else '-'}"
+        )
+        st.info(
+            "Every displayed stock remains below its pivot, quiet, relatively strong, and not already strongly moving. "
+            "**Strict early** passes every early gate. **Near early** is still safe but shows the missing strict "
+            "condition in **Early Missing**. **Emerging Base Radar** is earlier still and must first confirm its "
+            "50/200-day trend. All remain watchlists until a future pivot break on 1.5x volume."
+        )
+        if not strict_df.empty:
+            st.markdown(f"#### Strict Early Stage 2 Coils ({len(strict_df)})")
+            st.caption("All early gates passed. Wait for the pivot break plus at least 1.5x average volume.")
+            show_table(strict_df, "stage2_early_coils", "Stage 2 Rank Score")
+        if not near_df.empty:
+            st.markdown(f"#### Trend-Confirmed Near-Early Watchlist ({len(near_df)})")
+            st.caption("Still early and below pivot. Check Early Missing and wait for that condition to improve before the breakout trigger.")
+            show_table(near_df, "stage2_near_early", "Stage 2 Rank Score")
+        if not emerging_df.empty:
+            st.markdown(f"#### Emerging Base Radar ({len(emerging_df)})")
+            st.caption("Earliest watch layer. Tight/quiet with relative strength, but wait for 50/200-day trend confirmation before the pivot trigger.")
+            show_table(emerging_df, "stage2_emerging_base", "Stage 2 Rank Score")
 
     elif m == "HIGH CONVICTION":
         hc_strong = df_long[action_s.str.contains(
