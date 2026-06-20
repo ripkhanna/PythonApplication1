@@ -1,5 +1,5 @@
 """
-Swing Scanner v14.05 — Bayesian Ensemble
+Swing Scanner v15.01 — Bayesian Ensemble
 ====================================================================
 Architecture : v7  (batch download, sector heatmap, FD holdings, fast scan)
 Signal logic : v5  (compute_all_signals, bayesian_prob, action tiers)
@@ -16,7 +16,7 @@ v12 add-ons  : options-derived signals — call/put unusual flow, IV term
 Install:
   pip install financedatabase ta streamlit yfinance pandas numpy nsepython requests streamlit-autorefresh
 """
-# v14.05: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
+# v15.01: Python 3.14+ uses PEP 649 lazy annotation evaluation, which trips
 # NotImplementedError from __annotate__ when @st.cache_data wraps functions
 # with bare unsubscripted generics like `-> tuple`. This `from __future__`
 # downgrades all annotations in this module to strings at parse time,
@@ -44,7 +44,7 @@ import streamlit as st
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Swing Scanner v14.05",
+    page_title="Swing Scanner v15.01",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -266,7 +266,7 @@ div[data-testid="stVerticalBlock"] > div {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Swing/Long Term Scanner v14.05")
+st.title("📈 Swing/Long Term Scanner v15.01")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TOP-OF-PAGE STATUS BANNER
@@ -302,7 +302,7 @@ def _show_top_status(message: str, stage: str = "Working", icon: str = "ℹ️",
             st.session_state["_top_status_state"] = state
             st.session_state["_top_status_updated_at"] = pd.Timestamp.now(tz="Asia/Singapore").strftime("%H:%M:%S SGT")
             st.session_state["_top_status_ts_epoch"] = time.time()
-            # v14.05: completed/failed messages must not keep an old tab context.
+            # v15.01: completed/failed messages must not keep an old tab context.
             # Otherwise a later rerun can either show a stale action or block the
             # next tab from writing a correct status.
             if state in {"done", "error", "idle"}:
@@ -420,7 +420,7 @@ def _top_status_payload_for_render():
     ts = float(st.session_state.get("_top_status_ts_epoch", 0) or 0)
     age = time.time() - ts if ts else 999999
     if state in {"done", "error"} and age > 8:
-        # v14.05: expire completed/error messages cleanly so old tab messages
+        # v15.01: expire completed/error messages cleanly so old tab messages
         # disappear when the user moves around the app.
         try:
             for _k in ("_top_status_context", "_top_status_message", "_top_status_stage", "_top_status_icon"):
@@ -451,7 +451,7 @@ _show_top_status(
     status=_top_payload["status"],
 )
 
-# v14.05: COMPACT SELF-STAMP
+# v15.01: COMPACT SELF-STAMP
 # The build identity (path, mtime, hash, size) is still computed so it can
 # self-prove the running file, but only the short hash and mtime are visible
 # in the caption. The full path and size are tucked into the tooltip — hover
