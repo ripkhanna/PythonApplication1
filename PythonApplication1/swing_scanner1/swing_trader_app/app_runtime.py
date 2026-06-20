@@ -2233,7 +2233,7 @@ if st.session_state.get("scan_cache_warning"):
 # Professional workflow layout v17.4
 # Daily workflow is kept compact; detailed/source/QA views are nested.
 st.caption(
-    "Workflow: Market Activity -> Big Money -> Momentum Runner -> Pre-Movers -> Best 7-10% -> Long Setups -> Short Setups -> Trade Tools -> Stock Analysis -> Advanced"
+    "Workflow: Market Activity -> Catalyst Shock -> Big Money -> Momentum Runner -> Pre-Movers -> Best 7-10% -> Long Setups -> Short Setups -> Trade Tools -> Stock Analysis -> Advanced"
 )
 
 tab_sectors, tab_market_activity, tab_momentum_runner, tab_pre_movers, tab_best_710, tab_long, tab_short, tab_trade_tools, tab_stock, tab_events, tab_long_term, tab_advanced, tab_help = st.tabs([
@@ -2253,8 +2253,9 @@ tab_sectors, tab_market_activity, tab_momentum_runner, tab_pre_movers, tab_best_
 ])
 
 with tab_market_activity:
-    tab_premarket, tab_top_movers, tab_big_money, tab_breakout = st.tabs([
+    tab_premarket, tab_catalyst_volume, tab_top_movers, tab_big_money, tab_breakout = st.tabs([
         "Pre-Market",
+        "Catalyst Shock",
         "Movers",
         "Big Money",
         "Breakouts",
@@ -2328,6 +2329,7 @@ from swing_trader_app.tabs.top_movers_tab import render_top_movers
 from swing_trader_app.tabs.pre_movers_tab import render_pre_movers
 from swing_trader_app.tabs.momentum_runner_tab import render_momentum_runner
 from swing_trader_app.tabs.premarket_tab import render_premarket
+from swing_trader_app.tabs.catalyst_volume_shock_tab import render_catalyst_volume_shock
 from swing_trader_app.tabs.breakout_scanner_tab import render_breakout_scanner
 from swing_trader_app.tabs.pro_setups_tab     import render_pro_setups
 from swing_trader_app.tabs.range_trader_tab   import render_range_trader
@@ -3147,6 +3149,9 @@ with tab_pre_movers:
 
 with tab_premarket:
     _safe_render_tab('premarket', render_premarket)
+
+with tab_catalyst_volume:
+    _safe_render_tab('catalyst_volume_shock', render_catalyst_volume_shock)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
