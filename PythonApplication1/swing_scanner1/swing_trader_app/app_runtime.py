@@ -1382,6 +1382,27 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
             rr_scan.clip(0, 5) * 3.0 +
             op_score_scan.clip(0, 10) * 1.0
         ).round(1)
+        pro_watch_entry = ~((entry_scan + " " + setup_scan).str.contains("EXTENDED|AVOID|TRAP|CHASE", na=False, regex=True))
+        pro_watch_rr = (
+            ((rr_scan >= 2.0) & (upside_scan >= 7.0)) |
+            ((rr_scan >= 2.5) & (upside_scan >= 6.0))
+        ).mask(is_sgx_row, (rr_scan >= 2.0) & (upside_scan >= 6.0))
+
+        def _pro70_missing_for_index(_idx):
+            _miss = []
+            try:
+                if not bool(pro_trend.get(_idx, False)): _miss.append("trend")
+                if not bool(pro_relative.get(_idx, False)): _miss.append("relative strength")
+                if not bool(pro_momentum.get(_idx, False)): _miss.append("momentum")
+                if not bool(pro_institutional.get(_idx, False)): _miss.append("institutional/volume")
+                if not bool(pro_structure.get(_idx, False)): _miss.append("structure")
+                if not bool(pro_entry.get(_idx, False)): _miss.append("entry")
+                if not bool(pro_rr.get(_idx, False)): _miss.append("2.5R/upside")
+                if not bool(pro_clean_risk.get(_idx, False)): _miss.append("clean risk/no chase")
+                if int(pro_pillars.get(_idx, 0)) < 7: _miss.append("7 pillars")
+            except Exception:
+                return "Needs manual review"
+            return "Exact gate passed" if not _miss else ", ".join(_miss[:5])
 
         if mode == "PRO 70 / 2.5R":
             pro_70_near_miss = pd.Series([False] * len(df_long), index=df_long.index)
@@ -1394,6 +1415,14 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
                     (pro_institutional | (op_score_scan >= 3) | (vol_ratio >= 1.0)) &
                     (p >= 70) & (quality_score >= 9) & (nd_score >= 7)
                 )
+                if not bool(pro_70_near_miss.any()):
+                    pro_70_near_miss = (
+                        (~pro_70_gate) & not_candidate & trap_clean & pro_watch_entry & price_ok &
+                        ((today_pct >= -3.0) & (today_pct <= 7.0)).mask(is_sgx_row, sg_today_ok) &
+                        pro_watch_rr & (pro_pillars >= 5) & (pro_trend | pro_structure) &
+                        (pro_institutional | (op_score_scan >= 3) | (vol_ratio >= 1.0)) &
+                        (p >= 70) & (quality_score >= 9) & (nd_score >= 7)
+                    )
             df_long = df_long[pro_70_gate | pro_70_near_miss].copy()
             if not df_long.empty:
                 near_r = pro_70_near_miss.reindex(df_long.index).fillna(False)
@@ -1405,8 +1434,11 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
                 df_long.loc[pro_70_elite.reindex(df_long.index).fillna(False), "Action"] = "STRONG BUY - PRO 70 ELITE"
                 df_long["Pro Pillars"] = pro_pillars.reindex(df_long.index).astype(int).astype(str) + "/8"
                 df_long["Pro Score"] = pro_70_score.reindex(df_long.index).round(1)
-                df_long["Pro Validation"] = "PAPER-TEST BEFORE LIVE"
+                df_long["Pro 70 Gate"] = "EXACT - PAPER TEST"
+                df_long.loc[near_r, "Pro 70 Gate"] = "NEAR MISS - WATCH ONLY"
+                df_long["Pro Validation"] = "EXACT GATE - PAPER TEST"
                 df_long.loc[near_r, "Pro Validation"] = "NEAR MISS - WAIT"
+                df_long["Pro Missing"] = [_pro70_missing_for_index(_idx) for _idx in df_long.index]
                 df_long["Pro Why"] = (
                     "P=" + p.reindex(df_long.index).round(0).astype(int).astype(str) +
                     " RR=" + rr_scan.reindex(df_long.index).round(2).astype(str) +

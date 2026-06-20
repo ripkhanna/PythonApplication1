@@ -332,6 +332,24 @@ def _sf_sample_mask_from_spec(samples, spec, cache=None):
     return mask.fillna(False)
 
 
+def _sf_recent_window_metrics(d, min_recent=3):
+    """Return a simple recent-sample check so 70% winners are not only old fits."""
+    try:
+        if d is None or len(d) <= 0 or "Target" not in d.columns:
+            return 0, 0.0
+        dd = d.copy()
+        if "Date" in dd.columns:
+            dd["_date_sort"] = pd.to_datetime(dd["Date"], errors="coerce")
+            dd = dd.sort_values("_date_sort", kind="stable").drop(columns=["_date_sort"], errors="ignore")
+        window = min(len(dd), max(int(min_recent), int(np.ceil(len(dd) * 0.30))))
+        recent = dd.tail(window)
+        if recent.empty:
+            return 0, 0.0
+        return int(len(recent)), float(pd.to_numeric(recent["Target"], errors="coerce").fillna(0).mean() * 100.0)
+    except Exception:
+        return 0, 0.0
+
+
 def _sf_strategy_metrics(d, name, base_rate, tp_pct, sl_pct, min_trades, min_win_pct, spec=None):
     trades = int(len(d))
     if trades <= 0:
@@ -344,12 +362,22 @@ def _sf_strategy_metrics(d, name, base_rate, tp_pct, sl_pct, min_trades, min_win
     expectancy = (win_rate / 100.0) * _sf_float(tp_pct, 6.0) - (1.0 - win_rate / 100.0) * _sf_float(sl_pct, 4.0)
     pi = (win_rate / 100.0) * avg_gain
     edge = win_rate - base_rate
-    meets_target = bool(trades >= int(min_trades) and win_rate >= float(min_win_pct))
+    recent_trades, recent_win = _sf_recent_window_metrics(d)
+    recent_floor = max(50.0, float(min_win_pct) - 10.0)
+    recent_ok = bool(recent_trades <= 0 or recent_win >= recent_floor)
+    payoff_ok = bool(expectancy > 0)
+    meets_target = bool(
+        trades >= int(min_trades)
+        and win_rate >= float(min_win_pct)
+        and payoff_ok
+        and recent_ok
+    )
     finder_score = (
         (win_rate - float(min_win_pct)) * 0.70
         + edge * 0.20
         + expectancy * 1.20
         + pi * 0.90
+        + (recent_win - recent_floor) * 0.25
         + min(trades, 80) * 0.025
     )
     if trades < int(min_trades):
@@ -358,6 +386,8 @@ def _sf_strategy_metrics(d, name, base_rate, tp_pct, sl_pct, min_trades, min_win
         verdict = f"Below {float(min_win_pct):.0f}%"
     elif expectancy <= 0:
         verdict = "Win ok, payoff weak"
+    elif not recent_ok:
+        verdict = f"Recent < {recent_floor:.0f}%"
     elif pi >= 3.0:
         verdict = "Qualified 70%+"
     else:
@@ -372,6 +402,9 @@ def _sf_strategy_metrics(d, name, base_rate, tp_pct, sl_pct, min_trades, min_win
         "Target Win %": round(float(min_win_pct), 1),
         "Base Win %": round(base_rate, 1),
         "Edge %": round(edge, 1),
+        "Recent Trades": recent_trades,
+        "Recent Win %": round(recent_win, 1),
+        "Recent Floor %": round(recent_floor, 1),
         "Expectancy %": round(expectancy, 2),
         "PI": round(pi, 2),
         "Avg MaxGain %": round(avg_gain, 2),

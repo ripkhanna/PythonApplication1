@@ -630,7 +630,7 @@ def show_table(df, label, prob_col="Rise Prob"):
     else:
         wanted = [
             "Rank", "Ticker", "Action", "View", "Buy Condition",
-            "Entry Quality", "Tradeable Buy", "Trade Tier", "7-Star Score", "7-Star Tier", "7-Star Why", "Explosion Score", "Explosion Tier", "Explosion Why", "Pre-Mover Score", "Pre-Mover Tier", "Pre-Mover Why", "Quality Score", "Next-Day Score", "Next-Day Rating", "Next-Day Move", "7D Move Est", "Upside to Res", "RR Est", "Setup Type", "Today %", "5D %", "20D %", "Rise Prob", "Swing Rank Score", "Pro Pillars", "Pro Score", "Pro Validation", "Pro Why", "PI Proxy", "Tier", "Why Buy",
+            "Entry Quality", "Tradeable Buy", "Trade Tier", "7-Star Score", "7-Star Tier", "7-Star Why", "Explosion Score", "Explosion Tier", "Explosion Why", "Pre-Mover Score", "Pre-Mover Tier", "Pre-Mover Why", "Quality Score", "Next-Day Score", "Next-Day Rating", "Next-Day Move", "7D Move Est", "Upside to Res", "RR Est", "Setup Type", "Today %", "5D %", "20D %", "Rise Prob", "Swing Rank Score", "Pro Pillars", "Pro Score", "Pro 70 Gate", "Pro Validation", "Pro Missing", "Pro Why", "PI Proxy", "Tier", "Why Buy",
             "Stage 2 Rank Score", "Early Score", "Stage 2 Score", "Stage 2 Phase", "Base Weeks", "Base Range%",
             "Contraction", "VDU Ratio", "Pivot", "Pivot Dist%", "Stage 2 Stop", "Stage 2 Risk%",
             "Post-Pivot Room", "Stage 2 Reward", "Stage 2 R:R", "Blue Sky", "Flat Top Touches",
@@ -741,7 +741,9 @@ def show_table(df, label, prob_col="Rise Prob"):
         "PI Proxy":      st.column_config.TextColumn("PI",            width=80),
         "Pro Pillars":   st.column_config.TextColumn("Pillars",       width=65),
         "Pro Score":     st.column_config.NumberColumn("ProScore",    width=70),
+        "Pro 70 Gate":    st.column_config.TextColumn("Pro Gate",      width=135),
         "Pro Validation": st.column_config.TextColumn("Validation",    width=190),
+        "Pro Missing":   st.column_config.TextColumn("Missing",        width=240),
         "Pro Why":       st.column_config.TextColumn("Pro Why",       width=260),
         "Tier":          st.column_config.TextColumn("Tier",          width=120),
         "Why Buy":       st.column_config.TextColumn("Why Buy",       width=260),

@@ -57,7 +57,7 @@ def render_strategy_finder(ctx: dict) -> None:
 
     c5, c6, c7 = st.columns([1, 1, 2])
     with c5:
-        min_trades = st.slider("Min trades", 3, 50, 8, step=1, key="strategy_finder_min_trades")
+        min_trades = st.slider("Min trades", 3, 50, 12, step=1, key="strategy_finder_min_trades")
     with c6:
         min_win_pct = st.slider("Min win %", 50, 90, 70, step=5, key="strategy_finder_min_win_pct")
     with c7:
@@ -69,7 +69,7 @@ def render_strategy_finder(ctx: dict) -> None:
         )
         st.caption(
             "Winner label: target before stop inside the hold window. Same-day target/stop ties count as stop first. "
-            "A setup is not qualified unless it clears the selected Min win %."
+            "A setup is not qualified unless it clears the selected Min win %, positive expectancy, and recent-sample check."
         )
 
     click_cb = globals().get("_set_top_status_for_next_run")
@@ -148,12 +148,13 @@ def render_strategy_finder(ctx: dict) -> None:
         ranked = _sort_ranked(ranked, sort_by)
 
         best = ranked.iloc[0].to_dict()
-        m1, m2, m3, m4, m5 = st.columns(5)
+        m1, m2, m3, m4, m5, m6 = st.columns(6)
         m1.metric("Best strategy", best.get("Strategy", "-"))
         m2.metric("Verdict", best.get("Verdict", "-"))
         m3.metric("Win %", f"{best.get('Win %', 0):.1f}%")
         m4.metric("Expectancy", f"{best.get('Expectancy %', 0):.2f}%")
-        m5.metric("Samples", f"{len(samples):,}")
+        m5.metric("Recent win", f"{best.get('Recent Win %', 0):.1f}%")
+        m6.metric("Samples", f"{len(samples):,}")
 
         qualified_count = int((ranked.get("Meets Target", pd.Series(dtype=str)).astype(str) == "YES").sum()) if "Meets Target" in ranked.columns else 0
         if qualified_count <= 0:
@@ -178,6 +179,9 @@ def render_strategy_finder(ctx: dict) -> None:
                 "Target Win %": st.column_config.NumberColumn("Target", format="%.0f", width=70),
                 "Base Win %": st.column_config.NumberColumn("Base %", format="%.1f", width=75),
                 "Edge %": st.column_config.NumberColumn("Edge", format="%.1f", width=70),
+                "Recent Trades": st.column_config.NumberColumn("Recent", width=70),
+                "Recent Win %": st.column_config.NumberColumn("Recent %", format="%.1f", width=80),
+                "Recent Floor %": st.column_config.NumberColumn("Recent Floor", format="%.0f", width=90),
                 "Expectancy %": st.column_config.NumberColumn("Exp %", format="%.2f", width=75),
                 "PI": st.column_config.NumberColumn("PI", format="%.2f", width=65),
                 "Avg MaxGain %": st.column_config.NumberColumn("Avg Gain", format="%.2f", width=85),
@@ -243,6 +247,27 @@ def render_strategy_finder(ctx: dict) -> None:
             st.caption("No historical trades matched this strategy.")
 
         st.markdown("### Apply To Latest Scan")
+        selected_evidence = {}
+        try:
+            selected_rows = ranked[ranked["Strategy"].astype(str).eq(str(selected))]
+            if not selected_rows.empty:
+                selected_evidence = selected_rows.iloc[0].to_dict()
+        except Exception:
+            selected_evidence = {}
+        selected_exit = ""
+        try:
+            if isinstance(exit_profiles, pd.DataFrame) and not exit_profiles.empty:
+                exit_rows = exit_profiles[exit_profiles["Strategy"].astype(str).eq(str(selected))]
+                exit_rows = exit_rows[exit_rows["Meets Target"].astype(str).eq("YES")]
+                if not exit_rows.empty:
+                    selected_exit = str(exit_rows.iloc[0].get("Exit Profile", ""))
+        except Exception:
+            selected_exit = ""
+        if selected_evidence and str(selected_evidence.get("Meets Target", "NO")) != "YES":
+            st.warning(
+                "The selected strategy does not currently clear the full 70% evidence gate. "
+                "Current matches are research/watch candidates, not validated buys."
+            )
         latest_long = st.session_state.get("df_long_master", pd.DataFrame())
         if latest_long.empty:
             latest_long = st.session_state.get("df_long", pd.DataFrame())
@@ -253,8 +278,21 @@ def render_strategy_finder(ctx: dict) -> None:
             if current.empty:
                 st.caption("No latest-scan rows match this finder strategy.")
             else:
+                if selected_evidence:
+                    current["Finder 70% Gate"] = selected_evidence.get("Meets Target", "NO")
+                    current["Finder Hist Win %"] = selected_evidence.get("Win %", 0)
+                    current["Finder Recent Win %"] = selected_evidence.get("Recent Win %", 0)
+                    current["Finder Trades"] = selected_evidence.get("Trades", 0)
+                    current["Finder Expectancy %"] = selected_evidence.get("Expectancy %", 0)
+                    current["Finder Exit Profile"] = selected_exit or "Use selected target/stop"
+                    current["Finder Evidence"] = (
+                        current["Finder Hist Win %"].astype(str) + "% hist / " +
+                        current["Finder Recent Win %"].astype(str) + "% recent / " +
+                        current["Finder Trades"].astype(str) + " trades"
+                    )
                 show_cols = [
-                    "Ticker", "Action", "Finder Strategy", "Finder Rank Score", "Rise Prob",
+                    "Ticker", "Action", "Finder Strategy", "Finder 70% Gate", "Finder Evidence",
+                    "Finder Exit Profile", "Finder Rank Score", "Rise Prob",
                     "Score", "Quality Score", "Next-Day Score", "Vol Ratio", "Today %",
                     "Setup Type", "Support Tier", "Trap Risk", "Signals",
                 ]
