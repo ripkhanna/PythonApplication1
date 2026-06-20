@@ -567,6 +567,20 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
     stage2_contraction_ratio = 1.0
     stage2_volume_dryup_ratio = 1.0
     stage2_flat_top_touches = 0
+    stage2_handle_low = p
+    stage2_risk_pct = 99.0
+    stage2_blue_sky = False
+    stage2_post_pivot_room_pct = 0.0
+    stage2_breakout_reward_pct = 0.0
+    stage2_breakout_rr = 0.0
+    stage2_entry_price = p
+    stage2_failed_breakout_exit = p
+    stage2_initial_stop = p
+    stage2_target_price = p
+    stage2_trail_trigger = p
+    stage2_trail_stop = p
+    stage2_shares_per_1k_risk = 0
+    stage2_time_stop_days = 5
     _stage2_ranges = {}
     if len(close) >= 21:
         for _window in (20, 30, 40, 60):
@@ -607,6 +621,60 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
             stage2_flat_top_touches = int((_prior_highs >= stage2_pivot * 0.985).sum())
         except Exception:
             stage2_flat_top_touches = 0
+
+        try:
+            # A Stage 2 entry occurs above the pivot, so ordinary "upside to
+            # resistance" incorrectly treats the entry trigger as the target.
+            # Measure structural risk to the recent handle low and reward to
+            # older overhead supply beyond the base instead.
+            stage2_handle_low = float(low.iloc[-11:-1].min())
+            _breakout_entry = stage2_pivot * 1.005
+            stage2_entry_price = _breakout_entry
+            stage2_failed_breakout_exit = stage2_pivot * 0.99
+            _structural_stop = max(
+                stage2_handle_low * 0.995,
+                _breakout_entry - (1.5 * atrv),
+                _breakout_entry * 0.94,
+            )
+            stage2_initial_stop = min(stage2_pivot * 0.99, _structural_stop)
+            stage2_risk_pct = (
+                max(_breakout_entry - stage2_initial_stop, _breakout_entry * 0.005)
+                / max(_breakout_entry, 0.01)
+            ) * 100.0
+            _projected_reward_pct = min(20.0, max(6.0, atr_pct * (7.0 ** 0.5)))
+            _older_highs = high.iloc[:-(stage2_base_days + 1)] if stage2_base_days > 0 else high.iloc[:0]
+            _overhead = _older_highs[_older_highs > stage2_pivot * 1.01]
+            stage2_blue_sky = bool(_overhead.empty)
+            if stage2_blue_sky:
+                stage2_post_pivot_room_pct = _projected_reward_pct
+            else:
+                _nearest_overhead = float(_overhead.min())
+                stage2_post_pivot_room_pct = (
+                    (_nearest_overhead / max(stage2_pivot, 0.01)) - 1.0
+                ) * 100.0
+            stage2_breakout_reward_pct = min(stage2_post_pivot_room_pct, _projected_reward_pct)
+            stage2_breakout_rr = stage2_breakout_reward_pct / max(stage2_risk_pct, 0.5)
+            stage2_target_price = _breakout_entry * (1.0 + stage2_breakout_reward_pct / 100.0)
+            stage2_trail_trigger = _breakout_entry * 1.04
+            stage2_trail_stop = _breakout_entry * 1.01
+            _risk_per_share = max(_breakout_entry - stage2_initial_stop, 0.01)
+            stage2_shares_per_1k_risk = int(1000.0 / _risk_per_share)
+            stage2_time_stop_days = 5 if atr_pct >= 4.0 else 7
+        except Exception:
+            stage2_handle_low = p
+            stage2_risk_pct = 99.0
+            stage2_blue_sky = False
+            stage2_post_pivot_room_pct = 0.0
+            stage2_breakout_reward_pct = 0.0
+            stage2_breakout_rr = 0.0
+            stage2_entry_price = p
+            stage2_failed_breakout_exit = p
+            stage2_initial_stop = p
+            stage2_target_price = p
+            stage2_trail_trigger = p
+            stage2_trail_stop = p
+            stage2_shares_per_1k_risk = 0
+            stage2_time_stop_days = 5
 
     stage2_base_weeks = round(stage2_base_days / 5.0, 1)
     stage2_pivot_distance_pct = round(((p / max(stage2_pivot, 0.01)) - 1.0) * 100.0, 2)
@@ -950,6 +1018,20 @@ def compute_all_signals(close, high, low, vol, spy_close=None, sector_close=None
         "stage2_volume_dryup_ratio": round(stage2_volume_dryup_ratio, 2),
         "stage2_pivot":              round(stage2_pivot, 4),
         "stage2_pivot_distance_pct": stage2_pivot_distance_pct,
+        "stage2_handle_low":         round(stage2_handle_low, 4),
+        "stage2_risk_pct":           round(stage2_risk_pct, 2),
+        "stage2_blue_sky":           stage2_blue_sky,
+        "stage2_post_pivot_room_pct": round(stage2_post_pivot_room_pct, 2),
+        "stage2_breakout_reward_pct": round(stage2_breakout_reward_pct, 2),
+        "stage2_breakout_rr":        round(stage2_breakout_rr, 2),
+        "stage2_entry_price":        round(stage2_entry_price, 4),
+        "stage2_failed_breakout_exit": round(stage2_failed_breakout_exit, 4),
+        "stage2_initial_stop":       round(stage2_initial_stop, 4),
+        "stage2_target_price":       round(stage2_target_price, 4),
+        "stage2_trail_trigger":      round(stage2_trail_trigger, 4),
+        "stage2_trail_stop":         round(stage2_trail_stop, 4),
+        "stage2_shares_per_1k_risk": stage2_shares_per_1k_risk,
+        "stage2_time_stop_days":     stage2_time_stop_days,
         "stage2_flat_top_touches":   stage2_flat_top_touches,
         "stage2_trend":              stage2_trend,
         "stage2_base_ok":            stage2_base_ok,

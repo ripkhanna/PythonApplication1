@@ -32,7 +32,12 @@ def render_accuracy_lab(ctx: dict) -> None:
     with bt_cols[2]:
         bt_period = st.selectbox("History", ["1y", "2y", "3y"], index=1, key="bt_period")
     with bt_cols[3]:
-        bt_mode = st.selectbox("Signal", ["BUY/SELL", "High Prob Only", "90% Tier Only"], index=0, key="bt_mode")
+        bt_mode = st.selectbox(
+            "Signal",
+            ["BUY/SELL", "High Prob Only", "90% Tier Only", "Stage 2 Technical Replay"],
+            index=0,
+            key="bt_mode",
+        )
 
     def _bt_flatten(df: pd.DataFrame) -> pd.DataFrame:
         if isinstance(df.columns, pd.MultiIndex):
@@ -94,6 +99,28 @@ def render_accuracy_lab(ctx: dict) -> None:
             if float(highs.iloc[j]) >= stop:
                 break
         return best
+
+    def _stage2_breakout_result(highs, lows, vols, start_idx, horizon, entry, target, stop):
+        """Wait for pivot + 1.5x daily volume, then score target before stop."""
+        limit = min(start_idx + horizon + 1, len(highs))
+        for j in range(start_idx + 1, limit):
+            prior_avg = float(vols.iloc[max(0, j - 20):j].mean()) if j > 0 else 0.0
+            triggered = float(highs.iloc[j]) >= entry and prior_avg > 0 and float(vols.iloc[j]) >= 1.5 * prior_avg
+            if not triggered:
+                continue
+            best = 0.0
+            for k in range(j, limit):
+                best = max(best, (float(highs.iloc[k]) / entry - 1.0) * 100.0)
+                hit_stop = float(lows.iloc[k]) <= stop
+                hit_target = float(highs.iloc[k]) >= target
+                if hit_stop and hit_target:
+                    return True, False, best
+                if hit_stop:
+                    return True, False, best
+                if hit_target:
+                    return True, True, best
+            return True, False, best
+        return False, False, 0.0
 
     def _quick_signal_backtest(ticker: str, horizon: int = 10, period: str = "2y", mode: str = "BUY/SELL") -> dict:
         """Backtest current signals using target-before-stop swing labels."""
@@ -163,6 +190,21 @@ def render_accuracy_lab(ctx: dict) -> None:
                         and not rv.get("gap_chase_risk", False)
                     )
 
+                if mode == "Stage 2 Technical Replay":
+                    long_gate = bool(
+                        rv.get("stage2_trend", False)
+                        and rv.get("stage2_base_ok", False)
+                        and rv.get("stage2_contraction", False)
+                        and rv.get("stage2_volume_dryup", False)
+                        and rv.get("stage2_pre_pivot", False)
+                        and rv.get("stage2_quiet_now", False)
+                        and rv.get("stage2_not_moved", False)
+                        and float(rv.get("stage2_post_pivot_room_pct", 0.0) or 0.0) >= 6.0
+                        and 0.0 < float(rv.get("stage2_risk_pct", 99.0) or 99.0) <= 8.0
+                        and float(rv.get("stage2_breakout_rr", 0.0) or 0.0) >= 1.8
+                    )
+                    short_gate = False
+
                 # Simple safety checks for historical test only, to avoid counting junk bars.
                 dollar_vol_20d = float((c.tail(20) * v.tail(20)).mean()) if len(c) >= 20 else 0
                 if ticker.endswith(".SI"):
@@ -173,6 +215,20 @@ def render_accuracy_lab(ctx: dict) -> None:
                     liq_ok = dollar_vol_20d >= 3_000_000
 
                 if not liq_ok:
+                    continue
+
+                if mode == "Stage 2 Technical Replay":
+                    if long_gate:
+                        triggered, long_win, best_ret = _stage2_breakout_result(
+                            highs, lows, vols, end - 1, horizon,
+                            float(rv.get("stage2_entry_price", p_now) or p_now),
+                            float(rv.get("stage2_target_price", p_now * 1.06) or p_now * 1.06),
+                            float(rv.get("stage2_initial_stop", p_now * 0.96) or p_now * 0.96),
+                        )
+                        if triggered:
+                            long_trades += 1
+                            long_wins += int(long_win)
+                            long_rets.append(best_ret)
                     continue
 
                 if long_gate:
@@ -215,8 +271,16 @@ def render_accuracy_lab(ctx: dict) -> None:
                 "Short Trades":  int(short_trades),
                 "Short Win %":   f"{short_win_pct:.1f}%" if short_trades else "–",
                 "Short Avg %":   f"{short_avg:.2f}%"     if short_rets   else "–",
-                "Target/Stop":   f"+6% / -4% in {horizon}d",
-                "Note":          "OK" if (long_trades + short_trades) else "No signal samples"
+                "Target/Stop":   (
+                    f"Dynamic Stage 2 target/stop in {horizon}d"
+                    if mode == "Stage 2 Technical Replay"
+                    else f"+6% / -4% in {horizon}d"
+                ),
+                "Note":          (
+                    "Technical replay only; no historical regime/earnings or delisted-stock data"
+                    if mode == "Stage 2 Technical Replay"
+                    else ("OK" if (long_trades + short_trades) else "No signal samples")
+                )
             }
         except Exception as e:
             return {"Ticker": ticker, "Samples": 0, "Long Win %": "–", "Short Win %": "–", "Note": str(e)[:80]}
@@ -319,4 +383,3 @@ def render_accuracy_lab(ctx: dict) -> None:
         "Live ranking columns are visible in 🎯 Swing Picks: Bayes Score, Operator Score, "
         "News Score, Sector Score, Earnings Risk, Trap Risk and Final Swing Score."
     )
-

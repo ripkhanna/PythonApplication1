@@ -319,9 +319,11 @@ def render_diagnostics(ctx: dict) -> None:
         d6.metric("Skipped earnings", _scan_dbg.get("skipped_earnings", 0))
         d7.metric("Signal engine ran", _scan_dbg.get("signal_engine_ran", 0))
         d8.metric("Cheap skipped", _scan_dbg.get("cheap_prefilter_skipped", 0))
-        d9, d10 = st.columns(2)
+        d9, d10, d11, d12 = st.columns(4)
         d9.metric("Raw long rows", _scan_dbg.get("long_rows_raw", 0))
         d10.metric("Raw short rows", _scan_dbg.get("short_rows_raw", 0))
+        d11.metric("Stage 2 fast bases", _scan_dbg.get("stage2_fast_candidates", 0))
+        d12.metric("Stage 2 promoted", _scan_dbg.get("stage2_promoted_to_deep_scan", 0))
         if _scan_dbg.get("empty_reason"):
             st.warning(_scan_dbg.get("empty_reason"))
         if _scan_dbg.get("batch_error"):

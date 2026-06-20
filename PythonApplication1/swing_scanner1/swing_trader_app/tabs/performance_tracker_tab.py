@@ -315,6 +315,27 @@ def _candidate_rows(src: pd.DataFrame, top_n: int, sources: list[str], include_w
                     "", "Best Stop",
                 ))
 
+    if "Stage 2 Qualified" in sources:
+        action = _text_series(src, "Action").str.upper()
+        quality_gate = _text_series(src, "Swing Quality Gate").str.upper().eq("PASS")
+        stage2 = src[
+            quality_gate
+            & action.str.contains("QUALIFIED.*STAGE 2", regex=True, na=False)
+        ].copy()
+        if not stage2.empty:
+            stage2["_tracker_score"] = _num_series(stage2, "Stage 2 Rank Score", 0)
+            stage2 = stage2.sort_values("_tracker_score", ascending=False).head(top_n)
+            for _, row in stage2.iterrows():
+                pick = _row_to_pick(
+                    row, market, selection_date, scan_time, "Stage 2 Qualified",
+                    "Stage 2 Phase", "_tracker_score", "Swing Quality Why",
+                    "Stage 2 Entry", "Stage 2 Hard Stop",
+                )
+                # Stage 2 is not entered at the current watchlist price. Track
+                # outcomes only from the future breakout trigger.
+                pick["Entry Price"] = pick["Trigger"]
+                rows.append(pick)
+
     if "Momentum Runner" in sources:
         try:
             from swing_trader_app.tabs.momentum_runner_tab import _classify as _runner_classify
@@ -457,6 +478,18 @@ def _update_outcomes(log: pd.DataFrame, max_tickers: int = 80) -> tuple[pd.DataF
             out.at[i, "Status"] = "Waiting"
             continue
 
+        if str(row.get("Source", "")) == "Stage 2 Qualified":
+            trigger = _num_value(row.get("Trigger", 0))
+            trigger_hits = after.index[after["High"] >= trigger] if trigger > 0 else []
+            if len(trigger_hits) == 0:
+                out.at[i, "Status"] = "Waiting Trigger"
+                out.at[i, "Days Checked"] = int(min(len(after), 7))
+                out.at[i, "Last Outcome Update"] = pd.Timestamp.now().isoformat(timespec="seconds")
+                updated += 1
+                continue
+            after = after[after.index >= trigger_hits[0]].copy()
+            entry = trigger
+
         horizon = after.head(7)
         days_checked = int(len(horizon))
         out.at[i, "Days Checked"] = days_checked
@@ -545,8 +578,8 @@ def render_performance_tracker(ctx: dict) -> None:
     with c1:
         source_choices = st.multiselect(
             "Capture from",
-            ["Best 7-10%", "Next-Day 5-10%", "Long Buy", "Momentum Runner"],
-            default=["Best 7-10%", "Next-Day 5-10%", "Long Buy"],
+            ["Best 7-10%", "Next-Day 5-10%", "Long Buy", "Stage 2 Qualified", "Momentum Runner"],
+            default=["Best 7-10%", "Next-Day 5-10%", "Long Buy", "Stage 2 Qualified"],
             key="perf_sources",
         )
     with c2:

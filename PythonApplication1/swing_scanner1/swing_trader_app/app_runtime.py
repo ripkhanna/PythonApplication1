@@ -660,7 +660,7 @@ swing_mode = st.sidebar.selectbox(
     help=(
         "**Pro 70 / 2.5R** — professional-style high-selectivity strategy requiring multi-pillar confirmation and at least 1:2.5 R:R. SGX uses market-aware price/volume gates. Paper-test first; no win rate is guaranteed.\n\n"
         "**A+ Precision** — fails closed. Shows only clean high-confluence setups with good entry, RR/runway, volume/operator confirmation and no chase/trap risk.\n\n"
-        "**Stage 2 Breakout** — early pre-breakout screen. Finds quiet, tight bases before the move and keeps late/above-pivot stocks out. Strict and near-early tiers require the 50/200-day trend; Emerging Base Radar shows earlier RS-led bases still waiting for that trend confirmation. The future 150%+ volume surge is the entry trigger.\n\n"
+        "**Stage 2 Breakout** — risk-managed early pre-breakout screen with market/sector regime, earnings safety, post-pivot R:R, breakout entry, failed-breakout exit, hard stop, target, time stop, and risk-based position sizing. Late/above-pivot stocks stay out. The future 150%+ RVOL surge is the entry trigger.\n\n"
         "**Strict** — A+ setups only. High probability + full confirmation.\n\n"
         "**Balanced** — practical live candidates (default). Trend + volume + operator.\n\n"
         "**Discovery** — wider watchlist for quiet markets. More results, use Trade Desk to filter.\n\n"
@@ -717,8 +717,9 @@ elif _sm_upper == "STAGE 2 BREAKOUT":
         "Finds the loaded spring before the move: tight multi-week base, contraction, "
         "volume dry-up, relative strength, and price still 0.75–5% below the pivot. "
         "Already-moved and confirmed-breakout stocks are excluded. "
-        "An Emerging Base Radar shows earlier bases waiting for 50/200-day trend confirmation. "
-        "Buy only after the future pivot break arrives on at least 1.5x average volume. "
+        "Qualification also requires bullish market/sector confirmation and no known earnings inside seven calendar days. "
+        "Weak/slow bases are never labeled qualified; when no setup passes, the closest early bases remain visible as NOT QUALIFIED with their failed gates. "
+        "Buy only after the future Stage 2 Entry break arrives on at least 1.5x RVOL pace, then follow the displayed stop, target, trail, and time stop. "
         "Positive 60-day EPS estimate revisions add confirmation when Yahoo provides the data."
     )
 elif _sm_upper == "SUPPORT ENTRY":
@@ -1238,8 +1239,15 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
                   "Next-Day Score", "Quality Score", "Tradeable Buy", "Next-Day Rating",
                   "Next-Day Move", "7D Move Est", "Upside to Res", "RR Est", "Vol Quality", "Trap Risk",
                   "Stage 2 Score", "Stage 2 Phase", "Base Weeks", "Base Range%", "Contraction",
-                  "VDU Ratio", "Pivot", "Pivot Dist%", "RS Lead", "Sector Lead", "EPS Rev 60D",
-                  "Stage 2 Why", "Early Score", "Early Why", "Early Missing"]:
+                  "VDU Ratio", "Pivot", "Pivot Dist%", "Stage 2 Stop", "Stage 2 Risk%",
+                  "Post-Pivot Room", "Stage 2 Reward", "Stage 2 R:R", "Blue Sky",
+                  "Stage 2 Entry", "Stage 2 Target", "Failed BO Exit", "Stage 2 Hard Stop",
+                  "S2 Shares/$1k", "S2 Time Stop", "Market Regime", "Stage 2 Market Gate",
+                  "Stage 2 Sector Gate", "Earnings Days", "Earnings Gate", "S2 RVOL Pace",
+                  "S2 RVOL Source", "Stage 2 Volume Gate", "Stage 2 Buy Trigger", "Stage 2 Exit Plan",
+                  "RS Lead", "Sector Lead", "EPS Rev 60D",
+                  "Stage 2 Why", "Early Score", "Early Why", "Early Missing", "Early Missing Count",
+                  "Swing Quality Gate", "Swing Quality Why"]:
             if c not in df.columns:
                 df[c] = "–"
         return df
@@ -1569,6 +1577,7 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
             contraction = _scan_num_col("Contraction", 99.0)
             vdu_ratio = _scan_num_col("VDU Ratio", 99.0)
             pivot_dist = _scan_num_col("Pivot Dist%", 99.0)
+            base_weeks = _scan_num_col("Base Weeks", 0.0)
             stage2_phase = df_long["Stage 2 Phase"].astype(str).str.upper()
             stage2_eps = _scan_num_col("EPS Rev 60D", 0.0)
             stage2_eps_known = ~df_long["EPS Rev 60D"].astype(str).str.upper().isin(
@@ -1592,11 +1601,53 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
                 not_moved_today = (today_pct >= -2.5) & (today_pct <= 2.0)
                 five_day = _scan_num_col("5D %", 0.0)
                 twenty_day = _scan_num_col("20D %", 0.0)
+                move_7d = _scan_num_col("7D Move Est", 0.0)
+                stage2_room_raw = _scan_num_col("Post-Pivot Room", -1.0)
+                stage2_risk_raw = _scan_num_col("Stage 2 Risk%", -1.0)
+                stage2_rr_raw = _scan_rr_col("Stage 2 R:R")
+                # Older cached scans do not have the Stage 2-specific fields.
+                # Use the contracted base width as a conservative structural
+                # risk proxy until the next full scan writes precise values.
+                stage2_proxy_risk = (base_range * contraction).clip(lower=1.5)
+                stage2_room = stage2_room_raw.where(stage2_room_raw >= 0.0, move_7d)
+                stage2_risk = stage2_risk_raw.where(stage2_risk_raw > 0.0, stage2_proxy_risk)
+                stage2_rr = stage2_rr_raw.where(
+                    stage2_room_raw >= 0.0,
+                    move_7d / stage2_proxy_risk.clip(lower=0.5),
+                )
                 not_moved_recently = (
                     (five_day >= -4.0) & (five_day <= 4.0)
                     & (twenty_day >= -8.0) & (twenty_day <= 8.0)
                 )
                 not_broken_out = ~stage2_phase.str.contains("BREAKOUT", na=False)
+                genuine_stage2_base = (
+                    (base_weeks >= 4.0)
+                    & stage2_phase.str.contains("EARLY COIL|READY AT PIVOT|BASE BUILDING", na=False, regex=True)
+                )
+                blue_sky = (
+                    df_long["Blue Sky"].astype(str).str.upper().eq("YES")
+                    | signals.str.contains("52W HIGH", na=False, regex=False)
+                )
+                usable_entry = ~entry_scan.str.contains(
+                    "SKIP|AVOID|WAIT|EXTENDED|CHASE|TRAP", na=False, regex=True
+                )
+                move_potential = (atr_scan >= 2.5) & (move_7d >= 6.0)
+                runway_quality = (stage2_room >= 6.0) | blue_sky
+                risk_quality = (stage2_risk > 0.0) & (stage2_risk <= 8.0)
+                rr_quality = stage2_rr >= 1.8
+                market_regime_ok = df_long["Stage 2 Market Gate"].astype(str).str.upper().eq("PASS")
+                sector_regime_ok = df_long["Stage 2 Sector Gate"].astype(str).str.upper().eq("PASS")
+                earnings_safe = df_long["Earnings Gate"].astype(str).str.upper().eq("PASS")
+                strategy_safety_gate = market_regime_ok & sector_regime_ok & earnings_safe
+                swing_quality_gate = (
+                    move_potential
+                    & runway_quality
+                    & risk_quality
+                    & rr_quality
+                    & usable_entry
+                    & (quality_score >= 7)
+                    & strategy_safety_gate
+                )
                 stage2_rank = (
                     tight_base.astype(int)
                     + contracting.astype(int)
@@ -1607,17 +1658,26 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
                     + rs_lead.astype(int)
                     + sector_lead.astype(int)
                     + trend_confirmed.astype(int)
+                    + move_potential.astype(int)
+                    + runway_quality.astype(int)
+                    + risk_quality.astype(int)
+                    + rr_quality.astype(int)
+                    + usable_entry.astype(int)
+                    + market_regime_ok.astype(int)
+                    + sector_regime_ok.astype(int)
+                    + earnings_safe.astype(int)
                     + (stage2_eps_known & (stage2_eps >= 5.0)).astype(int)
                 )
                 strict_mask = (
-                    not_broken_out & tight_base & contracting & dry_volume
+                    genuine_stage2_base & not_broken_out & tight_base & contracting & dry_volume
                     & below_pivot & quiet_now & not_moved_today & not_moved_recently
-                    & rs_lead & trend_confirmed & trap_clean & price_ok
+                    & rs_lead & trend_confirmed & trap_clean & price_ok & swing_quality_gate
                 )
                 # Keep the screen useful when the exact early gate is empty,
                 # without admitting already-moved or above-pivot stocks.
                 near_mask = (
-                    not_broken_out
+                    genuine_stage2_base
+                    & not_broken_out
                     & (base_range <= 22.0)
                     & (contraction <= 0.85)
                     & (vdu_ratio <= 1.25)
@@ -1626,21 +1686,26 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
                     & today_pct.between(-4.0, 3.0)
                     & five_day.between(-7.0, 6.0)
                     & twenty_day.between(-12.0, 12.0)
-                    & rs_lead & trend_confirmed & trap_clean & price_ok
+                    & rs_lead & trend_confirmed & trap_clean & price_ok & swing_quality_gate
                 )
-                emerging_mask = (
-                    not_broken_out
-                    & (base_range <= 18.0)
-                    & (contraction <= 0.75)
+                qualified_mask = strict_mask | near_mask
+                # When no setup is buy-quality, keep the screen informative by
+                # showing only the closest genuinely early bases. These rows
+                # remain explicitly NOT QUALIFIED and never become buy labels.
+                developing_mask = (
+                    genuine_stage2_base
+                    & not_broken_out
+                    & (base_range <= 22.0)
+                    & (contraction <= 0.90)
                     & (vdu_ratio <= 1.30)
                     & pivot_dist.between(-8.0, -0.25)
-                    & (vol_ratio <= 1.60)
+                    & (vol_ratio <= 1.70)
                     & today_pct.between(-4.0, 3.0)
                     & five_day.between(-7.0, 6.0)
                     & twenty_day.between(-12.0, 12.0)
-                    & rs_lead & (~trend_confirmed) & trap_clean & price_ok
+                    & rs_lead & trend_confirmed & trap_clean & price_ok & usable_entry
                 )
-                mask = strict_mask | near_mask | emerging_mask
+                mask = qualified_mask if bool(qualified_mask.any()) else developing_mask
             else:
                 # Fail closed: an old generic base proxy cannot prove the
                 # stock is still early and has not already moved.
@@ -1654,21 +1719,35 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
                     eps_known_r = stage2_eps_known.reindex(df_long.index).fillna(False)
                     pivot_dist_r = pivot_dist.reindex(df_long.index).fillna(99.0)
                     strict_r = strict_mask.reindex(df_long.index).fillna(False)
-                    emerging_r = emerging_mask.reindex(df_long.index).fillna(False)
-                    df_long["Action"] = "WATCH - NEAR EARLY STAGE 2"
-                    df_long.loc[strict_r, "Action"] = "WATCH - EARLY STAGE 2 COIL"
-                    df_long.loc[emerging_r, "Action"] = "WATCH - EMERGING BASE RADAR"
-                    df_long["Setup Type"] = "NEAR EARLY - WAIT FOR TIGHTER COIL"
+                    qualified_r = qualified_mask.reindex(df_long.index).fillna(False)
+                    developing_r = ~qualified_r
+                    df_long["Action"] = "WATCH - QUALIFIED NEAR-EARLY STAGE 2"
+                    df_long.loc[strict_r, "Action"] = "WATCH - QUALIFIED EARLY STAGE 2"
+                    df_long.loc[developing_r, "Action"] = "WATCH - DEVELOPING STAGE 2 / NOT QUALIFIED"
+                    df_long["Setup Type"] = "QUALIFIED - WAIT FOR TIGHTER COIL"
                     df_long.loc[strict_r, "Setup Type"] = "WAIT FOR PIVOT + 1.5X VOLUME"
-                    df_long.loc[emerging_r, "Setup Type"] = "WAIT FOR 50/200 TREND + PIVOT"
-                    df_long["Stage 2 Phase"] = "NEAR EARLY"
-                    df_long.loc[strict_r, "Stage 2 Phase"] = "EARLY COIL"
-                    df_long.loc[emerging_r, "Stage 2 Phase"] = "EMERGING BASE"
+                    df_long.loc[developing_r, "Setup Type"] = "DO NOT BUY - WAIT FOR QUALITY + PIVOT"
+                    df_long["Stage 2 Phase"] = "QUALIFIED NEAR-EARLY"
+                    df_long.loc[strict_r, "Stage 2 Phase"] = "QUALIFIED EARLY COIL"
+                    df_long.loc[developing_r, "Stage 2 Phase"] = "DEVELOPING EARLY BASE"
                     df_long["Stage 2 Rank Score"] = rank_r.astype(int)
+                    df_long["Swing Quality Gate"] = "PASS"
+                    df_long.loc[developing_r, "Swing Quality Gate"] = "FAIL - WATCH ONLY"
+                    df_long["Swing Quality Why"] = (
+                        "Move=" + move_7d.reindex(df_long.index).round(1).astype(str) + "%; "
+                        "Post-pivot room=" + stage2_room.reindex(df_long.index).round(1).astype(str) + "%; "
+                        "Risk=" + stage2_risk.reindex(df_long.index).round(1).astype(str) + "%; "
+                        "S2 RR=" + stage2_rr.reindex(df_long.index).round(1).astype(str) + "; "
+                        "Quality=" + quality_score.reindex(df_long.index).round(0).astype(int).astype(str) + "; "
+                        "Market=" + df_long["Stage 2 Market Gate"].astype(str) + "; "
+                        "Sector=" + df_long["Stage 2 Sector Gate"].astype(str) + "; "
+                        "Earnings=" + df_long["Earnings Gate"].astype(str)
+                    )
                     df_long["EPS Revision Confirm"] = "UNAVAILABLE"
                     df_long.loc[eps_known_r, "EPS Revision Confirm"] = "NO"
                     df_long.loc[eps_known_r & (eps_r >= 5.0), "EPS Revision Confirm"] = "YES"
                     _missing = []
+                    _missing_count = []
                     for _idx in df_long.index:
                         _miss = []
                         if not bool(tight_base.get(_idx, False)): _miss.append("base >15%")
@@ -1678,21 +1757,32 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
                         if not bool(quiet_now.get(_idx, False)): _miss.append("current volume >1.30x")
                         if not bool(not_moved_today.get(_idx, False)): _miss.append("today move outside early range")
                         if not bool(not_moved_recently.get(_idx, False)): _miss.append("recent move too large")
-                        if not bool(trend_confirmed.get(_idx, False)): _miss.append("50/200 trend not confirmed")
+                        if not bool(move_potential.get(_idx, False)): _miss.append("move/ATR below threshold")
+                        if not bool(runway_quality.get(_idx, False)): _miss.append("post-pivot room <6%")
+                        if not bool(risk_quality.get(_idx, False)): _miss.append("Stage 2 risk >8%")
+                        if not bool(rr_quality.get(_idx, False)): _miss.append("Stage 2 R:R <1.8")
+                        if not bool(usable_entry.get(_idx, False)): _miss.append("entry quality unusable")
+                        if not bool((quality_score >= 7).get(_idx, False)): _miss.append("quality score <7")
+                        if not bool(market_regime_ok.get(_idx, False)): _miss.append("market regime not bullish")
+                        if not bool(sector_regime_ok.get(_idx, False)): _miss.append("sector not strong/leading")
+                        if not bool(earnings_safe.get(_idx, False)): _miss.append("earnings within 7d or unverified")
                         _missing.append(", ".join(_miss) if _miss else "None - strict early coil")
+                        _missing_count.append(len(_miss))
                     df_long["Early Missing"] = _missing
+                    df_long["Early Missing Count"] = _missing_count
                     df_long = (
                         df_long.assign(
-                            _s2tier=(strict_r.astype(int) * 2) + (~emerging_r).astype(int),
+                            _s2tier=(qualified_r.astype(int) + strict_r.astype(int)),
+                            _s2missing=pd.to_numeric(df_long["Early Missing Count"], errors="coerce").fillna(99),
                             _s2rank=rank_r,
                             _s2pivot=pivot_dist_r.abs(),
                         )
                         .sort_values(
-                            ["_s2tier", "_s2rank", "_s2pivot"],
-                            ascending=[False, False, True],
+                            ["_s2tier", "_s2missing", "_s2rank", "_s2pivot"],
+                            ascending=[False, True, False, True],
                             kind="stable",
                         )
-                        .drop(columns=["_s2tier", "_s2rank", "_s2pivot"], errors="ignore")
+                        .drop(columns=["_s2tier", "_s2missing", "_s2rank", "_s2pivot"], errors="ignore")
                     )
 
         elif mode == "HIGH CONVICTION":

@@ -39,9 +39,8 @@ def _mode_banner(m: str) -> None:
         )
     elif m == "STAGE 2 BREAKOUT":
         st.info(
-            "**Stage 2 Breakout mode** — early pre-breakout scan. "
-            "It shows tight, quiet bases before the move and excludes stocks already at/above the pivot "
-            "or already moving strongly. It also includes an Emerging Base Radar for stocks waiting on trend confirmation."
+            "**Stage 2 Breakout mode** — qualified early pre-breakout scan plus a transparent developing watch layer. "
+            "Already-moved stocks stay excluded. Developing rows are marked NOT QUALIFIED and show exactly why they failed."
         )
 
 
@@ -772,7 +771,8 @@ def render_long(ctx: dict) -> None:
     elif m == "STAGE 2 BREAKOUT":
         st.info(
             "**Stage 2 Breakout** — these are early watchlist candidates, not buys yet. "
-            "Enter only after price clears the pivot on at least 1.5x average volume."
+            "Enter only after price clears the Stage 2 Entry on at least 1.5x RVOL pace. "
+            "Use the displayed failed-breakout exit, hard stop, target, time stop, and position size."
         )
     else:
         st.info(
@@ -796,9 +796,23 @@ def render_long(ctx: dict) -> None:
     if df_long.empty:
         master_long = st.session_state.get("df_long_master", pd.DataFrame())
         if m == "STAGE 2 BREAKOUT":
+            _stage2_economics = {"Post-Pivot Room", "Stage 2 Risk%", "Stage 2 R:R"}
+            _s2_debug = st.session_state.get("last_scan_debug", {}) or {}
+            if isinstance(master_long, pd.DataFrame) and not master_long.empty and not _stage2_economics.issubset(master_long.columns):
+                st.warning(
+                    "This cached scan predates the corrected Stage 2 post-pivot runway and handle-risk calculations. "
+                    "Run Scan once to calculate the new Stage 2 economics; the old cache cannot prove whether a setup qualifies."
+                )
+                return
+            st.caption(
+                f"Full-universe Stage 2 prefilter: {_s2_debug.get('stage2_fast_candidates', 0)} quiet bases found; "
+                f"{_s2_debug.get('stage2_promoted_to_deep_scan', 0)} promoted into the full signal engine."
+            )
             st.info(
-                "No strict, near-early, or emerging-base candidates passed today. Already-moved and above-pivot "
-                "stocks remain excluded. Run a fresh scan later as bases and relative strength develop."
+                "No buy-quality early Stage 2 swing setups passed today. Early-looking bases were rejected when "
+                "they lacked usable entry quality, ATR/estimated move, post-pivot runway, Stage 2 breakout R:R, "
+                "quality score, bullish market/sector confirmation, or verified earnings safety. "
+                "This mode shows no trade instead of filling the list with weak candidates."
             )
             return
         if isinstance(master_long, pd.DataFrame) and not master_long.empty:
@@ -971,32 +985,45 @@ def render_long(ctx: dict) -> None:
 
     elif m == "STAGE 2 BREAKOUT":
         action_stage2 = df_long.get("Action", pd.Series([""] * len(df_long))).astype(str)
-        strict_df = df_long[action_stage2.str.contains("EARLY STAGE 2 COIL", na=False)]
-        near_df = df_long[action_stage2.str.contains("NEAR EARLY STAGE 2", na=False)]
-        emerging_df = df_long[action_stage2.str.contains("EMERGING BASE RADAR", na=False)]
+        strict_df = df_long[action_stage2.str.contains("QUALIFIED EARLY STAGE 2", na=False)]
+        near_df = df_long[action_stage2.str.contains("QUALIFIED NEAR-EARLY STAGE 2", na=False)]
+        developing_df = df_long[action_stage2.str.contains("DEVELOPING STAGE 2", na=False)]
+        _s2_debug = st.session_state.get("last_scan_debug", {}) or {}
         st.caption(
-            f"Strict early: {len(strict_df)} | Trend-confirmed near-early: {len(near_df)} | "
-            f"Emerging bases: {len(emerging_df)} | Sectors: "
+            f"Qualified strict early: {len(strict_df)} | Qualified near-early: {len(near_df)} | "
+            f"Developing / not qualified: {len(developing_df)} | Sectors: "
             f"{df_long['Sector'].nunique() if 'Sector' in df_long.columns else '-'}"
         )
-        st.info(
-            "Every displayed stock remains below its pivot, quiet, relatively strong, and not already strongly moving. "
-            "**Strict early** passes every early gate. **Near early** is still safe but shows the missing strict "
-            "condition in **Early Missing**. **Emerging Base Radar** is earlier still and must first confirm its "
-            "50/200-day trend. All remain watchlists until a future pivot break on 1.5x volume."
+        st.caption(
+            f"Full-universe Stage 2 prefilter: {_s2_debug.get('stage2_fast_candidates', 0)} quiet bases found; "
+            f"{_s2_debug.get('stage2_promoted_to_deep_scan', 0)} promoted into the full signal engine."
         )
+        if not strict_df.empty or not near_df.empty:
+            st.info(
+                "Qualified rows pass price structure, R:R, bullish market/sector, and earnings-safety gates. They "
+                "remain watchlists until Stage 2 Volume Gate becomes PASS on a future breakout. Capture qualified "
+                "rows in Performance Tracker to measure actual forward results."
+            )
         if not strict_df.empty:
-            st.markdown(f"#### Strict Early Stage 2 Coils ({len(strict_df)})")
+            st.markdown(f"#### Qualified Strict Early Coils ({len(strict_df)})")
             st.caption("All early gates passed. Wait for the pivot break plus at least 1.5x average volume.")
             show_table(strict_df, "stage2_early_coils", "Stage 2 Rank Score")
         if not near_df.empty:
-            st.markdown(f"#### Trend-Confirmed Near-Early Watchlist ({len(near_df)})")
+            st.markdown(f"#### Qualified Near-Early Watchlist ({len(near_df)})")
             st.caption("Still early and below pivot. Check Early Missing and wait for that condition to improve before the breakout trigger.")
             show_table(near_df, "stage2_near_early", "Stage 2 Rank Score")
-        if not emerging_df.empty:
-            st.markdown(f"#### Emerging Base Radar ({len(emerging_df)})")
-            st.caption("Earliest watch layer. Tight/quiet with relative strength, but wait for 50/200-day trend confirmation before the pivot trigger.")
-            show_table(emerging_df, "stage2_emerging_base", "Stage 2 Rank Score")
+        if not developing_df.empty:
+            st.warning(
+                "No buy-quality Stage 2 setup passed. The rows below are the closest genuinely early bases, shown for "
+                "monitoring only. They are NOT QUALIFIED; check Early Missing before considering any future breakout."
+            )
+            st.markdown(f"#### Developing Early Bases - Not Qualified ({len(developing_df)})")
+            st.caption(
+                "Only genuine 4+ week Stage 2 bases are shown here. Rows are ordered by the fewest missing "
+                "qualification gates, then Stage 2 strength and pivot proximity. None is a buy until every gate "
+                "passes and price breaks the displayed entry on at least 1.5x volume."
+            )
+            show_table(developing_df, "stage2_developing", "Stage 2 Rank Score")
 
     elif m == "HIGH CONVICTION":
         hc_strong = df_long[action_s.str.contains(

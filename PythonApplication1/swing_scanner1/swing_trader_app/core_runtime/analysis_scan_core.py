@@ -289,6 +289,8 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         "options_skipped_speed_cap": 0,
         "meta_prefetch_targets": 0,
         "fast_meta_candidates": 0,
+        "stage2_fast_candidates": 0,
+        "stage2_promoted_to_deep_scan": 0,
         # v15.6: per-phase timing breakdown
         "timing": {
             "spy_sector_fetch_s":   0.0,
@@ -660,6 +662,71 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         min_prob_strong_short  = 0.64 if regime in ("BEAR", "CAUTION") else 0.68
 
     # ─────────────────────────────────────────────────────────────────────────
+    _stage2_scan_requested = str(st.session_state.get("ui_swing_mode", "")).upper() == "STAGE 2 BREAKOUT"
+
+    def _fast_stage2_prefilter_ok(_df):
+        """Cheap full-universe Stage 2 base check before the deep signal engine."""
+        try:
+            if _df is None or _df.empty or len(_df) < 65:
+                return False
+            _close = _df["Close"].squeeze().ffill()
+            _high = _df["High"].squeeze().ffill()
+            _low = _df["Low"].squeeze().ffill()
+            _vol = _df["Volume"].squeeze().ffill()
+            _p = float(_close.iloc[-1])
+            if _p <= 0 or float(_vol.tail(20).mean()) <= 0:
+                return False
+
+            _ma50 = float(_close.tail(50).mean())
+            _ma200 = float(_close.tail(200).mean()) if len(_close) >= 200 else float(_close.tail(60).mean())
+            _trend = _p > _ma50 and _ma50 >= _ma200 * 0.98
+            if not _trend:
+                return False
+
+            _best = None
+            for _window in (20, 30, 40, 60):
+                if len(_close) < _window + 1:
+                    continue
+                _base_hi = float(_high.iloc[-(_window + 1):-1].max())
+                _base_lo = float(_low.iloc[-(_window + 1):-1].min())
+                _base_range = ((_base_hi / max(_base_lo, 0.01)) - 1.0) * 100.0
+                if _base_range <= 22.0 and (_best is None or _base_range < _best[0]):
+                    _best = (_base_range, _base_hi, _base_lo)
+            if _best is None:
+                return False
+
+            _base_range, _pivot, _base_low = _best
+            _pivot_dist = ((_p / max(_pivot, 0.01)) - 1.0) * 100.0
+            _inner_hi = float(_high.iloc[-11:-1].max())
+            _inner_lo = float(_low.iloc[-11:-1].min())
+            _inner_range = ((_inner_hi / max(_inner_lo, 0.01)) - 1.0) * 100.0
+            _contraction = _inner_range / max(_base_range, 0.01)
+            _quiet_vol = float(_vol.iloc[-11:-1].mean())
+            _prior_vol = float(_vol.iloc[-31:-11].mean())
+            _vdu = _quiet_vol / max(_prior_vol, 1.0)
+            _today = ((_p / max(float(_close.iloc[-2]), 0.01)) - 1.0) * 100.0
+            _five = ((_p / max(float(_close.iloc[-6]), 0.01)) - 1.0) * 100.0
+            _twenty = ((_p / max(float(_close.iloc[-21]), 0.01)) - 1.0) * 100.0
+            return bool(
+                _p >= _base_low * 1.02
+                and -10.0 <= _pivot_dist <= -0.20
+                and _contraction <= 0.95
+                and _vdu <= 1.35
+                and -4.0 <= _today <= 3.0
+                and -8.0 <= _five <= 7.0
+                and -14.0 <= _twenty <= 14.0
+            )
+        except Exception:
+            return False
+
+    _stage2_fast_candidates = set()
+    if _stage2_scan_requested:
+        _stage2_fast_candidates = {
+            _ticker for _ticker, _df in batch_cache.items()
+            if _fast_stage2_prefilter_ok(_df)
+        }
+    scan_debug["stage2_fast_candidates"] = int(len(_stage2_fast_candidates))
+
     # v16 speed: compute a cheap candidate set BEFORE Yahoo metadata calls.
     #
     # The batch OHLCV download is comparatively fast. The slowest step on broad
@@ -774,14 +841,20 @@ def fetch_analysis(green_sectors, red_sectors, regime,
 
     # Limit rich metadata on very broad scans. Missing metadata fields are shown
     # as '–' but price/technical signals still run normally.
+    if _stage2_scan_requested:
+        # Stage 2 needs earnings and sector context for quiet bases that the
+        # normal activity-ranked metadata cap would otherwise omit.
+        _stage2_meta_first = [t for t in all_tickers if t in _stage2_fast_candidates]
+        _meta_targets = list(dict.fromkeys(_stage2_meta_first + _meta_targets))
     if total >= 700 and len(_meta_targets) > 75 and not skip_earnings:
-        _meta_targets = _meta_targets[:75]
+        _meta_cap = max(75, min(150, len(_stage2_fast_candidates))) if _stage2_scan_requested else 75
+        _meta_targets = _meta_targets[:_meta_cap]
 
     scan_debug["meta_prefetch_targets"] = int(len(_meta_targets))
     # EPS revision history is useful for Stage 2 confirmation, but it requires
     # an extra Yahoo fundamentals request. Keep it optional, cached, and capped
     # so selecting other strategies does not slow broad US scans.
-    _stage2_eps_requested = str(st.session_state.get("ui_swing_mode", "")).upper() == "STAGE 2 BREAKOUT"
+    _stage2_eps_requested = _stage2_scan_requested
     _stage2_eps_targets = set(_meta_targets[:30]) if _stage2_eps_requested else set()
     scan_debug["stage2_eps_targets"] = int(len(_stage2_eps_targets))
     _t_now = _time_mod.perf_counter()
@@ -994,7 +1067,11 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 + list(globals().get("extra_tickers", []) or [])
             )
             _deep_ranked = []
-            _must_deep_scan = set(all_tickers[:_live_priority_count]) | _forced_signal_targets
+            _must_deep_scan = (
+                set(all_tickers[:_live_priority_count])
+                | _forced_signal_targets
+                | _stage2_fast_candidates
+            )
             for _rank_ticker in all_tickers:
                 _rank_df = batch_cache.get(_rank_ticker)
                 if _rank_df is None or _rank_df.empty or len(_rank_df) < 60:
@@ -1038,14 +1115,19 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             _deep_signal_targets.update(t for _, t in _deep_ranked[:_deep_scan_cap])
             scan_debug["deep_signal_cap"] = int(_deep_scan_cap)
             scan_debug["deep_signal_targets"] = int(len(_deep_signal_targets))
+            scan_debug["stage2_promoted_to_deep_scan"] = int(
+                len(_stage2_fast_candidates & _deep_signal_targets)
+            )
             scan_debug["deep_signal_full_universe_screened"] = int(total)
         except Exception as _deep_rank_e:
             _deep_signal_targets = set(all_tickers)
             scan_debug["deep_signal_rank_error"] = f"{type(_deep_rank_e).__name__}: {_deep_rank_e}"
+            scan_debug["stage2_promoted_to_deep_scan"] = int(len(_stage2_fast_candidates))
     else:
         scan_debug["deep_signal_cap"] = int(total)
         scan_debug["deep_signal_targets"] = int(total)
         scan_debug["deep_signal_full_universe_screened"] = int(total)
+        scan_debug["stage2_promoted_to_deep_scan"] = int(len(_stage2_fast_candidates))
 
     # v15.8 speed: cap expensive option-chain HTTP calls during broad
     # master scans. Price/volume signals still run for the whole universe;
@@ -1213,6 +1295,8 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     _cheap_ok = (_near_support_fast or _vr_fast >= 1.10 or abs(_today_pct_fast) >= 0.8)
                 elif swing_mode == "PREMARKET MOMENTUM":
                     _cheap_ok = (_today_pct_fast >= 0.2 or _vr_fast >= 1.10 or _breakout_fast or _trend_fast)
+                elif _stage2_scan_requested and ticker in _stage2_fast_candidates:
+                    _cheap_ok = True
                 else:
                     _cheap_ok = (_long_candidate_fast or _short_candidate_fast)
                 if not _cheap_ok:
@@ -2855,6 +2939,61 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 ivr = opt_raw.get("iv_rank_proxy")
                 iv_rank_str = f"{ivr:.2f}× RV" if ivr is not None else "–"
 
+                # Stage 2 trade-plan context. Qualification remains pre-breakout;
+                # these fields define the future entry trigger and risk controls.
+                _s2_entry = float(raw.get("stage2_entry_price", raw.get("stage2_pivot", p)) or p)
+                _s2_stop = float(raw.get("stage2_initial_stop", raw.get("stage2_handle_low", p)) or p)
+                _s2_failed_exit = float(raw.get("stage2_failed_breakout_exit", raw.get("stage2_pivot", p)) or p)
+                _s2_target = float(raw.get("stage2_target_price", p) or p)
+                _s2_trail_trigger = float(raw.get("stage2_trail_trigger", p) or p)
+                _s2_trail_stop = float(raw.get("stage2_trail_stop", p) or p)
+                _s2_market_gate = "PASS" if regime == "BULL" else ("BLOCK" if regime == "BEAR" else "CHECK")
+                if sec_name in green_set or raw.get("stage2_sector_lead"):
+                    _s2_sector_gate = "PASS"
+                elif sec_name in red_set:
+                    _s2_sector_gate = "BLOCK"
+                else:
+                    _s2_sector_gate = "CHECK"
+                if cal_days is None:
+                    _s2_earnings_gate = "CHECK"
+                    _s2_earnings_days = "UNKNOWN"
+                elif 0 <= int(cal_days) <= 7:
+                    _s2_earnings_gate = "BLOCK"
+                    _s2_earnings_days = str(int(cal_days))
+                else:
+                    _s2_earnings_gate = "PASS"
+                    _s2_earnings_days = str(int(cal_days))
+
+                _s2_rvol_pace = float(vr)
+                _s2_rvol_source = "DAILY PROXY"
+                try:
+                    if ticker in intraday_cache and not intraday_cache[ticker].empty:
+                        _s2_intra = _clean_scan_ohlcv(intraday_cache[ticker])
+                        _s2_last_date = pd.Timestamp(_s2_intra.index[-1]).date()
+                        _s2_today_bars = _s2_intra[
+                            [pd.Timestamp(x).date() == _s2_last_date for x in _s2_intra.index]
+                        ]
+                        if ticker.upper().endswith(".HK"):
+                            _s2_expected_bars = 66
+                        elif ticker.upper().endswith(".SI"):
+                            _s2_expected_bars = 84
+                        elif ticker.upper().endswith(".NS"):
+                            _s2_expected_bars = 75
+                        else:
+                            _s2_expected_bars = 78
+                        _s2_progress = min(1.0, max(len(_s2_today_bars) / max(_s2_expected_bars, 1), 0.10))
+                        _s2_rvol_pace = min(20.0, float(vr) / _s2_progress)
+                        _s2_rvol_source = "LIVE PROJECTED PACE"
+                except Exception:
+                    pass
+                _s2_volume_gate = "PASS" if p >= _s2_entry and _s2_rvol_pace >= 1.5 else "WAIT"
+                _s2_buy_trigger = f"Break ${_s2_entry:.2f} with >=1.5x {_s2_rvol_source.lower()}"
+                _s2_exit_plan = (
+                    f"Exit failed breakout <${_s2_failed_exit:.2f}; hard stop ${_s2_stop:.2f}; "
+                    f"trail to ${_s2_trail_stop:.2f} after ${_s2_trail_trigger:.2f}; "
+                    f"time stop Day {int(raw.get('stage2_time_stop_days', 5))}"
+                )
+
                 long_results.append({
                     "Ticker":         ticker,
                     "Sector":         sector_label(ticker),
@@ -2940,6 +3079,28 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "VDU Ratio":      raw.get("stage2_volume_dryup_ratio", 1.0),
                     "Pivot":          f"${raw.get('stage2_pivot', p):.2f}",
                     "Pivot Dist%":    f"{raw.get('stage2_pivot_distance_pct', 0.0):+.1f}%",
+                    "Stage 2 Stop":   f"${raw.get('stage2_handle_low', p):.2f}",
+                    "Stage 2 Risk%":  f"{raw.get('stage2_risk_pct', 99.0):.1f}%",
+                    "Post-Pivot Room": f"{raw.get('stage2_post_pivot_room_pct', 0.0):.1f}%",
+                    "Stage 2 Reward": f"{raw.get('stage2_breakout_reward_pct', 0.0):.1f}%",
+                    "Stage 2 R:R":    f"1:{raw.get('stage2_breakout_rr', 0.0):.1f}",
+                    "Stage 2 Entry":  f"${_s2_entry:.2f}",
+                    "Stage 2 Target": f"${_s2_target:.2f}",
+                    "Failed BO Exit": f"${_s2_failed_exit:.2f}",
+                    "Stage 2 Hard Stop": f"${_s2_stop:.2f}",
+                    "S2 Shares/$1k": int(raw.get("stage2_shares_per_1k_risk", 0)),
+                    "S2 Time Stop": f"Day {int(raw.get('stage2_time_stop_days', 5))}",
+                    "Market Regime": str(regime),
+                    "Stage 2 Market Gate": _s2_market_gate,
+                    "Stage 2 Sector Gate": _s2_sector_gate,
+                    "Earnings Days": _s2_earnings_days,
+                    "Earnings Gate": _s2_earnings_gate,
+                    "S2 RVOL Pace": f"{_s2_rvol_pace:.2f}x",
+                    "S2 RVOL Source": _s2_rvol_source,
+                    "Stage 2 Volume Gate": _s2_volume_gate,
+                    "Stage 2 Buy Trigger": _s2_buy_trigger,
+                    "Stage 2 Exit Plan": _s2_exit_plan,
+                    "Blue Sky":       "YES" if raw.get("stage2_blue_sky") else "NO",
                     "Flat Top Touches": int(raw.get("stage2_flat_top_touches", 0)),
                     "RS Lead":        "YES" if raw.get("stage2_rs_lead") else "NO",
                     "Sector Lead":    "YES" if raw.get("stage2_sector_lead") else "NO",
