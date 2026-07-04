@@ -661,7 +661,7 @@ swing_mode = st.sidebar.selectbox(
         "**Pro 70 / 2.5R** — professional-style high-selectivity strategy requiring multi-pillar confirmation and at least 1:2.5 R:R. SGX uses market-aware price/volume gates. Paper-test first; no win rate is guaranteed.\n\n"
         "**A+ Precision** — fails closed. Shows only clean high-confluence setups with good entry, RR/runway, volume/operator confirmation and no chase/trap risk.\n\n"
         "**Stage 2 Breakout** — risk-managed early pre-breakout screen with market/sector regime, earnings safety, post-pivot R:R, breakout entry, failed-breakout exit, hard stop, target, time stop, and risk-based position sizing. Late/above-pivot stocks stay out. The future 150%+ RVOL surge is the entry trigger.\n\n"
-        "**Early Rally Finder** - all-market accumulation and first-trigger scanner for stocks starting a 1141.HK-style move. Shows accumulation watch, trigger watch, and confirmed early-buy rows; mature or already-extended names are excluded.\n\n"
+        "**Early Rally Finder** - all-market accumulation, quiet second-leg reset, and first-trigger scanner for stocks starting a 1141.HK/1087.HK-style move. Shows accumulation watch, re-accumulation reset, trigger watch, and confirmed early-buy rows; mature or already-extended names are excluded.\n\n"
         "**Strict** — A+ setups only. High probability + full confirmation.\n\n"
         "**Balanced** — practical live candidates (default). Trend + volume + operator.\n\n"
         "**Discovery** — wider watchlist for quiet markets. More results, use Trade Desk to filter.\n\n"
@@ -727,6 +727,8 @@ elif _sm_upper == "EARLY RALLY FINDER":
     st.sidebar.info(
         "**Early Rally Finder mode**\n\n"
         "Finds all-market early accumulation and first-trigger setups before they become obvious chase trades. "
+        "It also detects a prior impulse followed by a 4-24 session low-volume reset and reclaim, "
+        "then keeps that pattern watch-only until the old peak breaks on volume. "
         "It ranks trend/relative strength, volume expansion, base or trigger context, move potential, and risk/reward. "
         "BUY appears only when freshness, extension, entry, trap, liquidity, and R:R gates pass; mature or moved-already rows are excluded."
     )
@@ -1259,7 +1261,10 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
                   "Swing Quality Gate", "Swing Quality Why",
                   "Early Rally Score", "Early Rally Phase", "Early Rally Gate",
                   "Early Rally Buy?", "Early Rally Trigger", "Early Rally Why",
-                  "Early Rally Missing"]:
+                  "Early Rally Missing", "Early Rally Pattern", "Reset Signal",
+                  "Prior Impulse 5D %", "Reset Days", "Reset From Peak %",
+                  "Reset Range 3D %", "Reset Volume Ratio", "Reset Trigger",
+                  "Reset Stop"]:
             if c not in df.columns:
                 df[c] = "–"
         return df
@@ -1442,6 +1447,17 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
         explosion_tier_scan = df_long.get(
             "Explosion Tier", pd.Series([""] * len(df_long), index=df_long.index)
         ).astype(str).str.upper()
+        early_pattern_scan = df_long.get(
+            "Early Rally Pattern", pd.Series([""] * len(df_long), index=df_long.index)
+        ).astype(str).str.upper()
+        early_reaccum_scan = early_pattern_scan.str.contains(
+            "RE-ACCUMULATION", na=False, regex=False
+        )
+        reset_impulse_scan = _scan_num_col("Prior Impulse 5D %", 0.0)
+        reset_days_scan = _scan_num_col("Reset Days", 0.0)
+        reset_from_peak_scan = _scan_num_col("Reset From Peak %", 0.0)
+        reset_range_scan = _scan_num_col("Reset Range 3D %", 99.0)
+        reset_volume_scan = _scan_num_col("Reset Volume Ratio", 99.0)
 
         early_trend = trend_sig | stage2_why_scan.str.contains("TREND>50/200", na=False, regex=False)
         early_relative = relative_sig | rs_lead_scan | sector_lead_scan | stage2_why_scan.str.contains("RSLEAD|SECTOR", na=False, regex=True)
@@ -1451,12 +1467,14 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
             | ((op_score_scan >= 2) & (vol_ratio >= 0.75))
             | (pss_scan >= 2)
             | signals.str.contains("ACCUM|OBV|POCKET PIVOT|VDU|VOL DRY", na=False, regex=True)
+            | early_reaccum_scan
         )
         early_base = (
             ((base_weeks_scan >= 3.0) & (base_range_scan <= 30.0) & stage2_phase_scan.str.contains("EARLY COIL|READY AT PIVOT|BASE BUILDING|BREAKOUT", na=False, regex=True))
             | support_zone
             | structure_sig
             | signals.str.contains("TIGHT|CUP|BASE|HIGHER LOWS|NR7|INSIDE DAY", na=False, regex=True)
+            | early_reaccum_scan
         )
         early_trigger = (
             stage2_phase_scan.str.contains("READY AT PIVOT|BREAKOUT", na=False, regex=True)
@@ -1504,6 +1522,7 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
         early_fresh_structure = (
             early_stage_base | early_coil_base | early_compact_base
         ) & early_fresh_room
+        early_fresh_structure = early_fresh_structure | early_reaccum_scan
         early_moved_label = (
             (pre_mover_tier_scan + " " + explosion_tier_scan).str.contains("MOVED ALREADY", na=False)
         )
@@ -1513,7 +1532,7 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
             | (one_twenty_day_scan > 55.0)
             | (early_moved_label & ~early_fresh_structure)
         )
-        early_not_extended = (
+        early_standard_not_extended = (
             today_pct.between(-3.0, 3.5)
             & five_day_scan.between(-6.0, 12.0)
             & twenty_day_scan.between(-12.0, 20.0)
@@ -1523,6 +1542,15 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
             & (rsi_scan <= 68.0)
             & ~early_mature_run
         )
+        early_reset_not_extended = (
+            early_reaccum_scan
+            & today_pct.between(-3.5, 4.0)
+            & five_day_scan.between(-8.0, 12.0)
+            & (dist_ma20_scan <= 7.0)
+            & (rsi_scan <= 70.0)
+            & ~early_mature_run
+        )
+        early_not_extended = early_standard_not_extended | early_reset_not_extended
         early_pullback_needed = (
             (today_pct > 3.5)
             | (five_day_scan > 12.0)
@@ -1547,6 +1575,7 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
             + (score >= 3).astype(int) * 3
             + (quality_score >= 5).astype(int) * 2
             + early_fresh_structure.astype(int) * 10
+            + early_reaccum_scan.astype(int) * 14
             + (stage2_score_scan.clip(0, 10) * 0.8)
             + (stage2_early_scan.clip(0, 10) * 0.8)
         )
@@ -1567,8 +1596,17 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
             & not_candidate & trap_clean & price_ok & ~early_mature_run
             & (p >= 55) & (score >= 3)
         )
-        early_trigger_watch_mask = (
+        early_reaccum_watch_mask = (
             ~early_buy_mask
+            & (early_rally_score >= 58)
+            & early_reaccum_scan
+            & (early_trend | early_relative)
+            & early_move_potential & early_rr_ok
+            & early_not_extended & ~early_too_late
+            & trap_clean & price_ok
+        )
+        early_trigger_watch_mask = (
+            ~early_buy_mask & ~early_reaccum_watch_mask
             & (early_rally_score >= 60)
             & early_trend & early_volume & (early_base | early_trigger)
             & early_move_potential & early_rr_ok & early_fresh_structure
@@ -1576,7 +1614,7 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
             & trap_clean & price_ok
         )
         early_accum_watch_mask = (
-            ~early_buy_mask & ~early_trigger_watch_mask
+            ~early_buy_mask & ~early_reaccum_watch_mask & ~early_trigger_watch_mask
             & (early_rally_score >= 50)
             & (early_trend | early_relative) & early_volume & early_base
             & early_rr_ok & early_fresh_structure & early_not_extended
@@ -1593,7 +1631,10 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
         )
         # Early Rally is a discovery list, not a recovery list. Extended names
         # are intentionally omitted instead of being recycled as pullback ideas.
-        early_rally_mask = early_buy_mask | early_trigger_watch_mask | early_accum_watch_mask
+        early_rally_mask = (
+            early_buy_mask | early_reaccum_watch_mask
+            | early_trigger_watch_mask | early_accum_watch_mask
+        )
 
         def _early_rally_missing_for_index(_idx):
             _miss = []
@@ -1834,6 +1875,7 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
             df_long = df_long[early_rally_mask].copy()
             if not df_long.empty:
                 buy_r = early_buy_mask.reindex(df_long.index).fillna(False)
+                reaccum_r = early_reaccum_watch_mask.reindex(df_long.index).fillna(False)
                 trigger_r = early_trigger_watch_mask.reindex(df_long.index).fillna(False)
                 accum_r = early_accum_watch_mask.reindex(df_long.index).fillna(False)
                 pullback_r = early_pullback_watch_mask.reindex(df_long.index).fillna(False)
@@ -1851,16 +1893,19 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
                 base_room_r = post_pivot_room_scan.reindex(df_long.index).fillna(0)
 
                 df_long["Action"] = "WATCH - EARLY ACCUMULATION"
+                df_long.loc[reaccum_r, "Action"] = "WATCH - EARLY RALLY RE-ACCUMULATION"
                 df_long.loc[trigger_r, "Action"] = "WATCH - EARLY RALLY TRIGGER"
                 df_long.loc[pullback_r, "Action"] = "WATCH - EARLY RALLY / WAIT PULLBACK"
                 df_long.loc[buy_r, "Action"] = "BUY - CONFIRMED EARLY RALLY"
 
                 df_long["Early Rally Score"] = score_r
                 df_long["Early Rally Phase"] = "ACCUMULATION WATCH"
+                df_long.loc[reaccum_r, "Early Rally Phase"] = "RE-ACCUMULATION RESET"
                 df_long.loc[trigger_r, "Early Rally Phase"] = "TRIGGER WATCH"
                 df_long.loc[pullback_r, "Early Rally Phase"] = "MOVED ALREADY - WAIT PULLBACK"
                 df_long.loc[buy_r, "Early Rally Phase"] = "CONFIRMED EARLY BUY"
                 df_long["Early Rally Gate"] = "WATCH ONLY"
+                df_long.loc[reaccum_r, "Early Rally Gate"] = "WAIT FOR PRIOR PEAK + VOLUME"
                 df_long.loc[trigger_r, "Early Rally Gate"] = "WAIT FOR BREAKOUT + VOLUME"
                 df_long.loc[pullback_r, "Early Rally Gate"] = "WAIT PULLBACK / RESET"
                 df_long.loc[buy_r, "Early Rally Gate"] = "BUY GATE PASS"
@@ -1891,7 +1936,13 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
                 )
                 df_long = (
                     df_long.assign(
-                        _early_tier=buy_r.astype(int) * 4 + trigger_r.astype(int) * 3 + accum_r.astype(int) * 2 - pullback_r.astype(int),
+                        _early_tier=(
+                            buy_r.astype(int) * 5
+                            + trigger_r.astype(int) * 4
+                            + reaccum_r.astype(int) * 3
+                            + accum_r.astype(int) * 2
+                            - pullback_r.astype(int)
+                        ),
                         _early_score=score_r,
                         _early_vr=vr_r,
                         _early_prob=p.reindex(df_long.index).fillna(0),

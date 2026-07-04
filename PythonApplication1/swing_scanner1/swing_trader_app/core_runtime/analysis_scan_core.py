@@ -2,6 +2,153 @@
 Loaded by app_runtime with exec(..., globals()) to preserve the original single-file behavior.
 """
 
+
+def _early_rally_reset_metrics(close, high, low, vol, is_asia_market=False):
+    """Detect a quiet second-leg reset after a recent controlled impulse.
+
+    This complements the multi-week Stage 2 path. It is intentionally a
+    watch-only pattern until price clears the prior impulse peak on volume.
+    """
+    result = {
+        "qualified": False,
+        "prior_impulse_5d_pct": 0.0,
+        "reset_days": 0,
+        "reset_from_peak_pct": 0.0,
+        "reset_range_3d_pct": 99.0,
+        "reset_volume_ratio": 99.0,
+        "reset_turnover": 0.0,
+        "reset_signal": "",
+        "trigger": 0.0,
+        "stop": 0.0,
+    }
+    try:
+        bars = pd.concat(
+            [
+                pd.Series(close, name="Close"),
+                pd.Series(high, name="High"),
+                pd.Series(low, name="Low"),
+                pd.Series(vol, name="Volume"),
+            ],
+            axis=1,
+        ).dropna(subset=["Close", "High", "Low", "Volume"])
+        if len(bars) < 25:
+            return result
+
+        rolling_5d = bars["Close"].pct_change(5).mul(100.0)
+        search_end = max(len(bars) - 3, 0)
+        search_start = max(5, search_end - 32)
+        impulse_search = rolling_5d.iloc[search_start:search_end]
+        qualifying_impulses = impulse_search[
+            impulse_search.between(12.0, 50.0, inclusive="both")
+        ]
+        if qualifying_impulses.empty:
+            return result
+
+        # Prefer the most recent qualifying impulse, not the largest old move.
+        impulse_label = qualifying_impulses.index[-1]
+        impulse_pos = int(bars.index.get_loc(impulse_label))
+        reset_days = int(len(bars) - 1 - impulse_pos)
+        peak_start = max(0, impulse_pos - 5)
+        prior_peak = float(bars["High"].iloc[peak_start:impulse_pos + 1].max())
+        price = float(bars["Close"].iloc[-1])
+        if price <= 0 or prior_peak <= 0:
+            return result
+
+        prior_impulse = float(qualifying_impulses.iloc[-1])
+        reset_from_peak = (price / prior_peak - 1.0) * 100.0
+        recent_5d = (
+            (price / float(bars["Close"].iloc[-6]) - 1.0) * 100.0
+            if len(bars) >= 6 and float(bars["Close"].iloc[-6]) > 0
+            else 0.0
+        )
+        previous_close = float(bars["Close"].iloc[-2])
+        today_pct = (price / previous_close - 1.0) * 100.0 if previous_close > 0 else 0.0
+
+        ma5 = float(bars["Close"].tail(5).mean())
+        ma10 = float(bars["Close"].tail(10).mean())
+        previous_ma5 = float(bars["Close"].iloc[-6:-1].mean())
+        reclaim_ok = bool(
+            price >= ma5
+            and price >= ma10 * 0.97
+            and ma5 >= previous_ma5 * 0.99
+        )
+
+        volume_reference = float(bars["Volume"].iloc[-21:-1].mean())
+        recent_volume = float(bars["Volume"].tail(3).mean())
+        current_volume = float(bars["Volume"].iloc[-1])
+        reset_volume_ratio = (
+            recent_volume / volume_reference if volume_reference > 0 else 99.0
+        )
+        current_volume_ratio = (
+            current_volume / volume_reference if volume_reference > 0 else 99.0
+        )
+        volume_dryup = bool(
+            volume_reference > 0
+            and (
+                current_volume <= volume_reference * 0.85
+                or recent_volume <= volume_reference * 0.75
+            )
+        )
+
+        range_low = float(bars["Low"].tail(3).min())
+        range_high = float(bars["High"].tail(3).max())
+        reset_range = (
+            (range_high / range_low - 1.0) * 100.0 if range_low > 0 else 99.0
+        )
+        max_reset_range = 18.0 if is_asia_market else 10.0
+        turnover = price * volume_reference
+        min_turnover = 75_000.0 if is_asia_market else 500_000.0
+
+        common_structure = bool(
+            4 <= reset_days <= 24
+            and -22.0 <= reset_from_peak <= -3.0
+            and -8.0 <= recent_5d <= 12.0
+            and reset_range <= max_reset_range
+            and reclaim_ok
+            and turnover >= min_turnover
+        )
+        quiet_reset = bool(
+            common_structure
+            and -3.5 <= today_pct <= 4.0
+            and volume_dryup
+        )
+        day_range = float(bars["High"].iloc[-1] - bars["Low"].iloc[-1])
+        close_position = (
+            (price - float(bars["Low"].iloc[-1])) / day_range
+            if day_range > 0
+            else 0.5
+        )
+        reclaim_day = bool(
+            common_structure
+            and 4.0 < today_pct <= 9.0
+            and 0.85 <= current_volume_ratio <= 2.50
+            and close_position >= 0.65
+        )
+        qualified = quiet_reset or reclaim_day
+        reset_signal = (
+            "RECLAIM DAY" if reclaim_day
+            else ("QUIET RESET" if quiet_reset else "")
+        )
+        reset_low = float(bars["Low"].tail(min(reset_days + 1, 10)).min())
+        result.update(
+            {
+                "qualified": qualified,
+                "prior_impulse_5d_pct": round(prior_impulse, 2),
+                "reset_days": reset_days,
+                "reset_from_peak_pct": round(reset_from_peak, 2),
+                "reset_range_3d_pct": round(reset_range, 2),
+                "reset_volume_ratio": round(reset_volume_ratio, 2),
+                "reset_turnover": round(turnover, 0),
+                "reset_signal": reset_signal,
+                "trigger": round(prior_peak * 1.003, 3),
+                "stop": round(reset_low * 0.985, 3),
+            }
+        )
+    except Exception:
+        return result
+    return result
+
+
 def detect_traps(open_, high_, low_, close_, vol_, atr, swing_high, swing_low):
     """
     Detect classic operator manipulation patterns.
@@ -1583,6 +1730,17 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 and _today_chg_abs >= 5.0
                 and vr >= 1.5
             )
+            # Compute chase state before confidence, Early Rally, and entry
+            # gates use it. Defining this only in the later entry-quality block
+            # caused the first eligible ticker to raise UnboundLocalError and
+            # allowed later loop iterations to inherit stale state.
+            is_chasing = bool(
+                (
+                    not raw.get("not_chasing", True)
+                    or not raw.get("not_limit_up", True)
+                )
+                and not post_earnings_gap
+            )
             major_trap_risk = (
                 (false_breakout or distribution_risk
                  or (gap_chase_risk and _today_chg_abs > 10))
@@ -2528,6 +2686,13 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 or operator_score >= 2
                 or raw.get("pss_score", 0) >= 2
             )
+            _er_reset = _early_rally_reset_metrics(
+                close, high, low, vol, is_asia_market=is_asia_market
+            )
+            _er_reaccumulation = bool(
+                _er_reset.get("qualified", False)
+                and not major_trap_risk
+            )
             _er_base = bool(
                 raw.get("stage2_base_weeks", 0) >= 3
                 or _compression_ok
@@ -2535,6 +2700,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 or support_tier >= 1
                 or raw.get("tight_flag", False)
                 or raw.get("cup_handle", False)
+                or _er_reaccumulation
             )
             _er_trigger = bool(
                 raw.get("stage2_phase") in ("READY AT PIVOT", "BREAKOUT - TOO LATE")
@@ -2572,8 +2738,11 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 )
             )
             _er_fresh_structure = bool(
-                (_er_stage_base or _er_coil_base or _er_compact_base)
-                and _er_fresh_room
+                (
+                    (_er_stage_base or _er_coil_base or _er_compact_base)
+                    and _er_fresh_room
+                )
+                or _er_reaccumulation
             )
             _er_dist_ma20_pct = (
                 (p_raw / float(raw.get("ma20", 0)) - 1.0) * 100.0
@@ -2590,7 +2759,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 or _recent_120d_pct > 55.0
                 or (_er_moved_label and not _er_fresh_structure)
             )
-            _er_not_extended = bool(
+            _er_standard_not_extended = bool(
                 -3.0 <= today_chg <= 3.5
                 and -6.0 <= _recent_5d_pct <= 12.0
                 and -12.0 <= _recent_20d_pct <= 20.0
@@ -2599,6 +2768,17 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 and _er_dist_ma20_pct <= 5.0
                 and rsi_now <= 68.0
                 and not _er_mature_run
+            )
+            _er_reset_not_extended = bool(
+                _er_reaccumulation
+                and -3.5 <= today_chg <= 4.0
+                and -8.0 <= _recent_5d_pct <= 12.0
+                and _er_dist_ma20_pct <= 7.0
+                and rsi_now <= 70.0
+                and not _er_mature_run
+            )
+            _er_not_extended = bool(
+                _er_standard_not_extended or _er_reset_not_extended
             )
             _er_pullback_needed = bool(
                 today_chg > 3.5
@@ -2627,6 +2807,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 + (3 if l_score >= 3 else 0)
                 + (2 if quality_score >= 5 else 0)
                 + (10 if _er_fresh_structure else 0)
+                + (14 if _er_reaccumulation else 0)
                 + min(int(raw.get("stage2_score", 0) or 0), 10) * 0.8
                 + min(int(raw.get("stage2_early_score", 0) or 0), 10) * 0.8
                 - (12 if not _er_fresh_structure else 0)
@@ -2642,14 +2823,26 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 and _er_not_extended and _er_entry_ok
                 and next_day_buy_ok and not _er_too_late
             )
+            early_rally_reaccum_watch = bool(
+                not early_rally_buy
+                and early_rally_score >= 58
+                and _er_reaccumulation
+                and (_er_trend or _er_relative)
+                and _er_move_potential
+                and _er_rr_ok
+                and _er_not_extended
+                and not _er_too_late
+            )
             early_rally_trigger_watch = bool(
-                not early_rally_buy and early_rally_score >= 60
+                not early_rally_buy and not early_rally_reaccum_watch
+                and early_rally_score >= 60
                 and _er_trend and _er_volume and (_er_base or _er_trigger)
                 and _er_move_potential and _er_rr_ok and _er_fresh_structure
                 and _er_not_extended and not _er_pullback_needed and not _er_too_late
             )
             early_rally_accum_watch = bool(
-                not early_rally_buy and not early_rally_trigger_watch and early_rally_score >= 50
+                not early_rally_buy and not early_rally_reaccum_watch
+                and not early_rally_trigger_watch and early_rally_score >= 50
                 and (_er_trend or _er_relative) and _er_volume and _er_base
                 and _er_rr_ok and _er_fresh_structure and _er_not_extended
                 and not _er_pullback_needed and not _er_too_late
@@ -2681,6 +2874,8 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             if swing_mode == "EARLY RALLY FINDER":
                 if early_rally_buy:
                     l_action = "BUY - CONFIRMED EARLY RALLY"
+                elif early_rally_reaccum_watch:
+                    l_action = "WATCH - EARLY RALLY RE-ACCUMULATION"
                 elif early_rally_pullback_watch:
                     l_action = None
                 elif early_rally_trigger_watch:
@@ -2892,12 +3087,8 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                                raw.get("vol_declining") and raw.get("not_chasing") and \
                                raw.get("not_limit_up")
                 is_vol_surge = long_sig.get("vol_surge_up", False)   # vol burst entry
-                # post_earnings_gap is defined above (near major_trap_risk)
-                # so this reference is safe.
-                is_chasing   = (
-                    (not raw.get("not_chasing", True) or not raw.get("not_limit_up", True))
-                    and not post_earnings_gap
-                )
+                # post_earnings_gap and is_chasing are computed before all
+                # confidence/strategy gates so every ticker gets fresh state.
                 is_stopped   = raw.get("ma60_stop_triggered", False)
 
                 if is_stopped:
@@ -3176,6 +3367,10 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     _er_phase = "CONFIRMED EARLY BUY"
                     _er_gate = "BUY GATE PASS"
                     _er_buy = "YES"
+                elif early_rally_reaccum_watch:
+                    _er_phase = "RE-ACCUMULATION RESET"
+                    _er_gate = "WAIT FOR PRIOR PEAK + VOLUME"
+                    _er_buy = "NO"
                 elif early_rally_pullback_watch:
                     _er_phase = "MOVED ALREADY - WAIT PULLBACK"
                     _er_gate = "WAIT PULLBACK / RESET"
@@ -3193,13 +3388,22 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     _er_gate = "FAIL"
                     _er_buy = "NO"
                 _er_trigger = _s2_buy_trigger if raw.get("stage2_score", 0) else "Break pivot/recent high with >=1.5x volume; stop near support"
+                if early_rally_reaccum_watch:
+                    _er_trigger = (
+                        f"Break ${float(_er_reset.get('trigger', 0) or 0):.3f} "
+                        f"with >=1.5x volume; reset stop "
+                        f"${float(_er_reset.get('stop', 0) or 0):.3f}"
+                    )
                 if early_rally_pullback_watch:
                     _er_trigger = "Do not chase; wait for pullback, tight base, or reset near support"
                 _er_why = (
                     f"Score={early_rally_score}; 5D={_recent_5d_pct:.1f}%; 20D={_recent_20d_pct:.1f}%; "
                     f"60D={_recent_60d_pct:.1f}%; 120D={_recent_120d_pct:.1f}%; "
                     f"Vol={vr:.2f}x; RR={rr_est:.1f}; Room={upside_to_resistance:.1f}%; "
-                    f"BaseRoom={float(raw.get('stage2_post_pivot_room_pct', 0) or 0):.1f}%"
+                    f"BaseRoom={float(raw.get('stage2_post_pivot_room_pct', 0) or 0):.1f}%; "
+                    f"ResetSignal={str(_er_reset.get('reset_signal', '') or '-')}; "
+                    f"ResetImpulse={float(_er_reset.get('prior_impulse_5d_pct', 0) or 0):.1f}%; "
+                    f"ResetFromPeak={float(_er_reset.get('reset_from_peak_pct', 0) or 0):.1f}%"
                 )
 
                 long_results.append({
@@ -3318,6 +3522,15 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "Early Rally Trigger": _er_trigger,
                     "Early Rally Why": _er_why,
                     "Early Rally Missing": early_rally_missing,
+                    "Early Rally Pattern": "RE-ACCUMULATION RESET" if _er_reaccumulation else "STANDARD",
+                    "Reset Signal": str(_er_reset.get("reset_signal", "") or ""),
+                    "Prior Impulse 5D %": f"{float(_er_reset.get('prior_impulse_5d_pct', 0) or 0):.1f}%",
+                    "Reset Days": int(_er_reset.get("reset_days", 0) or 0),
+                    "Reset From Peak %": f"{float(_er_reset.get('reset_from_peak_pct', 0) or 0):+.1f}%",
+                    "Reset Range 3D %": f"{float(_er_reset.get('reset_range_3d_pct', 0) or 0):.1f}%",
+                    "Reset Volume Ratio": f"{float(_er_reset.get('reset_volume_ratio', 0) or 0):.2f}x",
+                    "Reset Trigger": f"${float(_er_reset.get('trigger', 0) or 0):.3f}",
+                    "Reset Stop": f"${float(_er_reset.get('stop', 0) or 0):.3f}",
                     "Blue Sky":       "YES" if raw.get("stage2_blue_sky") else "NO",
                     "Flat Top Touches": int(raw.get("stage2_flat_top_touches", 0)),
                     "RS Lead":        "YES" if raw.get("stage2_rs_lead") else "NO",

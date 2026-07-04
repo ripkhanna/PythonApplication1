@@ -112,5 +112,53 @@ streamlit run main.py
   target/stop/horizon combinations such as +3/-3, +4/-4 and +5/-5 across the
   selected max hold window, and qualifies only profiles that clear the 70% gate
   with positive expectancy.
+
+## v15.1 70% accuracy guard
+- Strategy Finder's 70% gate now requires three things: target-before-stop win
+  rate at or above the selected threshold, positive expectancy after the chosen
+  target/stop, and a recent-sample confirmation check. A strategy with a good
+  old headline win rate but weak recent results is marked `NO`.
+
+## Early Rally Finder fix
+- Compact 3-16 week contracting bases can now enter the watch layer even while
+  Stage 2 still labels them pre-qualification.
+- Freshness accepts usable Stage 2 runway (6%+) or independently measured
+  resistance clearance (8%+), fixing the former all-empty result caused by
+  requiring 8% only from the conservative Post-Pivot Room field.
+- Trigger and accumulation watches still require trend/volume, R:R or upside,
+  non-extended price action, and clean risk. Confirmed buys retain the stricter
+  tradeable-entry gate.
+- HK and SGX use regional price floors instead of the US $5 liquidity floor.
+
+## Permanent Performance Tracker storage
+- Captured candidates and outcome updates are stored in
+  `user_data/performance_tracker.sqlite3`, outside the scanner cache.
+- Clearing `scanner_cache` no longer removes Performance Tracker history.
+- Existing `scanner_cache/performance_tracker.csv` rows are migrated
+  automatically when the database is first opened.
+- SQLite writes use transactions, a busy timeout, full synchronous durability,
+  and WAL checkpointing so repeated capture/update operations remain safe.
+
+## Early Rally second-leg reset detection
+- Early Rally Finder now detects a recent 12-50% five-session impulse followed
+  by a 4-24 session controlled reset, quieter volume, a tight three-day range,
+  and an MA5/MA10 reclaim while price remains below the old peak.
+- These rows are labeled `WATCH - EARLY RALLY RE-ACCUMULATION`; they are never
+  buys until the displayed prior-peak trigger breaks with at least 1.5x volume.
+- A historical 1087.HK replay produced a reclaim-day watch on 2026-06-24,
+  a quiet-reset watch on 2026-06-25, and stopped qualifying after the
+  2026-06-26 extension. On the 150-name HK comparison set, only 1087.HK and
+  6083.HK qualified on June 25.
+- Performance Tracker can capture the new `Early Rally Watch` source so its
+  forward hit rate can be measured instead of assumed.
+- The default Strategy Finder sample requirement is now 12 trades so tiny
+  sample winners are less likely to look tradable.
+- Applying a finder strategy to the latest scan now carries the historical
+  evidence into the candidate grid: 70% gate, historical win, recent win,
+  trade count, expectancy, and the best qualified exit profile.
+- Pro 70 / 2.5R still fails closed for exact buys. When exact buys are empty,
+  the app can show only the closest watch candidates as
+  `WATCH - PRO 70 NEAR MISS`, with `Pro Missing` explaining which pillars are
+  still absent. These rows are watch-only, not buy signals.
 - ㉑ ⭐ Pro Setups tab: professional confluence scoring, ranked trade cards
 - ㉒ 📦 Range Trader tab: detects oscillating stocks with exact buy/sell/stop levels

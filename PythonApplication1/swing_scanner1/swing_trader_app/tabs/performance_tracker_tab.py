@@ -444,6 +444,30 @@ def _candidate_rows(src: pd.DataFrame, top_n: int, sources: list[str], include_w
                 pick["Entry Price"] = pick["Trigger"]
                 rows.append(pick)
 
+    if "Early Rally Watch" in sources:
+        action = _text_series(src, "Action").str.upper()
+        phase = _text_series(src, "Early Rally Phase").str.upper()
+        early = src[
+            action.str.contains("EARLY RALLY|EARLY ACCUMULATION", regex=True, na=False)
+            & ~phase.str.contains("NOT EARLY|MOVED ALREADY", regex=True, na=False)
+        ].copy()
+        if not early.empty:
+            early["_tracker_score"] = _num_series(early, "Early Rally Score", 0)
+            early = early.sort_values("_tracker_score", ascending=False).head(top_n)
+            for _, row in early.iterrows():
+                pick_row = row.copy()
+                reset_trigger = _num_value(row.get("Reset Trigger", 0))
+                reset_stop = _num_value(row.get("Reset Stop", 0))
+                stage2_trigger = _num_value(row.get("Stage 2 Entry", 0))
+                stage2_stop = _num_value(row.get("Stage 2 Hard Stop", 0))
+                pick_row["_tracker_trigger"] = reset_trigger or stage2_trigger
+                pick_row["_tracker_stop"] = reset_stop or stage2_stop
+                rows.append(_row_to_pick(
+                    pick_row, market, selection_date, scan_time, "Early Rally Watch",
+                    "Early Rally Phase", "_tracker_score", "Early Rally Why",
+                    "_tracker_trigger", "_tracker_stop",
+                ))
+
     if "Momentum Runner" in sources:
         try:
             from swing_trader_app.tabs.momentum_runner_tab import _classify as _runner_classify
@@ -686,8 +710,8 @@ def render_performance_tracker(ctx: dict) -> None:
     with c1:
         source_choices = st.multiselect(
             "Capture from",
-            ["Best 7-10%", "Next-Day 5-10%", "Long Buy", "Stage 2 Qualified", "Momentum Runner"],
-            default=["Best 7-10%", "Next-Day 5-10%", "Long Buy", "Stage 2 Qualified"],
+            ["Best 7-10%", "Next-Day 5-10%", "Long Buy", "Stage 2 Qualified", "Early Rally Watch", "Momentum Runner"],
+            default=["Best 7-10%", "Next-Day 5-10%", "Long Buy", "Stage 2 Qualified", "Early Rally Watch"],
             key="perf_sources",
         )
     with c2:

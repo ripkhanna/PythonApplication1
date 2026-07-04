@@ -331,7 +331,7 @@ Prefer stocks from strong sectors/themes. If sector is red or weak, require stro
 Use **12 Advanced -> Performance Tracker** to judge the scanner by real follow-through.
 
 Workflow:
-- After a scan, click **Capture Current Candidates** to save candidates from Best 7-10%, Next-Day 5-10%, Long Buy, and optional Momentum Runner.
+- After a scan, click **Capture Current Candidates** to save candidates from Best 7-10%, Next-Day 5-10%, Long Buy, Stage 2, Early Rally Watch, and optional Momentum Runner.
 - After 1-7 trading days, click **Update Outcomes** to fetch daily bars and calculate max gain, drawdown, +3/+5/+7/+10 hits, and whether the stop hit before +5%.
 - Review **What Is Working** by Source and Tier. If a tab has low +5% hit rate or high Stop First rate, treat it as watchlist-only until filters improve.
 

@@ -47,6 +47,8 @@ def _mode_banner(m: str) -> None:
             "**Early Rally Finder** - all-market scan for early accumulation and first-trigger names. "
             "BUY rows passed freshness, extension, entry, trap, volume, and R:R gates. "
             "Watch rows may use a compact contracting base with usable Stage 2 or resistance runway. "
+            "Re-accumulation rows identify a prior impulse followed by a quiet reset and reclaim; "
+            "they stay watch-only until the prior peak breaks on volume. "
             "Mature and already-extended names are excluded."
         )
 
@@ -827,6 +829,37 @@ def render_long(ctx: dict) -> None:
                 "This mode shows no trade instead of filling the list with weak candidates."
             )
             return
+        if m == "EARLY RALLY FINDER":
+            reset_columns = {
+                "Early Rally Pattern", "Reset Signal", "Prior Impulse 5D %",
+                "Reset Days", "Reset From Peak %", "Reset Trigger",
+            }
+            if (
+                isinstance(master_long, pd.DataFrame)
+                and not master_long.empty
+                and not reset_columns.issubset(master_long.columns)
+            ):
+                st.warning(
+                    "This HK cache predates the Early Rally re-accumulation detector. "
+                    "Run Scan once to calculate the reset and prior-impulse fields."
+                )
+                return
+            evaluated = len(master_long) if isinstance(master_long, pd.DataFrame) else 0
+            reset_count = 0
+            if evaluated and "Early Rally Pattern" in master_long.columns:
+                reset_count = int(
+                    master_long["Early Rally Pattern"].astype(str)
+                    .str.contains("RE-ACCUMULATION", case=False, na=False)
+                    .sum()
+                )
+            st.info(
+                f"No fresh Early Rally setup qualifies **right now** for **{last_market}**. "
+                f"The scan evaluated **{evaluated}** long rows and found **{reset_count}** "
+                "valid re-accumulation resets. Historical replay examples such as 1087.HK "
+                "do not remain in this live list after they become extended. Run this scan "
+                "daily after the close; a row appears only while its early window is still open."
+            )
+            return
         if isinstance(master_long, pd.DataFrame) and not master_long.empty:
             st.info(
                 f"No **{swing_mode}** long setups passed for **{last_market}**. "
@@ -998,11 +1031,13 @@ def render_long(ctx: dict) -> None:
     elif m == "EARLY RALLY FINDER":
         action_er = df_long.get("Action", pd.Series([""] * len(df_long))).astype(str)
         buy_df = df_long[action_er.str.contains("CONFIRMED EARLY RALLY", na=False)]
+        reaccum_df = df_long[action_er.str.contains("EARLY RALLY RE-ACCUMULATION", na=False)]
         trigger_df = df_long[action_er.str.contains("EARLY RALLY TRIGGER", na=False)]
         accum_df = df_long[action_er.str.contains("EARLY ACCUMULATION", na=False)]
 
         st.caption(
-            f"Confirmed early buys: {len(buy_df)} | Trigger watches: {len(trigger_df)} | "
+            f"Confirmed early buys: {len(buy_df)} | Re-accumulation watches: {len(reaccum_df)} | "
+            f"Trigger watches: {len(trigger_df)} | "
             f"Accumulation watches: {len(accum_df)} | "
             f"Sectors: {df_long['Sector'].nunique() if 'Sector' in df_long.columns else '-'}"
         )
@@ -1020,6 +1055,13 @@ def render_long(ctx: dict) -> None:
             st.markdown(f"#### Trigger Watch - Near Breakout ({len(trigger_df)})")
             st.caption("Price/structure is close. Wait for the displayed trigger and volume confirmation before buying.")
             show_table(trigger_df, "early_rally_triggers", "Early Rally Score")
+        if not reaccum_df.empty:
+            st.markdown(f"#### Re-Accumulation Reset Watch ({len(reaccum_df)})")
+            st.caption(
+                "A prior impulse has reset on quieter volume. This is not a buy: "
+                "wait for the displayed prior-peak trigger with at least 1.5x volume."
+            )
+            show_table(reaccum_df, "early_rally_reaccumulation", "Early Rally Score")
         if not accum_df.empty:
             with st.expander(f"Accumulation Watch - Early Base ({len(accum_df)})", expanded=True):
                 st.caption("Early money-flow or base evidence exists, but these rows still need a clearer trigger or buy gate.")

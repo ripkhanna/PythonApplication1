@@ -634,6 +634,8 @@ def show_table(df, label, prob_col="Rise Prob"):
         wanted = [
             "Rank", "Ticker", "Action", "Early Rally Score", "Early Rally Phase", "Early Rally Gate",
             "Early Rally Buy?", "Early Rally Trigger", "Early Rally Missing", "Early Rally Why",
+            "Early Rally Pattern", "Reset Signal", "Prior Impulse 5D %", "Reset Days", "Reset From Peak %",
+            "Reset Range 3D %", "Reset Volume Ratio", "Reset Trigger", "Reset Stop",
             "Entry Quality", "Tradeable Buy", "Quality Score", "Next-Day Score", "Rise Prob",
             "Today %", "5D %", "20D %", "60D %", "120D %", "Vol Ratio", "ATR%", "Upside to Res", "RR Est",
             "Price", "Pivot", "Pivot Dist%", "Stage 2 Entry", "Stage 2 Volume Gate",
@@ -644,6 +646,7 @@ def show_table(df, label, prob_col="Rise Prob"):
         wanted = [
             "Rank", "Ticker", "Action", "View", "Buy Condition",
             "Entry Quality", "Tradeable Buy", "Trade Tier", "Early Rally Score", "Early Rally Phase", "Early Rally Gate", "Early Rally Buy?", "Early Rally Trigger", "Early Rally Missing", "Early Rally Why", "7-Star Score", "7-Star Tier", "7-Star Why", "Explosion Score", "Explosion Tier", "Explosion Why", "Pre-Mover Score", "Pre-Mover Tier", "Pre-Mover Why", "Quality Score", "Next-Day Score", "Next-Day Rating", "Next-Day Move", "7D Move Est", "Upside to Res", "RR Est", "Setup Type", "Today %", "5D %", "20D %", "60D %", "120D %", "Rise Prob", "Swing Rank Score", "Pro Pillars", "Pro Score", "Pro 70 Gate", "Pro Validation", "Pro Missing", "Pro Why", "PI Proxy", "Tier", "Why Buy",
+            "Early Rally Pattern", "Reset Signal", "Prior Impulse 5D %", "Reset Days", "Reset From Peak %", "Reset Range 3D %", "Reset Volume Ratio", "Reset Trigger", "Reset Stop",
             "Stage 2 Rank Score", "Early Score", "Stage 2 Score", "Stage 2 Phase", "Base Weeks", "Base Range%",
             "Contraction", "VDU Ratio", "Pivot", "Pivot Dist%", "Stage 2 Stop", "Stage 2 Risk%",
             "Post-Pivot Room", "Stage 2 Reward", "Stage 2 R:R", "Blue Sky", "Flat Top Touches",
