@@ -42,6 +42,13 @@ def _mode_banner(m: str) -> None:
             "**Stage 2 Breakout mode** — qualified early pre-breakout scan plus a transparent developing watch layer. "
             "Already-moved stocks stay excluded. Developing rows are marked NOT QUALIFIED and show exactly why they failed."
         )
+    elif m == "EARLY RALLY FINDER":
+        st.info(
+            "**Early Rally Finder** - all-market scan for early accumulation and first-trigger names. "
+            "BUY rows passed freshness, extension, entry, trap, volume, and R:R gates. "
+            "Watch rows may use a compact contracting base with usable Stage 2 or resistance runway. "
+            "Mature and already-extended names are excluded."
+        )
 
 
 
@@ -185,6 +192,11 @@ def _build_pro_swing_ranking(df, top_n=15):
             ranked["PSS Score"].astype(str).str.extract(r"(\d+)", expand=False),
             errors="coerce"
         ).fillna(0)
+    elif m == "EARLY RALLY FINDER":
+        st.info(
+            "**Early Rally Finder** - catches accumulation, trigger-watch, and confirmed early-rally setups across markets. "
+            "Already-extended and mature-trend names are excluded instead of being recycled as watch candidates."
+        )
     else:
         pss_num = pd.Series([0.0] * len(ranked), index=idx)
 
@@ -983,6 +995,35 @@ def render_long(ctx: dict) -> None:
             st.caption("Closest candidates only. These are not Pro 70 buys; wait for the missing confirmation.")
             show_table(near_df, "pro70_near_miss", "Pro Score")
 
+    elif m == "EARLY RALLY FINDER":
+        action_er = df_long.get("Action", pd.Series([""] * len(df_long))).astype(str)
+        buy_df = df_long[action_er.str.contains("CONFIRMED EARLY RALLY", na=False)]
+        trigger_df = df_long[action_er.str.contains("EARLY RALLY TRIGGER", na=False)]
+        accum_df = df_long[action_er.str.contains("EARLY ACCUMULATION", na=False)]
+
+        st.caption(
+            f"Confirmed early buys: {len(buy_df)} | Trigger watches: {len(trigger_df)} | "
+            f"Accumulation watches: {len(accum_df)} | "
+            f"Sectors: {df_long['Sector'].nunique() if 'Sector' in df_long.columns else '-'}"
+        )
+        st.info(
+            "This mode is built for 1141.HK-style early discovery across all markets. "
+            "Use confirmed early buys only when the row still has nearby risk, volume confirmation, and R:R. "
+            "Trigger and accumulation rows are watchlist items until their missing gates clear. "
+            "Stocks that have already run, exceed the extension limits, or lack a fresh base with usable room are omitted."
+        )
+        if not buy_df.empty:
+            st.markdown(f"#### Confirmed Early Rally Buys ({len(buy_df)})")
+            st.caption("Passed freshness, extension, entry, trap, volume, and R:R gates. Still verify live spread/liquidity before entry.")
+            show_table(buy_df, "early_rally_buys", "Early Rally Score")
+        if not trigger_df.empty:
+            st.markdown(f"#### Trigger Watch - Near Breakout ({len(trigger_df)})")
+            st.caption("Price/structure is close. Wait for the displayed trigger and volume confirmation before buying.")
+            show_table(trigger_df, "early_rally_triggers", "Early Rally Score")
+        if not accum_df.empty:
+            with st.expander(f"Accumulation Watch - Early Base ({len(accum_df)})", expanded=True):
+                st.caption("Early money-flow or base evidence exists, but these rows still need a clearer trigger or buy gate.")
+                show_table(accum_df, "early_rally_accumulation", "Early Rally Score")
     elif m == "STAGE 2 BREAKOUT":
         action_stage2 = df_long.get("Action", pd.Series([""] * len(df_long))).astype(str)
         strict_df = df_long[action_stage2.str.contains("QUALIFIED EARLY STAGE 2", na=False)]

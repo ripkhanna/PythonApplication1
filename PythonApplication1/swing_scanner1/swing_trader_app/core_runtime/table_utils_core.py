@@ -526,6 +526,9 @@ def show_table(df, label, prob_col="Rise Prob"):
     if prob_col == "Stage 2 Rank Score" and "Stage 2 Rank Score" in df.columns:
         df["_prob_sort"] = _display_num(df["Stage 2 Rank Score"], 0)
         df = df.sort_values("_prob_sort", ascending=False)
+    elif prob_col == "Early Rally Score" and "Early Rally Score" in df.columns:
+        df["_prob_sort"] = _display_num(df["Early Rally Score"], 0)
+        df = df.sort_values("_prob_sort", ascending=False)
     elif "Quality Score" in df.columns or "Next-Day Score" in df.columns:
         df["_prob_sort"] = _display_num(df.get("Quality Score", df.get("Next-Day Score", 0)), 0)
         df["_nds_sort"] = _display_num(df.get("Next-Day Score", 0), 0)
@@ -627,10 +630,20 @@ def show_table(df, label, prob_col="Rise Prob"):
             "Stage 2 Buy Trigger", "Stage 2 Exit Plan", "Swing Quality Why", "EPS Rev 60D",
             "Today %", "5D %", "20D %", "ATR%", "Vol Ratio", "Sector", "Signals",
         ]
+    elif prob_col == "Early Rally Score":
+        wanted = [
+            "Rank", "Ticker", "Action", "Early Rally Score", "Early Rally Phase", "Early Rally Gate",
+            "Early Rally Buy?", "Early Rally Trigger", "Early Rally Missing", "Early Rally Why",
+            "Entry Quality", "Tradeable Buy", "Quality Score", "Next-Day Score", "Rise Prob",
+            "Today %", "5D %", "20D %", "60D %", "120D %", "Vol Ratio", "ATR%", "Upside to Res", "RR Est",
+            "Price", "Pivot", "Pivot Dist%", "Stage 2 Entry", "Stage 2 Volume Gate",
+            "Stage 2 Phase", "Base Weeks", "Base Range%", "Post-Pivot Room", "RS Lead", "Sector Lead",
+            "Operator", "Op Score", "VWAP", "Trap Risk", "Sector", "Signals",
+        ]
     else:
         wanted = [
             "Rank", "Ticker", "Action", "View", "Buy Condition",
-            "Entry Quality", "Tradeable Buy", "Trade Tier", "7-Star Score", "7-Star Tier", "7-Star Why", "Explosion Score", "Explosion Tier", "Explosion Why", "Pre-Mover Score", "Pre-Mover Tier", "Pre-Mover Why", "Quality Score", "Next-Day Score", "Next-Day Rating", "Next-Day Move", "7D Move Est", "Upside to Res", "RR Est", "Setup Type", "Today %", "5D %", "20D %", "Rise Prob", "Swing Rank Score", "Pro Pillars", "Pro Score", "Pro 70 Gate", "Pro Validation", "Pro Missing", "Pro Why", "PI Proxy", "Tier", "Why Buy",
+            "Entry Quality", "Tradeable Buy", "Trade Tier", "Early Rally Score", "Early Rally Phase", "Early Rally Gate", "Early Rally Buy?", "Early Rally Trigger", "Early Rally Missing", "Early Rally Why", "7-Star Score", "7-Star Tier", "7-Star Why", "Explosion Score", "Explosion Tier", "Explosion Why", "Pre-Mover Score", "Pre-Mover Tier", "Pre-Mover Why", "Quality Score", "Next-Day Score", "Next-Day Rating", "Next-Day Move", "7D Move Est", "Upside to Res", "RR Est", "Setup Type", "Today %", "5D %", "20D %", "60D %", "120D %", "Rise Prob", "Swing Rank Score", "Pro Pillars", "Pro Score", "Pro 70 Gate", "Pro Validation", "Pro Missing", "Pro Why", "PI Proxy", "Tier", "Why Buy",
             "Stage 2 Rank Score", "Early Score", "Stage 2 Score", "Stage 2 Phase", "Base Weeks", "Base Range%",
             "Contraction", "VDU Ratio", "Pivot", "Pivot Dist%", "Stage 2 Stop", "Stage 2 Risk%",
             "Post-Pivot Room", "Stage 2 Reward", "Stage 2 R:R", "Blue Sky", "Flat Top Touches",
@@ -680,6 +693,13 @@ def show_table(df, label, prob_col="Rise Prob"):
         "Upside to Res": st.column_config.TextColumn("Room",           width=60),
         "RR Est": st.column_config.TextColumn("R:R",                   width=55),
         "Swing Rank Score": st.column_config.NumberColumn("SwingRank", width=70),
+        "Early Rally Score": st.column_config.NumberColumn("ER Score", width=75),
+        "Early Rally Phase": st.column_config.TextColumn("ER Phase", width=155),
+        "Early Rally Gate": st.column_config.TextColumn("ER Gate", width=145),
+        "Early Rally Buy?": st.column_config.TextColumn("ER Buy?", width=65),
+        "Early Rally Trigger": st.column_config.TextColumn("ER Trigger", width=300),
+        "Early Rally Why": st.column_config.TextColumn("ER Why", width=280),
+        "Early Rally Missing": st.column_config.TextColumn("ER Missing", width=230),
         "Stage 2 Rank Score": st.column_config.NumberColumn("S2 Rank", width=70),
         "Early Score": st.column_config.NumberColumn("Early", width=60),
         "Stage 2 Score": st.column_config.NumberColumn("S2 Tech", width=65),

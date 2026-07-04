@@ -335,7 +335,11 @@ Workflow:
 - After 1-7 trading days, click **Update Outcomes** to fetch daily bars and calculate max gain, drawdown, +3/+5/+7/+10 hits, and whether the stop hit before +5%.
 - Review **What Is Working** by Source and Tier. If a tab has low +5% hit rate or high Stop First rate, treat it as watchlist-only until filters improve.
 
-The tracker is saved at `scanner_cache/performance_tracker.csv` and is kept when Diagnostics clears normal scan cache files.
+The tracker is saved permanently in `user_data/performance_tracker.sqlite3`,
+outside `scanner_cache`. Clearing Diagnostics scan caches does not remove
+captured picks or outcome updates. Existing
+`scanner_cache/performance_tracker.csv` records are imported automatically the
+first time the database opens.
             """
         )
 

@@ -1965,6 +1965,14 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 _recent_20d_pct = float((close.iloc[-1] / close.iloc[-21] - 1.0) * 100.0) if len(close) >= 21 else 0.0
             except Exception:
                 _recent_20d_pct = 0.0
+            try:
+                _recent_60d_pct = float((close.iloc[-1] / close.iloc[-61] - 1.0) * 100.0) if len(close) >= 61 else 0.0
+            except Exception:
+                _recent_60d_pct = 0.0
+            try:
+                _recent_120d_pct = float((close.iloc[-1] / close.iloc[-121] - 1.0) * 100.0) if len(close) >= 121 else 0.0
+            except Exception:
+                _recent_120d_pct = 0.0
             _recent_run_extended = bool((_recent_5d_pct >= 25.0) or (_recent_20d_pct >= 50.0))
 
             # 7-star early swing filter: range shift + divergence + one-red hold.
@@ -2511,7 +2519,178 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 (confirmation_ok or pullback_setup)
             )
 
-            if swing_mode == "SUPPORT ENTRY":
+            _er_trend = bool(core_long_trend or raw.get("stage2_ready") or raw.get("stage2_phase") in ("EARLY COIL", "READY AT PIVOT", "BASE BUILDING", "BREAKOUT - TOO LATE"))
+            _er_relative = bool(_relative_ok or raw.get("stage2_rs_lead") or raw.get("stage2_sector_lead"))
+            _er_volume = bool(
+                _accumulation_ok
+                or volume_confirmed
+                or vr >= 1.25
+                or operator_score >= 2
+                or raw.get("pss_score", 0) >= 2
+            )
+            _er_base = bool(
+                raw.get("stage2_base_weeks", 0) >= 3
+                or _compression_ok
+                or _near_trigger
+                or support_tier >= 1
+                or raw.get("tight_flag", False)
+                or raw.get("cup_handle", False)
+            )
+            _er_trigger = bool(
+                raw.get("stage2_phase") in ("READY AT PIVOT", "BREAKOUT - TOO LATE")
+                or _near_trigger
+                or long_sig.get("vol_breakout", False)
+                or long_sig.get("pocket_pivot", False)
+                or raw.get("failed_breakdown", False)
+            )
+            _er_move_potential = bool(expected_7d_move >= 5.0 or atr_pct_live >= 2.0 or resistance_clearance_ok)
+            _er_rr_ok = bool(risk_reward_ok or rr_est >= 1.5 or upside_to_resistance >= 5.0 or raw.get("stage2_blue_sky", False))
+            _er_buy_rr = bool(rr_est >= 1.5 and (upside_to_resistance >= 5.0 or raw.get("stage2_blue_sky", False) or confirmed_breakout))
+            _er_stage_base = bool(
+                3 <= float(raw.get("stage2_base_weeks", 0) or 0) <= 16
+                and float(raw.get("stage2_base_range_pct", 99) or 99) <= 25.0
+                and raw.get("stage2_phase") in ("EARLY COIL", "READY AT PIVOT", "BASE BUILDING")
+            )
+            _er_coil_base = bool(
+                float(raw.get("stage2_early_score", 0) or 0) >= 5
+                and float(raw.get("stage2_base_range_pct", 99) or 99) <= 25.0
+                and float(raw.get("stage2_contraction_ratio", 99) or 99) <= 0.85
+                and float(raw.get("stage2_volume_dryup_ratio", 99) or 99) <= 1.20
+            )
+            _er_compact_base = bool(
+                3 <= float(raw.get("stage2_base_weeks", 0) or 0) <= 16
+                and float(raw.get("stage2_base_range_pct", 99) or 99) <= 25.0
+                and float(raw.get("stage2_contraction_ratio", 99) or 99) <= 0.90
+                and float(raw.get("stage2_early_score", 0) or 0) >= 4
+            )
+            _er_fresh_room = bool(
+                float(raw.get("stage2_post_pivot_room_pct", 0) or 0) >= 6.0
+                or upside_to_resistance >= 8.0
+                or (
+                    raw.get("stage2_blue_sky", False)
+                    and float(raw.get("stage2_post_pivot_room_pct", 0) or 0) <= 0.0
+                )
+            )
+            _er_fresh_structure = bool(
+                (_er_stage_base or _er_coil_base or _er_compact_base)
+                and _er_fresh_room
+            )
+            _er_dist_ma20_pct = (
+                (p_raw / float(raw.get("ma20", 0)) - 1.0) * 100.0
+                if float(raw.get("ma20", 0) or 0) > 0
+                else 0.0
+            )
+            _er_moved_label = bool(
+                "MOVED ALREADY" in str(pre_mover_tier).upper()
+                or "MOVED ALREADY" in str(explosion_tier).upper()
+            )
+            _er_mature_run = bool(
+                raw.get("stage2_phase") == "BREAKOUT - TOO LATE"
+                or _recent_60d_pct > 30.0
+                or _recent_120d_pct > 55.0
+                or (_er_moved_label and not _er_fresh_structure)
+            )
+            _er_not_extended = bool(
+                -3.0 <= today_chg <= 3.5
+                and -6.0 <= _recent_5d_pct <= 12.0
+                and -12.0 <= _recent_20d_pct <= 20.0
+                and -18.0 <= _recent_60d_pct <= 30.0
+                and -25.0 <= _recent_120d_pct <= 55.0
+                and _er_dist_ma20_pct <= 5.0
+                and rsi_now <= 68.0
+                and not _er_mature_run
+            )
+            _er_pullback_needed = bool(
+                today_chg > 3.5
+                or _recent_5d_pct > 12.0
+                or _recent_20d_pct > 20.0
+                or _er_dist_ma20_pct > 5.0
+                or rsi_now > 68.0
+            )
+            _er_too_late = _er_mature_run
+            _er_entry_ok = bool(
+                not raw.get("ma60_stop_triggered", False)
+                and not is_chasing
+                and not major_trap_risk
+            )
+            early_rally_score = (
+                (12 if _er_trend else 0)
+                + (10 if _er_relative else 0)
+                + (14 if _er_volume else 0)
+                + (12 if _er_base else 0)
+                + (10 if _er_trigger else 0)
+                + (10 if _er_move_potential else 0)
+                + (8 if _er_rr_ok else 0)
+                + (7 if _er_entry_ok else 0)
+                + (7 if _er_not_extended else 0)
+                + (5 if l_prob >= 0.55 else 0)
+                + (3 if l_score >= 3 else 0)
+                + (2 if quality_score >= 5 else 0)
+                + (10 if _er_fresh_structure else 0)
+                + min(int(raw.get("stage2_score", 0) or 0), 10) * 0.8
+                + min(int(raw.get("stage2_early_score", 0) or 0), 10) * 0.8
+                - (12 if not _er_fresh_structure else 0)
+                - (12 if _er_pullback_needed else 0)
+                - (25 if _er_too_late else 0)
+                - (10 if not next_day_buy_ok else 0)
+            )
+            early_rally_score = int(max(0, min(100, round(early_rally_score))))
+            early_rally_buy = bool(
+                early_rally_score >= 72
+                and _er_trend and _er_relative and _er_volume and (_er_base or _er_trigger)
+                and _er_move_potential and _er_buy_rr and _er_fresh_structure
+                and _er_not_extended and _er_entry_ok
+                and next_day_buy_ok and not _er_too_late
+            )
+            early_rally_trigger_watch = bool(
+                not early_rally_buy and early_rally_score >= 60
+                and _er_trend and _er_volume and (_er_base or _er_trigger)
+                and _er_move_potential and _er_rr_ok and _er_fresh_structure
+                and _er_not_extended and not _er_pullback_needed and not _er_too_late
+            )
+            early_rally_accum_watch = bool(
+                not early_rally_buy and not early_rally_trigger_watch and early_rally_score >= 50
+                and (_er_trend or _er_relative) and _er_volume and _er_base
+                and _er_rr_ok and _er_fresh_structure and _er_not_extended
+                and not _er_pullback_needed and not _er_too_late
+            )
+            early_rally_pullback_watch = bool(
+                not early_rally_buy and early_rally_score >= 55 and _er_pullback_needed
+                and _er_fresh_structure and not _er_mature_run
+                and (_er_trend or _er_relative) and (_er_volume or _er_trigger)
+            )
+            if not early_rally_buy:
+                early_rally_score = min(early_rally_score, 79)
+            if early_rally_accum_watch:
+                early_rally_score = min(early_rally_score, 69)
+            early_rally_missing_parts = []
+            if not _er_trend: early_rally_missing_parts.append("trend")
+            if not _er_relative: early_rally_missing_parts.append("relative strength")
+            if not _er_volume: early_rally_missing_parts.append("volume/accumulation")
+            if not (_er_base or _er_trigger): early_rally_missing_parts.append("base or trigger")
+            if not _er_move_potential: early_rally_missing_parts.append("move potential")
+            if not _er_rr_ok: early_rally_missing_parts.append("R:R/upside")
+            if not _er_buy_rr: early_rally_missing_parts.append("buy R:R/upside")
+            if not _er_fresh_structure: early_rally_missing_parts.append("fresh base + usable room")
+            if not _er_entry_ok: early_rally_missing_parts.append("entry quality")
+            if not next_day_buy_ok: early_rally_missing_parts.append("tradeable buy")
+            if not _er_not_extended: early_rally_missing_parts.append("not extended")
+            if _er_mature_run: early_rally_missing_parts.append("mature/already moved")
+            early_rally_missing = ", ".join(early_rally_missing_parts[:6]) if early_rally_missing_parts else "None - buy gate passed"
+
+            if swing_mode == "EARLY RALLY FINDER":
+                if early_rally_buy:
+                    l_action = "BUY - CONFIRMED EARLY RALLY"
+                elif early_rally_pullback_watch:
+                    l_action = None
+                elif early_rally_trigger_watch:
+                    l_action = "WATCH - EARLY RALLY TRIGGER"
+                elif early_rally_accum_watch:
+                    l_action = "WATCH - EARLY ACCUMULATION"
+                else:
+                    l_action = None
+
+            elif swing_mode == "SUPPORT ENTRY":
                 if not at_support_entry:
                     l_action = None
                 elif support_tier == 1 and (l_prob >= 0.60 or l_score >= 4 or actionable_long):
@@ -2993,6 +3172,35 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     f"trail to ${_s2_trail_stop:.2f} after ${_s2_trail_trigger:.2f}; "
                     f"time stop Day {int(raw.get('stage2_time_stop_days', 5))}"
                 )
+                if early_rally_buy:
+                    _er_phase = "CONFIRMED EARLY BUY"
+                    _er_gate = "BUY GATE PASS"
+                    _er_buy = "YES"
+                elif early_rally_pullback_watch:
+                    _er_phase = "MOVED ALREADY - WAIT PULLBACK"
+                    _er_gate = "WAIT PULLBACK / RESET"
+                    _er_buy = "NO"
+                elif early_rally_trigger_watch:
+                    _er_phase = "TRIGGER WATCH"
+                    _er_gate = "WAIT FOR BREAKOUT + VOLUME"
+                    _er_buy = "NO"
+                elif early_rally_accum_watch:
+                    _er_phase = "ACCUMULATION WATCH"
+                    _er_gate = "WATCH ONLY"
+                    _er_buy = "NO"
+                else:
+                    _er_phase = "NOT EARLY RALLY"
+                    _er_gate = "FAIL"
+                    _er_buy = "NO"
+                _er_trigger = _s2_buy_trigger if raw.get("stage2_score", 0) else "Break pivot/recent high with >=1.5x volume; stop near support"
+                if early_rally_pullback_watch:
+                    _er_trigger = "Do not chase; wait for pullback, tight base, or reset near support"
+                _er_why = (
+                    f"Score={early_rally_score}; 5D={_recent_5d_pct:.1f}%; 20D={_recent_20d_pct:.1f}%; "
+                    f"60D={_recent_60d_pct:.1f}%; 120D={_recent_120d_pct:.1f}%; "
+                    f"Vol={vr:.2f}x; RR={rr_est:.1f}; Room={upside_to_resistance:.1f}%; "
+                    f"BaseRoom={float(raw.get('stage2_post_pivot_room_pct', 0) or 0):.1f}%"
+                )
 
                 long_results.append({
                     "Ticker":         ticker,
@@ -3002,6 +3210,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                         support_zone if swing_mode == "SUPPORT ENTRY" else
                         pm_zone      if swing_mode == "PREMARKET MOMENTUM" else
                         hv_zone      if swing_mode == "HIGH VOLUME" else
+                        _er_phase    if swing_mode == "EARLY RALLY FINDER" else
                         setup_type_long
                     ),
                     "PM Chg%":        f"+{pm_chg_pct:.1f}%" if pm_data_ok and pm_chg_pct > 0 else "–",
@@ -3039,6 +3248,8 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "Today %":        f"{today_chg:+.2f}%",
                     "5D %":           f"{_recent_5d_pct:+.2f}%",
                     "20D %":          f"{_recent_20d_pct:+.2f}%",
+                    "60D %":          f"{_recent_60d_pct:+.2f}%",
+                    "120D %":         f"{_recent_120d_pct:+.2f}%",
                     "Price":          f"${p:.2f}",
                     "MA5":            f"${raw.get('ma5', p):.2f}",
                     "MA10":           f"${raw.get('ma10', p):.2f}",
@@ -3100,6 +3311,13 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                     "Stage 2 Volume Gate": _s2_volume_gate,
                     "Stage 2 Buy Trigger": _s2_buy_trigger,
                     "Stage 2 Exit Plan": _s2_exit_plan,
+                    "Early Rally Score": early_rally_score,
+                    "Early Rally Phase": _er_phase,
+                    "Early Rally Gate": _er_gate,
+                    "Early Rally Buy?": _er_buy,
+                    "Early Rally Trigger": _er_trigger,
+                    "Early Rally Why": _er_why,
+                    "Early Rally Missing": early_rally_missing,
                     "Blue Sky":       "YES" if raw.get("stage2_blue_sky") else "NO",
                     "Flat Top Touches": int(raw.get("stage2_flat_top_touches", 0)),
                     "RS Lead":        "YES" if raw.get("stage2_rs_lead") else "NO",

@@ -7,6 +7,8 @@ judged by actual outcomes instead of displayed probability alone.
 from __future__ import annotations
 
 import hashlib
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import numpy as np
@@ -31,7 +33,10 @@ def _bind_runtime(ctx: dict) -> None:
     globals().update(ctx)
 
 
-def _tracker_path() -> Path:
+TRACKER_TABLE = "performance_tracker"
+
+
+def _legacy_tracker_path() -> Path:
     cache_dir = globals().get("SCAN_CACHE_DIR")
     if cache_dir:
         out = Path(cache_dir)
@@ -39,6 +44,109 @@ def _tracker_path() -> Path:
         out = Path(__file__).resolve().parents[1] / "scanner_cache"
     out.mkdir(parents=True, exist_ok=True)
     return out / "performance_tracker.csv"
+
+
+def _tracker_db_path() -> Path:
+    configured_dir = globals().get("PERFORMANCE_DB_DIR")
+    if configured_dir:
+        out = Path(configured_dir)
+    else:
+        # Keep durable user records outside scanner_cache so cache deletion
+        # cannot remove captured picks or their later outcome updates.
+        out = Path(__file__).resolve().parents[2] / "user_data"
+    out.mkdir(parents=True, exist_ok=True)
+    return out / "performance_tracker.sqlite3"
+
+
+def _quoted_identifier(value: str) -> str:
+    return '"' + str(value).replace('"', '""') + '"'
+
+
+def _normalise_tracker_frame(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    for col in TRACKER_COLUMNS:
+        if col not in out.columns:
+            out[col] = ""
+    out = out[TRACKER_COLUMNS].copy()
+    return out.where(pd.notna(out), "")
+
+
+def _connect_tracker_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(_tracker_db_path(), timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=FULL")
+    conn.execute("PRAGMA busy_timeout=30000")
+    return conn
+
+
+def _ensure_tracker_db() -> None:
+    column_defs = ", ".join(
+        f"{_quoted_identifier(col)} TEXT" for col in TRACKER_COLUMNS
+    )
+    with closing(_connect_tracker_db()) as conn, conn:
+        conn.execute(
+            f"CREATE TABLE IF NOT EXISTS {_quoted_identifier(TRACKER_TABLE)} "
+            f"({column_defs}, PRIMARY KEY ({_quoted_identifier('Pick ID')}))"
+        )
+        existing = {
+            str(row[1])
+            for row in conn.execute(
+                f"PRAGMA table_info({_quoted_identifier(TRACKER_TABLE)})"
+            ).fetchall()
+        }
+        for col in TRACKER_COLUMNS:
+            if col not in existing:
+                conn.execute(
+                    f"ALTER TABLE {_quoted_identifier(TRACKER_TABLE)} "
+                    f"ADD COLUMN {_quoted_identifier(col)} TEXT"
+                )
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_perf_tracker_date "
+            f"ON {_quoted_identifier(TRACKER_TABLE)} "
+            f"({_quoted_identifier('Selection Date')}, {_quoted_identifier('Ticker')})"
+        )
+
+
+def _upsert_tracker_rows(df: pd.DataFrame) -> None:
+    out = _normalise_tracker_frame(df)
+    if out.empty:
+        return
+    columns_sql = ", ".join(_quoted_identifier(col) for col in TRACKER_COLUMNS)
+    placeholders = ", ".join(["?"] * len(TRACKER_COLUMNS))
+    sql = (
+        f"INSERT OR REPLACE INTO {_quoted_identifier(TRACKER_TABLE)} "
+        f"({columns_sql}) VALUES ({placeholders})"
+    )
+    rows = [
+        tuple("" if pd.isna(value) else str(value) for value in row)
+        for row in out.itertuples(index=False, name=None)
+    ]
+    with closing(_connect_tracker_db()) as conn, conn:
+        conn.executemany(sql, rows)
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+
+def _migrate_legacy_tracker_csv() -> int:
+    """Import the old cache CSV once when the durable database is empty."""
+    legacy = _legacy_tracker_path()
+    if not legacy.exists() or legacy.stat().st_size <= 0:
+        return 0
+    with closing(_connect_tracker_db()) as conn:
+        count = int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM {_quoted_identifier(TRACKER_TABLE)}"
+            ).fetchone()[0]
+        )
+    if count:
+        return 0
+    try:
+        old = pd.read_csv(legacy, keep_default_na=False)
+    except Exception:
+        return 0
+    old = _normalise_tracker_frame(old)
+    _upsert_tracker_rows(old)
+    return len(old)
 
 
 def _market_key(market: str) -> str:
@@ -176,26 +284,26 @@ def _source_frame() -> pd.DataFrame:
 
 
 def _load_tracker() -> pd.DataFrame:
-    path = _tracker_path()
-    if path.exists() and path.stat().st_size > 0:
-        try:
-            df = pd.read_csv(path, keep_default_na=False)
-        except Exception:
-            df = pd.DataFrame(columns=TRACKER_COLUMNS)
-    else:
+    try:
+        _ensure_tracker_db()
+        _migrate_legacy_tracker_csv()
+        columns_sql = ", ".join(_quoted_identifier(col) for col in TRACKER_COLUMNS)
+        with closing(_connect_tracker_db()) as conn:
+            df = pd.read_sql_query(
+                f"SELECT {columns_sql} "
+                f"FROM {_quoted_identifier(TRACKER_TABLE)} "
+                f"ORDER BY {_quoted_identifier('Selection Date')} DESC, "
+                f"{_quoted_identifier('Captured At')} DESC",
+                conn,
+            )
+    except Exception:
         df = pd.DataFrame(columns=TRACKER_COLUMNS)
-    for col in TRACKER_COLUMNS:
-        if col not in df.columns:
-            df[col] = ""
-    return df[TRACKER_COLUMNS].copy()
+    return _normalise_tracker_frame(df)
 
 
 def _save_tracker(df: pd.DataFrame) -> None:
-    out = df.copy()
-    for col in TRACKER_COLUMNS:
-        if col not in out.columns:
-            out[col] = ""
-    out[TRACKER_COLUMNS].to_csv(_tracker_path(), index=False)
+    _ensure_tracker_db()
+    _upsert_tracker_rows(df)
 
 
 def _pick_id(market: str, selection_date: str, ticker: str, source: str) -> str:
@@ -572,7 +680,7 @@ def render_performance_tracker(ctx: dict) -> None:
 
     src = _source_frame()
     log = _load_tracker()
-    path = _tracker_path()
+    path = _tracker_db_path()
 
     c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
@@ -607,7 +715,10 @@ def render_performance_tracker(ctx: dict) -> None:
                 with st.expander("Outcome update warnings", expanded=False):
                     st.code("\n".join(errors[:50]))
 
-    st.caption(f"Tracker file: `{path}`")
+    st.caption(
+        f"Permanent tracker database: `{path}` · Stored outside scanner_cache, "
+        "so clearing scan cache does not remove picks or outcomes."
+    )
 
     if log.empty:
         st.info("No tracked picks yet. Run a scan, then click Capture Current Candidates.")

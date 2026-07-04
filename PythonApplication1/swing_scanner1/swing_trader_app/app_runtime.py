@@ -655,12 +655,13 @@ min_prob_short = st.sidebar.slider(
 )
 swing_mode = st.sidebar.selectbox(
     "📊 Swing strategy",
-    ["Pro 70 / 2.5R", "A+ Precision", "Stage 2 Breakout", "Strict", "Balanced", "Discovery", "Support Entry", "Premarket Momentum", "High Volume", "High Conviction", "PSM Strategy"],
+    ["Pro 70 / 2.5R", "A+ Precision", "Stage 2 Breakout", "Early Rally Finder", "Strict", "Balanced", "Discovery", "Support Entry", "Premarket Momentum", "High Volume", "High Conviction", "PSM Strategy"],
     key="ui_swing_mode",
     help=(
         "**Pro 70 / 2.5R** — professional-style high-selectivity strategy requiring multi-pillar confirmation and at least 1:2.5 R:R. SGX uses market-aware price/volume gates. Paper-test first; no win rate is guaranteed.\n\n"
         "**A+ Precision** — fails closed. Shows only clean high-confluence setups with good entry, RR/runway, volume/operator confirmation and no chase/trap risk.\n\n"
         "**Stage 2 Breakout** — risk-managed early pre-breakout screen with market/sector regime, earnings safety, post-pivot R:R, breakout entry, failed-breakout exit, hard stop, target, time stop, and risk-based position sizing. Late/above-pivot stocks stay out. The future 150%+ RVOL surge is the entry trigger.\n\n"
+        "**Early Rally Finder** - all-market accumulation and first-trigger scanner for stocks starting a 1141.HK-style move. Shows accumulation watch, trigger watch, and confirmed early-buy rows; mature or already-extended names are excluded.\n\n"
         "**Strict** — A+ setups only. High probability + full confirmation.\n\n"
         "**Balanced** — practical live candidates (default). Trend + volume + operator.\n\n"
         "**Discovery** — wider watchlist for quiet markets. More results, use Trade Desk to filter.\n\n"
@@ -721,6 +722,13 @@ elif _sm_upper == "STAGE 2 BREAKOUT":
         "Weak/slow bases are never labeled qualified; when no setup passes, the closest early bases remain visible as NOT QUALIFIED with their failed gates. "
         "Buy only after the future Stage 2 Entry break arrives on at least 1.5x RVOL pace, then follow the displayed stop, target, trail, and time stop. "
         "Positive 60-day EPS estimate revisions add confirmation when Yahoo provides the data."
+    )
+elif _sm_upper == "EARLY RALLY FINDER":
+    st.sidebar.info(
+        "**Early Rally Finder mode**\n\n"
+        "Finds all-market early accumulation and first-trigger setups before they become obvious chase trades. "
+        "It ranks trend/relative strength, volume expansion, base or trigger context, move potential, and risk/reward. "
+        "BUY appears only when freshness, extension, entry, trap, liquidity, and R:R gates pass; mature or moved-already rows are excluded."
     )
 elif _sm_upper == "SUPPORT ENTRY":
     st.sidebar.info(
@@ -1238,6 +1246,7 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
                   "Score", "Vol Ratio", "Support Tier", "PM Chg%", "Entry Quality",
                   "Next-Day Score", "Quality Score", "Tradeable Buy", "Next-Day Rating",
                   "Next-Day Move", "7D Move Est", "Upside to Res", "RR Est", "Vol Quality", "Trap Risk",
+                  "60D %", "120D %",
                   "Stage 2 Score", "Stage 2 Phase", "Base Weeks", "Base Range%", "Contraction",
                   "VDU Ratio", "Pivot", "Pivot Dist%", "Stage 2 Stop", "Stage 2 Risk%",
                   "Post-Pivot Room", "Stage 2 Reward", "Stage 2 R:R", "Blue Sky",
@@ -1247,7 +1256,10 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
                   "S2 RVOL Source", "Stage 2 Volume Gate", "Stage 2 Buy Trigger", "Stage 2 Exit Plan",
                   "RS Lead", "Sector Lead", "EPS Rev 60D",
                   "Stage 2 Why", "Early Score", "Early Why", "Early Missing", "Early Missing Count",
-                  "Swing Quality Gate", "Swing Quality Why"]:
+                  "Swing Quality Gate", "Swing Quality Why",
+                  "Early Rally Score", "Early Rally Phase", "Early Rally Gate",
+                  "Early Rally Buy?", "Early Rally Trigger", "Early Rally Why",
+                  "Early Rally Missing"]:
             if c not in df.columns:
                 df[c] = "–"
         return df
@@ -1305,6 +1317,7 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
         price_scan = _scan_num_col("Price", 999.0)
         ticker_scan = df_long.get("Ticker", pd.Series([""] * len(df_long), index=df_long.index)).astype(str).str.upper().str.strip()
         is_sgx_row = ticker_scan.str.endswith(".SI")
+        is_hk_row = ticker_scan.str.endswith(".HK")
         entry_scan = df_long.get("Entry Quality", pd.Series([""] * len(df_long), index=df_long.index)).astype(str).str.upper()
         setup_scan = df_long.get("Setup Type", pd.Series([""] * len(df_long), index=df_long.index)).astype(str).str.upper()
         trap_upper = trap_text.astype(str).str.upper().str.strip()
@@ -1327,7 +1340,11 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
         rr_ok = (rr_scan >= 1.8) | (upside_scan >= 6.0)
         atr_available = atr_scan.gt(0).any()
         atr_ok = ((atr_scan >= 1.5) & (atr_scan <= 9.0)) if atr_available else pd.Series([True] * len(df_long), index=df_long.index)
-        price_ok = price_scan >= pd.Series([5.0] * len(df_long), index=df_long.index).mask(is_sgx_row, 0.10)
+        # The base $5 floor is a US liquidity guard. Applying it to HKD/SGD
+        # prices silently removes otherwise valid regional-market setups.
+        regional_price_floor = pd.Series([5.0] * len(df_long), index=df_long.index)
+        regional_price_floor = regional_price_floor.mask(is_sgx_row | is_hk_row, 0.10)
+        price_ok = price_scan >= regional_price_floor
         no_chase = (today_pct >= -2.5) & (today_pct <= 6.0)
         sg_institutional = (op_score_scan >= 2) | ((vol_ratio >= 0.80) & (vol_ratio <= 5.0))
         sg_today_ok = (today_pct >= -4.5) & (today_pct <= 6.0)
@@ -1387,6 +1404,216 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
             ((rr_scan >= 2.0) & (upside_scan >= 7.0)) |
             ((rr_scan >= 2.5) & (upside_scan >= 6.0))
         ).mask(is_sgx_row, (rr_scan >= 2.0) & (upside_scan >= 6.0))
+
+        five_day_scan = _scan_num_col("5D %", 0.0)
+        twenty_day_scan = _scan_num_col("20D %", 0.0)
+        sixty_day_scan = _scan_num_col("60D %", 0.0)
+        one_twenty_day_scan = _scan_num_col("120D %", 0.0)
+        move_7d_scan = _scan_num_col("7D Move Est", 0.0)
+        stage2_score_scan = _scan_num_col("Stage 2 Score", 0.0)
+        stage2_early_scan = _scan_num_col("Early Score", 0.0)
+        base_weeks_scan = _scan_num_col("Base Weeks", 0.0)
+        base_range_scan = _scan_num_col("Base Range%", 99.0)
+        contraction_scan = _scan_num_col("Contraction", 99.0)
+        vdu_scan = _scan_num_col("VDU Ratio", 99.0)
+        pivot_dist_scan = _scan_num_col("Pivot Dist%", 99.0)
+        post_pivot_room_scan = _scan_num_col("Post-Pivot Room", 0.0)
+        rsi_scan = _scan_num_col("RSI Now", 50.0)
+        ma20_scan = _scan_num_col("MA20", 0.0)
+        dist_ma20_scan = ((price_scan / ma20_scan.replace(0, pd.NA)) - 1.0).mul(100.0).fillna(0.0)
+        stage2_phase_scan = df_long.get(
+            "Stage 2 Phase", pd.Series([""] * len(df_long), index=df_long.index)
+        ).astype(str).str.upper()
+        stage2_why_scan = df_long.get(
+            "Stage 2 Why", pd.Series([""] * len(df_long), index=df_long.index)
+        ).astype(str).str.upper()
+        rs_lead_scan = df_long.get(
+            "RS Lead", pd.Series([""] * len(df_long), index=df_long.index)
+        ).astype(str).str.upper().eq("YES")
+        sector_lead_scan = df_long.get(
+            "Sector Lead", pd.Series([""] * len(df_long), index=df_long.index)
+        ).astype(str).str.upper().eq("YES")
+        blue_sky_scan = df_long.get(
+            "Blue Sky", pd.Series([""] * len(df_long), index=df_long.index)
+        ).astype(str).str.upper().eq("YES")
+        pre_mover_tier_scan = df_long.get(
+            "Pre-Mover Tier", pd.Series([""] * len(df_long), index=df_long.index)
+        ).astype(str).str.upper()
+        explosion_tier_scan = df_long.get(
+            "Explosion Tier", pd.Series([""] * len(df_long), index=df_long.index)
+        ).astype(str).str.upper()
+
+        early_trend = trend_sig | stage2_why_scan.str.contains("TREND>50/200", na=False, regex=False)
+        early_relative = relative_sig | rs_lead_scan | sector_lead_scan | stage2_why_scan.str.contains("RSLEAD|SECTOR", na=False, regex=True)
+        early_volume = (
+            volume_sig
+            | (vol_ratio >= 1.25)
+            | ((op_score_scan >= 2) & (vol_ratio >= 0.75))
+            | (pss_scan >= 2)
+            | signals.str.contains("ACCUM|OBV|POCKET PIVOT|VDU|VOL DRY", na=False, regex=True)
+        )
+        early_base = (
+            ((base_weeks_scan >= 3.0) & (base_range_scan <= 30.0) & stage2_phase_scan.str.contains("EARLY COIL|READY AT PIVOT|BASE BUILDING|BREAKOUT", na=False, regex=True))
+            | support_zone
+            | structure_sig
+            | signals.str.contains("TIGHT|CUP|BASE|HIGHER LOWS|NR7|INSIDE DAY", na=False, regex=True)
+        )
+        early_trigger = (
+            stage2_phase_scan.str.contains("READY AT PIVOT|BREAKOUT", na=False, regex=True)
+            | pivot_dist_scan.between(-12.0, 5.0)
+            | signals.str.contains("VOL BREAKOUT|POCKET PIVOT|TIGHT FLAG|CUP|BREAKOUT|FAILED BRKDN", na=False, regex=True)
+        )
+        early_move_potential = (
+            (move_7d_scan >= 5.0)
+            | (atr_scan >= 2.0)
+            | ((upside_scan >= 6.0) & (rr_scan >= 1.5))
+            | blue_sky_scan
+        )
+        early_rr_ok = (rr_scan >= 1.5) | (upside_scan >= 5.0) | blue_sky_scan
+        early_buy_rr = (rr_scan >= 1.5) & ((upside_scan >= 5.0) | blue_sky_scan)
+        early_stage_base = (
+            (base_weeks_scan >= 3.0)
+            & (base_weeks_scan <= 16.0)
+            & (base_range_scan <= 25.0)
+            & stage2_phase_scan.str.contains("EARLY COIL|READY AT PIVOT|BASE BUILDING", na=False, regex=True)
+        )
+        early_coil_base = (
+            (stage2_early_scan >= 5.0)
+            & (base_range_scan <= 25.0)
+            & (contraction_scan <= 0.85)
+            & (vdu_scan <= 1.20)
+        )
+        # Some valid compact bases are deliberately classified as
+        # "NOT STAGE 2" until the trigger is closer. They still belong in an
+        # early-rally watchlist when the base is multi-week and contracting.
+        early_compact_base = (
+            (base_weeks_scan >= 3.0)
+            & (base_weeks_scan <= 16.0)
+            & (base_range_scan <= 25.0)
+            & (contraction_scan <= 0.90)
+            & (stage2_early_scan >= 4.0)
+        )
+        # Post-Pivot Room is intentionally conservative and is commonly
+        # capped near 6% in the Stage 2 model. Accept either usable Stage 2
+        # runway or independently measured resistance clearance.
+        early_fresh_room = (
+            (post_pivot_room_scan >= 6.0)
+            | (upside_scan >= 8.0)
+            | (blue_sky_scan & (post_pivot_room_scan <= 0.0))
+        )
+        early_fresh_structure = (
+            early_stage_base | early_coil_base | early_compact_base
+        ) & early_fresh_room
+        early_moved_label = (
+            (pre_mover_tier_scan + " " + explosion_tier_scan).str.contains("MOVED ALREADY", na=False)
+        )
+        early_mature_run = (
+            stage2_phase_scan.str.contains("TOO LATE", na=False)
+            | (sixty_day_scan > 30.0)
+            | (one_twenty_day_scan > 55.0)
+            | (early_moved_label & ~early_fresh_structure)
+        )
+        early_not_extended = (
+            today_pct.between(-3.0, 3.5)
+            & five_day_scan.between(-6.0, 12.0)
+            & twenty_day_scan.between(-12.0, 20.0)
+            & sixty_day_scan.between(-18.0, 30.0)
+            & one_twenty_day_scan.between(-25.0, 55.0)
+            & (dist_ma20_scan <= 5.0)
+            & (rsi_scan <= 68.0)
+            & ~early_mature_run
+        )
+        early_pullback_needed = (
+            (today_pct > 3.5)
+            | (five_day_scan > 12.0)
+            | (twenty_day_scan > 20.0)
+            | (dist_ma20_scan > 5.0)
+            | (rsi_scan > 68.0)
+        )
+        early_too_late = early_mature_run
+        early_entry_ok = entry_ok & ~entry_scan.str.contains("SKIP|AVOID", na=False, regex=True)
+
+        early_rally_score = (
+            early_trend.astype(int) * 12
+            + early_relative.astype(int) * 10
+            + early_volume.astype(int) * 14
+            + early_base.astype(int) * 12
+            + early_trigger.astype(int) * 10
+            + early_move_potential.astype(int) * 10
+            + early_rr_ok.astype(int) * 8
+            + early_entry_ok.astype(int) * 7
+            + early_not_extended.astype(int) * 7
+            + (p >= 55).astype(int) * 5
+            + (score >= 3).astype(int) * 3
+            + (quality_score >= 5).astype(int) * 2
+            + early_fresh_structure.astype(int) * 10
+            + (stage2_score_scan.clip(0, 10) * 0.8)
+            + (stage2_early_scan.clip(0, 10) * 0.8)
+        )
+        early_rally_score = (
+            early_rally_score
+            - (~early_fresh_structure).astype(int) * 12
+            - early_pullback_needed.astype(int) * 12
+            - early_too_late.astype(int) * 25
+            - (~tradeable_buy).astype(int) * 10
+        )
+        early_rally_score = early_rally_score.clip(lower=0, upper=100).round(0)
+
+        early_buy_mask = (
+            (early_rally_score >= 72)
+            & early_trend & early_relative & early_volume & (early_base | early_trigger)
+            & early_move_potential & early_buy_rr & early_fresh_structure
+            & early_not_extended & early_entry_ok & tradeable_buy
+            & not_candidate & trap_clean & price_ok & ~early_mature_run
+            & (p >= 55) & (score >= 3)
+        )
+        early_trigger_watch_mask = (
+            ~early_buy_mask
+            & (early_rally_score >= 60)
+            & early_trend & early_volume & (early_base | early_trigger)
+            & early_move_potential & early_rr_ok & early_fresh_structure
+            & early_not_extended & ~early_pullback_needed & ~early_too_late
+            & trap_clean & price_ok
+        )
+        early_accum_watch_mask = (
+            ~early_buy_mask & ~early_trigger_watch_mask
+            & (early_rally_score >= 50)
+            & (early_trend | early_relative) & early_volume & early_base
+            & early_rr_ok & early_fresh_structure & early_not_extended
+            & ~early_pullback_needed & ~early_too_late & trap_clean & price_ok
+        )
+        early_pullback_watch_mask = (
+            ~early_buy_mask
+            & (early_rally_score >= 55)
+            & early_pullback_needed
+            & early_fresh_structure & ~early_mature_run
+            & (early_trend | early_relative)
+            & (early_volume | early_trigger)
+            & trap_clean & price_ok
+        )
+        # Early Rally is a discovery list, not a recovery list. Extended names
+        # are intentionally omitted instead of being recycled as pullback ideas.
+        early_rally_mask = early_buy_mask | early_trigger_watch_mask | early_accum_watch_mask
+
+        def _early_rally_missing_for_index(_idx):
+            _miss = []
+            try:
+                if not bool(early_trend.get(_idx, False)): _miss.append("trend")
+                if not bool(early_relative.get(_idx, False)): _miss.append("relative strength")
+                if not bool(early_volume.get(_idx, False)): _miss.append("volume/accumulation")
+                if not bool((early_base | early_trigger).get(_idx, False)): _miss.append("base or trigger")
+                if not bool(early_move_potential.get(_idx, False)): _miss.append("move potential")
+                if not bool(early_rr_ok.get(_idx, False)): _miss.append("R:R/upside")
+                if not bool(early_buy_rr.get(_idx, False)): _miss.append("buy R:R/upside")
+                if not bool(early_fresh_structure.get(_idx, False)): _miss.append("fresh base + usable room")
+                if not bool(early_entry_ok.get(_idx, False)): _miss.append("entry quality")
+                if not bool(tradeable_buy.get(_idx, False)): _miss.append("tradeable buy")
+                if not bool(early_not_extended.get(_idx, False)): _miss.append("not extended")
+                if bool(early_mature_run.get(_idx, False)): _miss.append("mature/already moved")
+                if not bool(trap_clean.get(_idx, False)): _miss.append("trap clean")
+            except Exception:
+                return "Needs manual review"
+            return "None - buy gate passed" if not _miss else ", ".join(_miss[:6])
 
         def _pro70_missing_for_index(_idx):
             _miss = []
@@ -1602,6 +1829,76 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
                 df_long.loc[overext_r | candidate_r, "Action"] = "WATCH – HIGH VOLUME / WAIT PULLBACK"
                 df_long["Setup Type"] = "Vol " + vr_r.round(2).astype(str) + "x"
                 df_long = df_long.assign(_vs=vr_r, _today=today_r).sort_values(["_vs", "_today"], ascending=[False, False], kind="stable").drop(columns=["_vs", "_today"])
+
+        elif mode == "EARLY RALLY FINDER":
+            df_long = df_long[early_rally_mask].copy()
+            if not df_long.empty:
+                buy_r = early_buy_mask.reindex(df_long.index).fillna(False)
+                trigger_r = early_trigger_watch_mask.reindex(df_long.index).fillna(False)
+                accum_r = early_accum_watch_mask.reindex(df_long.index).fillna(False)
+                pullback_r = early_pullback_watch_mask.reindex(df_long.index).fillna(False)
+                score_r = early_rally_score.reindex(df_long.index).fillna(0).astype(int)
+                score_r = score_r.where(buy_r, score_r.clip(upper=79))
+                score_r = score_r.where(~accum_r, score_r.clip(upper=69))
+                today_r = today_pct.reindex(df_long.index).fillna(0)
+                five_r = five_day_scan.reindex(df_long.index).fillna(0)
+                twenty_r = twenty_day_scan.reindex(df_long.index).fillna(0)
+                sixty_r = sixty_day_scan.reindex(df_long.index).fillna(0)
+                one_twenty_r = one_twenty_day_scan.reindex(df_long.index).fillna(0)
+                vr_r = vol_ratio.reindex(df_long.index).fillna(0)
+                rr_r = rr_scan.reindex(df_long.index).fillna(0)
+                room_r = upside_scan.reindex(df_long.index).fillna(0)
+                base_room_r = post_pivot_room_scan.reindex(df_long.index).fillna(0)
+
+                df_long["Action"] = "WATCH - EARLY ACCUMULATION"
+                df_long.loc[trigger_r, "Action"] = "WATCH - EARLY RALLY TRIGGER"
+                df_long.loc[pullback_r, "Action"] = "WATCH - EARLY RALLY / WAIT PULLBACK"
+                df_long.loc[buy_r, "Action"] = "BUY - CONFIRMED EARLY RALLY"
+
+                df_long["Early Rally Score"] = score_r
+                df_long["Early Rally Phase"] = "ACCUMULATION WATCH"
+                df_long.loc[trigger_r, "Early Rally Phase"] = "TRIGGER WATCH"
+                df_long.loc[pullback_r, "Early Rally Phase"] = "MOVED ALREADY - WAIT PULLBACK"
+                df_long.loc[buy_r, "Early Rally Phase"] = "CONFIRMED EARLY BUY"
+                df_long["Early Rally Gate"] = "WATCH ONLY"
+                df_long.loc[trigger_r, "Early Rally Gate"] = "WAIT FOR BREAKOUT + VOLUME"
+                df_long.loc[pullback_r, "Early Rally Gate"] = "WAIT PULLBACK / RESET"
+                df_long.loc[buy_r, "Early Rally Gate"] = "BUY GATE PASS"
+                df_long["Early Rally Buy?"] = "NO"
+                df_long.loc[buy_r, "Early Rally Buy?"] = "YES"
+                df_long["Setup Type"] = df_long["Early Rally Phase"]
+
+                _default_trigger = "Break pivot/recent high with >=1.5x volume; stop near support"
+                _trigger_col = df_long.get(
+                    "Stage 2 Buy Trigger",
+                    pd.Series([_default_trigger] * len(df_long), index=df_long.index),
+                ).astype(str)
+                _blank_trigger = _trigger_col.str.upper().isin(["", "-", "NAN", "NONE", "UNAVAILABLE"])
+                df_long["Early Rally Trigger"] = _trigger_col.where(~_blank_trigger, _default_trigger)
+                df_long.loc[pullback_r, "Early Rally Trigger"] = "Do not chase; wait for pullback, tight base, or reset near support"
+
+                df_long["Early Rally Missing"] = [_early_rally_missing_for_index(_idx) for _idx in df_long.index]
+                df_long["Early Rally Why"] = (
+                    "Score=" + score_r.astype(str)
+                    + "; 5D=" + five_r.round(1).astype(str) + "%"
+                    + "; 20D=" + twenty_r.round(1).astype(str) + "%"
+                    + "; 60D=" + sixty_r.round(1).astype(str) + "%"
+                    + "; 120D=" + one_twenty_r.round(1).astype(str) + "%"
+                    + "; Vol=" + vr_r.round(2).astype(str) + "x"
+                    + "; RR=" + rr_r.round(1).astype(str)
+                    + "; Room=" + room_r.round(1).astype(str) + "%"
+                    + "; BaseRoom=" + base_room_r.round(1).astype(str) + "%"
+                )
+                df_long = (
+                    df_long.assign(
+                        _early_tier=buy_r.astype(int) * 4 + trigger_r.astype(int) * 3 + accum_r.astype(int) * 2 - pullback_r.astype(int),
+                        _early_score=score_r,
+                        _early_vr=vr_r,
+                        _early_prob=p.reindex(df_long.index).fillna(0),
+                    )
+                    .sort_values(["_early_tier", "_early_score", "_early_vr", "_early_prob"], ascending=[False, False, False, False], kind="stable")
+                    .drop(columns=["_early_tier", "_early_score", "_early_vr", "_early_prob"], errors="ignore")
+                )
 
         elif mode == "STAGE 2 BREAKOUT":
             stage2_score = _scan_num_col("Stage 2 Score", 0.0)
@@ -2088,14 +2385,14 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
         # ── Emergency fallback: never show a completely blank long tab ─────────
         # If a non-Discovery mode filtered everything out, show the top Discovery
         # rows with a note so the user knows WHY results are limited.
-        if df_long.empty and not df_long_master.empty and mode not in ("DISCOVERY", "PRO 70 / 2.5R", "A+ PRECISION", "STRICT", "STAGE 2 BREAKOUT", "PSM STRATEGY"):
+        if df_long.empty and not df_long_master.empty and mode not in ("DISCOVERY", "PRO 70 / 2.5R", "A+ PRECISION", "STRICT", "STAGE 2 BREAKOUT", "EARLY RALLY FINDER", "PSM STRATEGY"):
             top_n = min(20, len(df_long_master))
             master_p = _pct_to_num(df_long_master["Rise Prob"], 0) if "Rise Prob" in df_long_master.columns else pd.Series([0.0] * len(df_long_master))
             df_long = df_long_master.sort_values(master_p.name if hasattr(master_p, "name") and master_p.name in df_long_master.columns else df_long_master.columns[0], ascending=False).head(top_n).copy()
             if "Action" in df_long.columns:
                 df_long["Action"] = f"WATCH – {mode} (no exact match – showing top Discovery)"
 
-    if not df_long.empty and mode != "STAGE 2 BREAKOUT" and ("Quality Score" in df_long.columns or "Next-Day Score" in df_long.columns):
+    if not df_long.empty and mode not in ("STAGE 2 BREAKOUT", "EARLY RALLY FINDER") and ("Quality Score" in df_long.columns or "Next-Day Score" in df_long.columns):
         try:
             df_long["_q_sort"] = pd.to_numeric(df_long.get("Quality Score", df_long.get("Next-Day Score", 0)), errors="coerce").fillna(0)
             df_long["_nds_sort"] = pd.to_numeric(df_long.get("Next-Day Score", 0), errors="coerce").fillna(0)
