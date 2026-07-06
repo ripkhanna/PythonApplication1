@@ -67,8 +67,11 @@ def _normalise_tracker_frame(df: pd.DataFrame) -> pd.DataFrame:
     for col in TRACKER_COLUMNS:
         if col not in out.columns:
             out[col] = ""
+    # SQLite stores every tracker field as TEXT, and Streamlit serialises the
+    # displayed frame through Arrow. Keep one consistent string dtype in memory
+    # as well so neither pandas nor Arrow has to reconcile mixed scalar types.
     out = out[TRACKER_COLUMNS].copy()
-    return out.where(pd.notna(out), "")
+    return out.astype("string").fillna("")
 
 
 def _connect_tracker_db() -> sqlite3.Connection:
@@ -488,10 +491,13 @@ def _candidate_rows(src: pd.DataFrame, top_n: int, sources: list[str], include_w
     out = pd.DataFrame(rows)
     if out.empty:
         return pd.DataFrame(columns=TRACKER_COLUMNS)
-    return out[TRACKER_COLUMNS].drop_duplicates("Pick ID").reset_index(drop=True)
+    out = out[TRACKER_COLUMNS].drop_duplicates("Pick ID").reset_index(drop=True)
+    return _normalise_tracker_frame(out)
 
 
 def _append_candidates(existing: pd.DataFrame, picks: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    existing = _normalise_tracker_frame(existing)
+    picks = _normalise_tracker_frame(picks)
     if picks.empty:
         return existing, 0
     old_ids = set(existing.get("Pick ID", pd.Series(dtype=str)).astype(str))
@@ -500,7 +506,7 @@ def _append_candidates(existing: pd.DataFrame, picks: pd.DataFrame) -> tuple[pd.
         return existing, 0
     out = pd.concat([existing, add], ignore_index=True)
     out = out.drop_duplicates("Pick ID", keep="last")
-    return out[TRACKER_COLUMNS], len(add)
+    return _normalise_tracker_frame(out), len(add)
 
 
 def _history_for_ticker(ticker: str, start_date: pd.Timestamp) -> pd.DataFrame:
@@ -578,7 +584,7 @@ def _update_outcomes(log: pd.DataFrame, max_tickers: int = 80) -> tuple[pd.DataF
     if log.empty:
         return log, 0, []
 
-    out = log.copy()
+    out = _normalise_tracker_frame(log)
     out["Ticker"] = out["Ticker"].astype(str).str.upper().str.strip()
     tickers = out["Ticker"].dropna().replace("", np.nan).dropna().unique().tolist()[:max_tickers]
     errors = []
@@ -615,7 +621,7 @@ def _update_outcomes(log: pd.DataFrame, max_tickers: int = 80) -> tuple[pd.DataF
             trigger_hits = after.index[after["High"] >= trigger] if trigger > 0 else []
             if len(trigger_hits) == 0:
                 out.at[i, "Status"] = "Waiting Trigger"
-                out.at[i, "Days Checked"] = int(min(len(after), 7))
+                out.at[i, "Days Checked"] = str(min(len(after), 7))
                 out.at[i, "Last Outcome Update"] = pd.Timestamp.now().isoformat(timespec="seconds")
                 updated += 1
                 continue
@@ -624,7 +630,7 @@ def _update_outcomes(log: pd.DataFrame, max_tickers: int = 80) -> tuple[pd.DataF
 
         horizon = after.head(7)
         days_checked = int(len(horizon))
-        out.at[i, "Days Checked"] = days_checked
+        out.at[i, "Days Checked"] = str(days_checked)
         for days in (1, 3, 5, 7):
             out.at[i, f"Max Gain {days}D %"] = _fmt_pct(_max_gain(after, entry, days))
         out.at[i, "Max Drawdown 7D %"] = _fmt_pct(_max_drawdown(after, entry, 7))
@@ -655,7 +661,7 @@ def _update_outcomes(log: pd.DataFrame, max_tickers: int = 80) -> tuple[pd.DataF
         out.at[i, "Last Outcome Update"] = pd.Timestamp.now().isoformat(timespec="seconds")
         updated += 1
 
-    return out[TRACKER_COLUMNS], updated, errors
+    return _normalise_tracker_frame(out), updated, errors
 
 
 def _rate(series: pd.Series) -> float:
