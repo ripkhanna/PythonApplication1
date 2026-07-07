@@ -28,6 +28,20 @@ TRACKER_COLUMNS = [
     "Stop Hit", "Stop First", "Status", "Last Outcome Update",
 ]
 
+CUSTOM_TRACKER_SOURCES = [
+    "Custom Monitor",
+    "Manual Buy Plan",
+    "Best Time Buy Watch",
+    "Watchlist",
+]
+
+OUTCOME_RESULT_COLUMNS = [
+    "Days Checked", "Max Gain 1D %", "Max Gain 3D %", "Max Gain 5D %",
+    "Max Gain 7D %", "Max Drawdown 7D %", "Close 7D %",
+    "Hit +3%", "Hit +5%", "Hit +7%", "Hit +10%",
+    "Stop Hit", "Stop First", "Last Outcome Update",
+]
+
 
 def _bind_runtime(ctx: dict) -> None:
     globals().update(ctx)
@@ -309,9 +323,251 @@ def _save_tracker(df: pd.DataFrame) -> None:
     _upsert_tracker_rows(df)
 
 
+def _delete_tracker_rows(pick_ids: list[str]) -> int:
+    ids = [str(pid).strip() for pid in pick_ids if str(pid).strip()]
+    if not ids:
+        return 0
+    _ensure_tracker_db()
+    with closing(_connect_tracker_db()) as conn, conn:
+        deleted = 0
+        for pick_id in ids:
+            cur = conn.execute(
+                f"DELETE FROM {_quoted_identifier(TRACKER_TABLE)} "
+                f"WHERE {_quoted_identifier('Pick ID')} = ?",
+                (pick_id,),
+            )
+            deleted += int(cur.rowcount or 0)
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    return deleted
+
+
 def _pick_id(market: str, selection_date: str, ticker: str, source: str) -> str:
     raw = f"{market}|{selection_date}|{ticker}|{source}".upper()
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _normalise_manual_ticker(value: str, market: str) -> str:
+    ticker = str(value or "").upper().strip().lstrip("$").replace(" ", "")
+    if not ticker:
+        return ""
+    market_key = _market_key(market)
+    if "." not in ticker:
+        if market_key == "hk" and ticker.isdigit():
+            ticker = f"{ticker.zfill(4)}.HK"
+        elif market_key == "sgx":
+            ticker = f"{ticker}.SI"
+        elif market_key == "india":
+            ticker = f"{ticker}.NS"
+    return ticker
+
+
+def _split_manual_tickers(value: str, market: str) -> list[str]:
+    raw = str(value or "")
+    for sep in ("\n", ";", "\t"):
+        raw = raw.replace(sep, ",")
+    seen = set()
+    tickers: list[str] = []
+    for part in raw.split(","):
+        ticker = _normalise_manual_ticker(part, market)
+        if ticker and ticker not in seen:
+            seen.add(ticker)
+            tickers.append(ticker)
+    return tickers
+
+
+def _fmt_price(value: float) -> str:
+    try:
+        if float(value) <= 0:
+            return ""
+        return f"{float(value):.4f}".rstrip("0").rstrip(".")
+    except Exception:
+        return ""
+
+
+def _manual_pick_rows(
+    ticker_text: str,
+    market: str,
+    selection_date,
+    source: str,
+    tier: str,
+    action: str,
+    plan: str,
+    entry_price: float,
+    trigger: float,
+    stop: float,
+    priority_score: int,
+) -> pd.DataFrame:
+    tickers = _split_manual_tickers(ticker_text, market)
+    if not tickers:
+        return pd.DataFrame(columns=TRACKER_COLUMNS)
+
+    try:
+        selection_date_text = pd.Timestamp(selection_date).date().isoformat()
+    except Exception:
+        selection_date_text = pd.Timestamp.now().date().isoformat()
+
+    source = str(source or "Custom Monitor").strip() or "Custom Monitor"
+    tier = str(tier or "Monitor").strip() or "Monitor"
+    action = str(action or "Monitor").strip() or "Monitor"
+    plan = str(plan or "").strip()
+    now_text = pd.Timestamp.now().isoformat(timespec="seconds")
+
+    entry = _num_value(entry_price)
+    buy_trigger = _num_value(trigger)
+    invalid_below = _num_value(stop)
+    why_parts = []
+    if plan:
+        why_parts.append(f"Plan: {plan}")
+    if buy_trigger > 0:
+        why_parts.append(f"Best buy trigger: {_fmt_price(buy_trigger)}")
+    if invalid_below > 0:
+        why_parts.append(f"Invalid below: {_fmt_price(invalid_below)}")
+    if entry > 0:
+        why_parts.append(f"Reference price: {_fmt_price(entry)}")
+    why = " | ".join(why_parts)[:500]
+
+    rows = []
+    for ticker in tickers:
+        rows.append({
+            "Pick ID": _pick_id(market, selection_date_text, ticker, source),
+            "Market": market,
+            "Selection Date": selection_date_text,
+            "Captured At": now_text,
+            "Scan Time": now_text,
+            "Ticker": ticker,
+            "Source": source,
+            "Tier": tier,
+            "Score": priority_score,
+            "Why": why,
+            "Entry Price": _fmt_price(entry),
+            "Trigger": _fmt_price(buy_trigger),
+            "Stop": _fmt_price(invalid_below),
+            "Action": action,
+            "Entry Quality": tier,
+            "Tradeable Buy": "WATCH",
+            "Today %": "",
+            "Vol Ratio": "",
+            "ATR%": "",
+            "Rise Prob": "",
+            "Quality Score": "",
+            "Next-Day Score": "",
+            "RR Est": "",
+            "Days Checked": "0",
+            "Max Gain 1D %": "",
+            "Max Gain 3D %": "",
+            "Max Gain 5D %": "",
+            "Max Gain 7D %": "",
+            "Max Drawdown 7D %": "",
+            "Close 7D %": "",
+            "Hit +3%": "",
+            "Hit +5%": "",
+            "Hit +7%": "",
+            "Hit +10%": "",
+            "Stop Hit": "",
+            "Stop First": "",
+            "Status": "Manual Watch",
+            "Last Outcome Update": "",
+        })
+    return _normalise_tracker_frame(pd.DataFrame(rows))
+
+
+def _nonblank_options(series: pd.Series) -> list[str]:
+    vals = []
+    for value in series.astype(str).fillna(""):
+        text = str(value).strip()
+        if text:
+            vals.append(text)
+    return sorted(set(vals))
+
+
+def _filter_tracker_grid(
+    log: pd.DataFrame,
+    query: str = "",
+    source_filter: list[str] | None = None,
+    status_filter: list[str] | None = None,
+) -> pd.DataFrame:
+    out = _normalise_tracker_frame(log)
+    if source_filter:
+        allowed = {str(value) for value in source_filter}
+        out = out[out["Source"].astype(str).isin(allowed)].copy()
+    if status_filter:
+        allowed = {str(value) for value in status_filter}
+        out = out[out["Status"].astype(str).isin(allowed)].copy()
+
+    terms = [term.strip().lower() for term in str(query or "").replace(",", " ").split() if term.strip()]
+    if not terms or out.empty:
+        return _normalise_tracker_frame(out)
+
+    search_cols = [
+        "Ticker", "Market", "Selection Date", "Source", "Tier", "Action",
+        "Entry Quality", "Tradeable Buy", "Status", "Why",
+    ]
+    search_cols = [col for col in search_cols if col in out.columns]
+    haystack = out[search_cols].astype(str).agg(" ".join, axis=1).str.lower()
+    mask = pd.Series(True, index=out.index)
+    for term in terms:
+        mask &= haystack.str.contains(term, regex=False, na=False)
+    return _normalise_tracker_frame(out[mask].copy())
+
+
+def _custom_tracker_rows(log: pd.DataFrame) -> pd.DataFrame:
+    out = _normalise_tracker_frame(log)
+    return _normalise_tracker_frame(out[out["Source"].astype(str).isin(CUSTOM_TRACKER_SOURCES)].copy())
+
+
+def _custom_row_label(row: pd.Series) -> str:
+    ticker = str(row.get("Ticker", "")).strip() or "(blank ticker)"
+    source = str(row.get("Source", "")).strip() or "Custom"
+    date = str(row.get("Selection Date", "")).strip() or "no date"
+    tier = str(row.get("Tier", "")).strip() or "no tier"
+    suffix = str(row.get("Pick ID", ""))[:6]
+    return f"{ticker} | {source} | {date} | {tier} | {suffix}"
+
+
+def _custom_row_label_map(custom_log: pd.DataFrame) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    for _, row in custom_log.iterrows():
+        label = _custom_row_label(row)
+        # Include the Pick ID suffix already, but keep this guard for older or
+        # unusual rows that might otherwise render with duplicate labels.
+        if label in labels:
+            label = f"{label} #{len(labels) + 1}"
+        labels[label] = str(row.get("Pick ID", ""))
+    return labels
+
+
+def _reset_outcome_metrics(row: pd.Series) -> pd.Series:
+    out = row.copy()
+    for col in OUTCOME_RESULT_COLUMNS:
+        out[col] = "0" if col == "Days Checked" else ""
+    out["Status"] = "Manual Watch"
+    return out
+
+
+def _apply_custom_row_edit(
+    log: pd.DataFrame,
+    pick_id: str,
+    updates: dict,
+    reset_outcomes: bool = True,
+) -> tuple[pd.DataFrame, bool]:
+    out = _normalise_tracker_frame(log)
+    mask = out["Pick ID"].astype(str).eq(str(pick_id))
+    if not mask.any():
+        return out, False
+    idx = out.index[mask][0]
+    if str(out.at[idx, "Source"]) not in CUSTOM_TRACKER_SOURCES:
+        return out, False
+
+    row = out.loc[idx].copy()
+    if reset_outcomes:
+        row = _reset_outcome_metrics(row)
+    for col, value in updates.items():
+        if col in TRACKER_COLUMNS:
+            row[col] = "" if value is None else str(value)
+    row["Entry Quality"] = row.get("Tier", "")
+    out.loc[idx, TRACKER_COLUMNS] = row[TRACKER_COLUMNS]
+    return _normalise_tracker_frame(out), True
 
 
 def _row_to_pick(row: pd.Series, market: str, selection_date: str, scan_time: str,
@@ -580,6 +836,171 @@ def _yes_no(value: bool | None) -> str:
     return "YES" if value else "NO"
 
 
+def _render_custom_tracker_manager(log: pd.DataFrame) -> pd.DataFrame:
+    with st.expander("Manage Custom Tickers / Plans", expanded=False):
+        custom_log = _custom_tracker_rows(log)
+        if custom_log.empty:
+            st.info("No custom ticker rows yet. Add one above first.")
+        else:
+            label_to_id = _custom_row_label_map(custom_log)
+            labels = list(label_to_id.keys())
+            st.caption(
+                "Only manually-added custom rows can be edited or removed here. "
+                "Scanner-captured rows stay protected."
+            )
+
+            remove_labels = st.multiselect(
+                "Custom tickers to remove",
+                labels,
+                default=[],
+                key="perf_custom_remove_rows",
+            )
+            if st.button(
+                "Remove Selected Custom Tickers",
+                key="perf_custom_remove_button",
+                disabled=not remove_labels,
+            ):
+                remove_ids = [label_to_id[label] for label in remove_labels]
+                deleted = _delete_tracker_rows(remove_ids)
+                log = _normalise_tracker_frame(
+                    log[~log["Pick ID"].astype(str).isin(remove_ids)].copy()
+                )
+                st.success(f"Removed {deleted} custom ticker row{'s' if deleted != 1 else ''}.")
+
+            st.markdown("#### Update Custom Ticker Plan")
+            edit_label = st.selectbox(
+                "Custom ticker to update",
+                labels,
+                key="perf_custom_edit_row",
+            )
+            edit_pick_id = label_to_id.get(edit_label, "")
+            edit_match = custom_log[custom_log["Pick ID"].astype(str).eq(edit_pick_id)]
+            if edit_match.empty:
+                st.warning("Selected custom row is no longer available.")
+            else:
+                edit_row = edit_match.iloc[0]
+                tier_options = ["Monitor", "Best Time Buy Watch", "High Priority", "Research", "Hold Off"]
+                action_options = ["Monitor", "Wait for trigger", "Buy only on confirmation", "Hold off"]
+                status_options = ["Manual Watch", "Waiting", "Waiting Trigger", "Open", "Hold Off", "Closed"]
+                current_tier = str(edit_row.get("Tier", "") or "Monitor")
+                current_action = str(edit_row.get("Action", "") or "Monitor")
+                current_status = str(edit_row.get("Status", "") or "Manual Watch")
+                for value, opts in (
+                    (current_tier, tier_options),
+                    (current_action, action_options),
+                    (current_status, status_options),
+                ):
+                    if value and value not in opts:
+                        opts.insert(0, value)
+
+                with st.form("perf_custom_edit_form"):
+                    st.caption(
+                        f"Editing {edit_row.get('Ticker', '')} from "
+                        f"{edit_row.get('Source', '')} on {edit_row.get('Selection Date', '')}. "
+                        "To change ticker/date/bucket identity, remove the row and add it again."
+                    )
+                    ec1, ec2, ec3, ec4 = st.columns([1, 1, 1, 1])
+                    with ec1:
+                        edit_tier = st.selectbox(
+                            "Priority / tier",
+                            tier_options,
+                            index=tier_options.index(current_tier),
+                            key="perf_edit_tier",
+                        )
+                    with ec2:
+                        edit_action = st.selectbox(
+                            "Action",
+                            action_options,
+                            index=action_options.index(current_action),
+                            key="perf_edit_action",
+                        )
+                    with ec3:
+                        edit_status = st.selectbox(
+                            "Status",
+                            status_options,
+                            index=status_options.index(current_status),
+                            key="perf_edit_status",
+                        )
+                    with ec4:
+                        edit_score = st.slider(
+                            "Priority score",
+                            0,
+                            100,
+                            int(max(0, min(100, round(_num_value(edit_row.get("Score", 50), 50))))),
+                            key="perf_edit_score",
+                        )
+
+                    pc1, pc2, pc3 = st.columns(3)
+                    with pc1:
+                        edit_entry = st.number_input(
+                            "Reference price",
+                            min_value=0.0,
+                            value=float(_num_value(edit_row.get("Entry Price", 0))),
+                            step=0.01,
+                            format="%.4f",
+                            key="perf_edit_entry",
+                        )
+                    with pc2:
+                        edit_trigger = st.number_input(
+                            "Buy trigger",
+                            min_value=0.0,
+                            value=float(_num_value(edit_row.get("Trigger", 0))),
+                            step=0.01,
+                            format="%.4f",
+                            key="perf_edit_trigger",
+                        )
+                    with pc3:
+                        edit_stop = st.number_input(
+                            "Invalid below / stop",
+                            min_value=0.0,
+                            value=float(_num_value(edit_row.get("Stop", 0))),
+                            step=0.01,
+                            format="%.4f",
+                            key="perf_edit_stop",
+                        )
+
+                    edit_why = st.text_area(
+                        "Best buy timing / monitoring note",
+                        value=str(edit_row.get("Why", "") or ""),
+                        key="perf_edit_why",
+                    )
+                    reset_outcomes = st.checkbox(
+                        "Reset outcome metrics after this edit",
+                        value=True,
+                        key="perf_edit_reset_outcomes",
+                        help="Recommended when changing reference price, buy trigger, stop, or the setup plan.",
+                    )
+                    save_edit = st.form_submit_button("Save Custom Ticker Changes")
+
+                if save_edit:
+                    updates = {
+                        "Tier": edit_tier,
+                        "Entry Quality": edit_tier,
+                        "Action": edit_action,
+                        "Status": edit_status,
+                        "Score": str(edit_score),
+                        "Entry Price": _fmt_price(edit_entry),
+                        "Trigger": _fmt_price(edit_trigger),
+                        "Stop": _fmt_price(edit_stop),
+                        "Why": str(edit_why or "")[:500],
+                    }
+                    log, changed = _apply_custom_row_edit(
+                        log,
+                        edit_pick_id,
+                        updates,
+                        reset_outcomes=reset_outcomes,
+                    )
+                    if changed:
+                        changed_row = log[log["Pick ID"].astype(str).eq(edit_pick_id)]
+                        _save_tracker(changed_row)
+                        st.success(f"Updated custom ticker plan for {edit_row.get('Ticker', '')}.")
+                    else:
+                        st.warning("Could not update that custom row.")
+
+
+    return _normalise_tracker_frame(log)
+
+
 def _update_outcomes(log: pd.DataFrame, max_tickers: int = 80) -> tuple[pd.DataFrame, int, list[str]]:
     if log.empty:
         return log, 0, []
@@ -745,6 +1166,128 @@ def render_performance_tracker(ctx: dict) -> None:
                 with st.expander("Outcome update warnings", expanded=False):
                     st.code("\n".join(errors[:50]))
 
+    with st.expander("Add Custom Tickers / Buy Plan", expanded=False):
+        st.caption(
+            "Use this for stocks you personally want to monitor. Add a buy trigger, stop, "
+            "or timing note such as 'buy only after reclaiming 20DMA' so the tracker keeps "
+            "the plan beside the ticker."
+        )
+        current_market = _current_market()
+        market_options = ["US", "HK", "SGX", "India"]
+        if current_market not in market_options:
+            market_options.insert(0, current_market)
+        with st.form("perf_manual_ticker_form", clear_on_submit=True):
+            manual_tickers = st.text_area(
+                "Tickers to monitor",
+                placeholder="AAPL, NVDA, MSFT\nFor HK you can type 700 and it will save as 0700.HK",
+                key="perf_manual_tickers",
+            )
+            mc1, mc2, mc3, mc4 = st.columns([1, 1, 1, 1])
+            with mc1:
+                manual_market = st.selectbox(
+                    "Market",
+                    market_options,
+                    index=market_options.index(current_market),
+                    key="perf_manual_market",
+                )
+            with mc2:
+                manual_source = st.selectbox(
+                    "Bucket",
+                    ["Custom Monitor", "Manual Buy Plan", "Best Time Buy Watch", "Watchlist"],
+                    key="perf_manual_source",
+                )
+            with mc3:
+                manual_tier = st.selectbox(
+                    "Priority / tier",
+                    ["Monitor", "Best Time Buy Watch", "High Priority", "Research", "Hold Off"],
+                    key="perf_manual_tier",
+                )
+            with mc4:
+                manual_date = st.date_input(
+                    "Selection date",
+                    value=pd.Timestamp.now().date(),
+                    key="perf_manual_date",
+                )
+
+            manual_plan = st.text_area(
+                "Best buy timing / monitoring note",
+                placeholder="Example: buy only above consolidation high; wait for volume reclaim; avoid if extended.",
+                key="perf_manual_plan",
+            )
+            pc1, pc2, pc3, pc4, pc5 = st.columns([1, 1, 1, 1, 1])
+            with pc1:
+                manual_entry = st.number_input(
+                    "Reference price",
+                    min_value=0.0,
+                    value=0.0,
+                    step=0.01,
+                    format="%.4f",
+                    key="perf_manual_entry",
+                )
+            with pc2:
+                manual_trigger = st.number_input(
+                    "Buy trigger",
+                    min_value=0.0,
+                    value=0.0,
+                    step=0.01,
+                    format="%.4f",
+                    key="perf_manual_trigger",
+                )
+            with pc3:
+                manual_stop = st.number_input(
+                    "Invalid below / stop",
+                    min_value=0.0,
+                    value=0.0,
+                    step=0.01,
+                    format="%.4f",
+                    key="perf_manual_stop",
+                )
+            with pc4:
+                manual_action = st.selectbox(
+                    "Action",
+                    ["Monitor", "Wait for trigger", "Buy only on confirmation", "Hold off"],
+                    key="perf_manual_action",
+                )
+            with pc5:
+                manual_priority = st.slider(
+                    "Priority score",
+                    0,
+                    100,
+                    50,
+                    key="perf_manual_priority",
+                )
+
+            custom_submit = st.form_submit_button("Add Custom Tickers")
+
+        if custom_submit:
+            custom_rows = _manual_pick_rows(
+                manual_tickers,
+                manual_market,
+                manual_date,
+                manual_source,
+                manual_tier,
+                manual_action,
+                manual_plan,
+                manual_entry,
+                manual_trigger,
+                manual_stop,
+                manual_priority,
+            )
+            if custom_rows.empty:
+                st.warning("Enter at least one ticker to add.")
+            else:
+                log, added = _append_candidates(log, custom_rows)
+                if added:
+                    _save_tracker(log)
+                    st.success(
+                        f"Added {added} custom ticker{'s' if added != 1 else ''}: "
+                        f"{', '.join(custom_rows['Ticker'].astype(str).tolist())}"
+                    )
+                else:
+                    st.info("Those ticker rows are already tracked for this date and bucket.")
+
+    log = _render_custom_tracker_manager(log)
+
     st.caption(
         f"Permanent tracker database: `{path}` · Stored outside scanner_cache, "
         "so clearing scan cache does not remove picks or outcomes."
@@ -770,25 +1313,54 @@ def render_performance_tracker(ctx: dict) -> None:
     else:
         st.dataframe(summary, width="stretch", hide_index=True, key="perf_summary")
 
+    st.markdown("### Tracker Grid Search")
+    sg1, sg2, sg3 = st.columns([2, 1, 1])
+    with sg1:
+        grid_query = st.text_input(
+            "Search grid",
+            placeholder="Ticker, source, status, tier, plan text...",
+            key="perf_grid_search",
+        )
+    with sg2:
+        source_filter = st.multiselect(
+            "Source",
+            _nonblank_options(log["Source"]),
+            default=[],
+            key="perf_grid_source_filter",
+        )
+    with sg3:
+        status_filter = st.multiselect(
+            "Status",
+            _nonblank_options(log["Status"]),
+            default=[],
+            key="perf_grid_status_filter",
+        )
+    grid_log = _filter_tracker_grid(log, grid_query, source_filter, status_filter)
+    if len(grid_log) != len(log):
+        st.caption(f"Showing {len(grid_log)} of {len(log)} tracked rows after search/filter.")
+    if grid_log.empty:
+        st.info("No tracked rows match the current search/filter.")
+
     show_cols = [
-        "Selection Date", "Ticker", "Market", "Source", "Tier", "Score",
+        "Selection Date", "Ticker", "Market", "Source", "Tier", "Action",
+        "Entry Quality", "Score",
         "Entry Price", "Trigger", "Stop", "Days Checked", "Max Gain 1D %",
         "Max Gain 3D %", "Max Gain 5D %", "Max Gain 7D %",
         "Max Drawdown 7D %", "Hit +5%", "Hit +7%", "Hit +10%",
         "Stop First", "Status", "Why",
     ]
-    show_cols = [c for c in show_cols if c in log.columns]
+    show_cols = [c for c in show_cols if c in grid_log.columns]
 
-    open_rows = log[~log["Status"].astype(str).isin(["Hit +10%", "Hit +7%", "Hit +5%", "Stop First", "No +5% in 7D"])].copy()
+    open_rows = grid_log[~grid_log["Status"].astype(str).isin(["Hit +10%", "Hit +7%", "Hit +5%", "Stop First", "No +5% in 7D"])].copy()
     with st.expander(f"Open / Waiting Picks ({len(open_rows)})", expanded=True):
         st.dataframe(open_rows[show_cols].sort_values(["Selection Date", "Source"], ascending=[False, True]), width="stretch", hide_index=True, key="perf_open")
 
-    with st.expander(f"All Tracked Picks ({len(log)})", expanded=False):
-        st.dataframe(log[show_cols].sort_values(["Selection Date", "Source"], ascending=[False, True]), width="stretch", hide_index=True, key="perf_all")
+    with st.expander(f"All Tracked Picks ({len(grid_log)})", expanded=False):
+        st.dataframe(grid_log[show_cols].sort_values(["Selection Date", "Source"], ascending=[False, True]), width="stretch", hide_index=True, key="perf_all")
 
     csv_data = log.to_csv(index=False).encode("utf-8")
     st.download_button(
-        "Download tracker CSV",
+        "Download full tracker CSV",
         data=csv_data,
         file_name="performance_tracker.csv",
         mime="text/csv",
