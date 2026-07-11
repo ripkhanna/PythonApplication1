@@ -24,6 +24,44 @@ Install:
 from __future__ import annotations
 
 import streamlit as st
+
+
+def _install_streamlit_width_compat() -> None:
+    """Translate newer width='stretch' kwargs for older Streamlit builds."""
+    try:
+        import functools as _functools_compat
+        import inspect as _inspect_compat
+
+        def _wrap(_name: str) -> None:
+            _fn = getattr(st, _name, None)
+            if not callable(_fn) or getattr(_fn, "_width_compat_wrapped", False):
+                return
+            try:
+                _params = set(_inspect_compat.signature(_fn).parameters)
+            except Exception:
+                _params = set()
+            if "width" in _params:
+                return
+
+            @_functools_compat.wraps(_fn)
+            def _wrapped(*args, **kwargs):
+                if kwargs.get("width") == "stretch":
+                    kwargs.pop("width", None)
+                    if "use_container_width" in _params and "use_container_width" not in kwargs:
+                        kwargs["use_container_width"] = True
+                return _fn(*args, **kwargs)
+
+            setattr(_wrapped, "_width_compat_wrapped", True)
+            setattr(st, _name, _wrapped)
+
+        for _name in ("button", "dataframe", "plotly_chart"):
+            _wrap(_name)
+    except Exception:
+        pass
+
+
+_install_streamlit_width_compat()
+
 import yfinance as yf
 import pandas as pd
 import numpy as np
