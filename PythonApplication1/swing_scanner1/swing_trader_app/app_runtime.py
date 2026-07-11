@@ -547,7 +547,7 @@ _SIDEBAR_DEFAULTS = {
     "ui_top_n_sectors":       3,
     "ui_min_prob_long":       62,
     "ui_min_prob_short":      60,
-    "ui_swing_mode":          "Balanced",  # Options include Stage 2 Breakout plus the existing swing strategies
+    "ui_swing_mode":          "Money Setup (5% / 2R)",  # Profit-focused default; wider strategies remain selectable.
     "ui_skip_earnings":       False,
     "ui_use_live_universe":   True,
     "ui_max_live_universe":   150,   # v15.10: reduced from 350 — 150 live + 746 curated = ~700 combined (fast)
@@ -655,9 +655,10 @@ min_prob_short = st.sidebar.slider(
 )
 swing_mode = st.sidebar.selectbox(
     "📊 Swing strategy",
-    ["Pro 70 / 2.5R", "A+ Precision", "Stage 2 Breakout", "Early Rally Finder", "Strict", "Balanced", "Discovery", "Support Entry", "Premarket Momentum", "High Volume", "High Conviction", "PSM Strategy"],
+    ["Money Setup (5% / 2R)", "Pro 70 / 2.5R", "A+ Precision", "Stage 2 Breakout", "Early Rally Finder", "Strict", "Balanced", "Discovery", "Support Entry", "Premarket Momentum", "High Volume", "High Conviction", "PSM Strategy"],
     key="ui_swing_mode",
     help=(
+        "**Money Setup (5% / 2R)** - default profit-focused mode. Separates Great Watch candidates from actual buy-quality rows. PASS rows need practical 5%+ runway, estimated R:R >= 2, clean risk, not-too-extended recent movement, and a usable stop/trigger plan. Great Watch / Hot Leader rows are not buys yet; they show what is worth tracking and the trigger/reset needed.\n\n"
         "**Pro 70 / 2.5R** — professional-style high-selectivity strategy requiring multi-pillar confirmation and at least 1:2.5 R:R. SGX uses market-aware price/volume gates. Paper-test first; no win rate is guaranteed.\n\n"
         "**A+ Precision** — fails closed. Shows only clean high-confluence setups with good entry, RR/runway, volume/operator confirmation and no chase/trap risk.\n\n"
         "**Stage 2 Breakout** — risk-managed early pre-breakout screen with market/sector regime, earnings safety, post-pivot R:R, breakout entry, failed-breakout exit, hard stop, target, time stop, and risk-based position sizing. Late/above-pivot stocks stay out. The future 150%+ RVOL surge is the entry trigger.\n\n"
@@ -698,7 +699,14 @@ st.session_state["_last_seen_swing_mode"] = swing_mode
 
 # Show strategy context banner under the selectbox
 _sm_upper = swing_mode.upper()
-if _sm_upper == "PRO 70 / 2.5R":
+if _sm_upper == "MONEY SETUP (5% / 2R)":
+    st.sidebar.info(
+        "Money Setup (5% / 2R)\n\n"
+        "Profit-focused default: PASS rows need usable 5%+ room, R:R >= 2, "
+        "clean risk, no chase/mature-run profile, and a practical stop plan. "
+        "Great Watch / Hot Leader rows are radar names only; they need the trigger/reset shown before buying."
+    )
+elif _sm_upper == "PRO 70 / 2.5R":
     st.sidebar.info(
         "Pro 70 / 2.5R\n\n"
         "Professional-style 7-of-8 pillar strategy: trend, relative strength, "
@@ -1264,7 +1272,10 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
                   "Early Rally Missing", "Early Rally Pattern", "Reset Signal",
                   "Prior Impulse 5D %", "Reset Days", "Reset From Peak %",
                   "Reset Range 3D %", "Reset Volume Ratio", "Reset Trigger",
-                  "Reset Stop"]:
+                  "Reset Stop",
+                  "Great Score", "Great Tier", "Great Trigger", "Great Why",
+                  "Money Score", "Money Gate", "Money Missing", "Money Why",
+                  "Buy Plan", "Target +5%", "Stop Plan", "Risk/Reward Check"]:
             if c not in df.columns:
                 df[c] = "–"
         return df
@@ -1327,7 +1338,7 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
         setup_scan = df_long.get("Setup Type", pd.Series([""] * len(df_long), index=df_long.index)).astype(str).str.upper()
         trap_upper = trap_text.astype(str).str.upper().str.strip()
         action_upper = action.astype(str).str.upper()
-        clean_trap_mark = trap_upper.isin(["-", "", "NAN", "NONE", "–", "—", "−", "â€“"])
+        clean_trap_mark = trap_upper.isin(["-", "", "?", "??", "???", "NAN", "NONE", "NULL", "NA", "N/A", "–", "—", "−", "â€“"])
         trend_sig = signals.str.contains("WKLY TREND|RS>SPY|52W HIGH|GC|MA STACK|TREND", na=False, regex=True)
         momentum_sig = signals.str.contains("STOCH|MACD|RSI|MOMENTUM|HIGHER LOWS|RS>", na=False, regex=True)
         volume_sig = signals.str.contains("VOL BREAKOUT|VOL SURGE|POCKET PIVOT|OBV|OPERATOR|ACCUM|ACTIVE VOLUME|HIGH VOLUME", na=False, regex=True) | (vol_ratio >= 1.2)
@@ -1672,7 +1683,297 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
                 return "Needs manual review"
             return "Exact gate passed" if not _miss else ", ".join(_miss[:5])
 
-        if mode == "PRO 70 / 2.5R":
+        money_price_ok = price_ok
+        money_bad_label = action_upper.str.contains("CHASING|TRAP|TOO LATE", na=False, regex=True) | stage2_phase_scan.str.contains("TOO LATE", na=False)
+        money_entry_bad = entry_scan.str.contains("WAIT|AVOID|CHASE|EXTENDED|SKIP|TRAP", na=False, regex=True)
+        money_entry_buy = tradeable_buy & entry_scan.str.contains("BUY", na=False, regex=True) & ~money_entry_bad
+        money_room_exact = (rr_scan >= 2.0) & (upside_scan >= 7.0)
+        money_room_near = (rr_scan >= 1.8) & (upside_scan >= 6.0)
+        money_today_exact = today_pct.between(-4.0, 4.5)
+        money_today_near = today_pct.between(-5.0, 6.0)
+        money_recent_exact = five_day_scan.between(-8.0, 14.0) & twenty_day_scan.between(-15.0, 22.0)
+        money_recent_near = five_day_scan.between(-10.0, 16.0) & twenty_day_scan.between(-18.0, 25.0)
+        money_maturity_exact = (sixty_day_scan <= 90.0) & (one_twenty_day_scan <= 180.0) & ~money_bad_label
+        money_maturity_near = (sixty_day_scan <= 110.0) & (one_twenty_day_scan <= 220.0) & ~money_bad_label
+        money_volume_exact = (vol_ratio >= 0.75) | volume_sig | (op_score_scan >= 3.0)
+        money_quality_exact = (p >= 68.0) & (quality_score >= 10.0) & (nd_score >= 10.0)
+        money_quality_near = (p >= 65.0) & (quality_score >= 9.0) & (nd_score >= 7.0)
+        money_rsi_exact = rsi_scan <= 70.0
+        money_rsi_near = rsi_scan <= 73.0
+        money_base_clean = not_candidate & trap_clean & money_price_ok
+        money_exact_buy = (
+            money_base_clean & money_entry_buy & money_room_exact
+            & money_today_exact & money_recent_exact & money_maturity_exact
+            & money_volume_exact & money_quality_exact & money_rsi_exact
+        )
+        money_near_miss = (
+            ~money_exact_buy & money_base_clean & ~money_entry_bad
+            & money_room_near & money_today_near & money_recent_near
+            & money_maturity_near & money_quality_near & money_rsi_near
+        )
+        money_watch_candidate = (
+            ~money_exact_buy & ~money_near_miss
+            & money_base_clean
+            & ~entry_scan.str.contains("AVOID|CHASE|EXTENDED|TRAP", na=False, regex=True)
+            & ~action_upper.str.contains("CHASING|TRAP|TOO LATE", na=False, regex=True)
+            & ((rr_scan >= 1.5) | (upside_scan >= 5.0))
+            & (upside_scan >= 4.0)
+            & today_pct.between(-6.0, 8.0)
+            & five_day_scan.between(-12.0, 18.0)
+            & twenty_day_scan.between(-22.0, 35.0)
+            & (sixty_day_scan <= 130.0)
+            & (one_twenty_day_scan <= 260.0)
+            & (rsi_scan <= 75.0)
+            & ((p >= 62.0) | (quality_score >= 8.0) | (nd_score >= 7.0))
+        )
+        money_score = (
+            p.clip(0, 100) * 0.25
+            + (quality_score.clip(0, 16) / 16.0 * 20.0)
+            + (nd_score.clip(0, 20) / 20.0 * 15.0)
+            + (rr_scan.clip(0, 5) / 5.0 * 15.0)
+            + (upside_scan.clip(0, 20) / 20.0 * 10.0)
+            + money_today_near.astype(int) * 5.0
+            + money_recent_near.astype(int) * 5.0
+            + money_volume_exact.astype(int) * 5.0
+            - (~money_maturity_near).astype(int) * 20.0
+            - money_bad_label.astype(int) * 15.0
+        ).clip(lower=0, upper=100).round(1)
+
+        # Separate "great stock/setup worth tracking" from "buy right now".
+        # The Money gate stays strict. Great Watch can include strong leaders
+        # that are too hot or still missing a clean entry, but they are labelled
+        # as wait/reset ideas rather than buys.
+        great_room = (upside_scan >= 5.0) & ((rr_scan >= 1.5) | blue_sky_scan)
+        great_leadership = trend_sig | relative_sig | rs_lead_scan | sector_lead_scan | blue_sky_scan
+        great_confirmation = volume_sig | (vol_ratio >= 0.75) | (op_score_scan >= 2.0) | (pss_scan >= 2.0)
+        great_structure = support_zone | structure_sig | early_base | early_trigger | stage2_phase_scan.str.contains("BASE|PIVOT|BREAKOUT", na=False, regex=True)
+        great_quality = (
+            (p >= 68.0) | (quality_score >= 10.0) | (nd_score >= 10.0)
+            | tradeable_buy | (stage2_score_scan >= 6.0) | (early_rally_score >= 58.0)
+        )
+        great_hard_avoid = (
+            ~trap_clean
+            | action_upper.str.contains("TRAP|TOO LATE", na=False, regex=True)
+            | entry_scan.str.contains("AVOID|TRAP|SKIP", na=False, regex=True)
+        )
+        great_not_mature = (
+            (sixty_day_scan <= 180.0)
+            & (one_twenty_day_scan <= 360.0)
+            & ~stage2_phase_scan.str.contains("TOO LATE", na=False, regex=False)
+        )
+        great_recent_window = (
+            today_pct.between(-6.0, 9.0)
+            & five_day_scan.between(-12.0, 28.0)
+            & twenty_day_scan.between(-22.0, 45.0)
+        )
+        great_recently_extended = (
+            (today_pct > 6.0)
+            | (five_day_scan > 18.0)
+            | (twenty_day_scan > 35.0)
+            | (rsi_scan > 76.0)
+            | action_upper.str.contains("CHASING", na=False, regex=False)
+            | entry_scan.str.contains("CHASE|EXTENDED", na=False, regex=True)
+            | signals.str.contains("CHASING|LIMIT-UP", na=False, regex=True)
+        )
+        great_score = (
+            p.clip(0, 100) * 0.18
+            + (quality_score.clip(0, 16) / 16.0 * 16.0)
+            + (nd_score.clip(0, 21) / 21.0 * 13.0)
+            + (rr_scan.clip(0, 5) / 5.0 * 12.0)
+            + (upside_scan.clip(0, 30) / 30.0 * 10.0)
+            + great_leadership.astype(int) * 8.0
+            + great_confirmation.astype(int) * 8.0
+            + great_structure.astype(int) * 7.0
+            + tradeable_buy.astype(int) * 5.0
+            + (stage2_score_scan.clip(0, 10) * 0.7)
+            + (early_rally_score.clip(0, 100) * 0.05)
+            - (~great_room).astype(int) * 12.0
+            - (~great_not_mature).astype(int) * 18.0
+            - great_recently_extended.astype(int) * 8.0
+            - great_hard_avoid.astype(int) * 30.0
+        ).clip(lower=0, upper=100).round(1)
+        great_threshold = pd.Series([62.0] * len(df_long), index=df_long.index).mask(is_sgx_row | is_hk_row, 54.0)
+        great_hot_threshold = pd.Series([64.0] * len(df_long), index=df_long.index).mask(is_sgx_row | is_hk_row, 58.0)
+        great_cool_watch = (
+            ~money_exact_buy & ~money_near_miss
+            & money_base_clean & great_room & great_leadership
+            & (great_confirmation | great_structure) & great_quality
+            & great_recent_window & ~great_recently_extended
+            & great_not_mature & ~great_hard_avoid
+            & (great_score >= great_threshold)
+        )
+        great_hot_leader = (
+            ~money_exact_buy & ~money_near_miss
+            & money_base_clean & great_room & great_leadership
+            & great_confirmation & great_quality
+            & great_not_mature & ~great_hard_avoid
+            & great_recently_extended
+            & (great_score >= great_hot_threshold)
+        )
+        great_candidate = great_cool_watch | great_hot_leader
+
+        def _money_missing_for_index(_idx, exact=False):
+            _miss = []
+            try:
+                if exact and not bool(tradeable_buy.get(_idx, False)): _miss.append("tradeable buy")
+                if not bool(money_room_exact.get(_idx, False) if exact else money_room_near.get(_idx, False)): _miss.append("2R/5% room")
+                if not bool(money_today_exact.get(_idx, False) if exact else money_today_near.get(_idx, False)): _miss.append("today not in entry range")
+                if not bool(money_recent_exact.get(_idx, False) if exact else money_recent_near.get(_idx, False)): _miss.append("recent move extended")
+                if not bool(money_maturity_exact.get(_idx, False) if exact else money_maturity_near.get(_idx, False)): _miss.append("mature/already moved")
+                if exact and not bool(money_volume_exact.get(_idx, False)): _miss.append("volume/operator confirmation")
+                if not bool(money_quality_exact.get(_idx, False) if exact else money_quality_near.get(_idx, False)): _miss.append("quality/probability")
+                if not bool(money_rsi_exact.get(_idx, False) if exact else money_rsi_near.get(_idx, False)): _miss.append("RSI too hot")
+                if not bool(trap_clean.get(_idx, False)): _miss.append("trap clean")
+                if bool(money_entry_bad.get(_idx, False)): _miss.append("entry quality")
+            except Exception:
+                return "Needs manual review"
+            return "Exact buy gate passed" if not _miss else ", ".join(_miss[:6])
+
+        def _great_trigger_for_index(_idx, exact=False):
+            try:
+                if exact:
+                    return "Buy only if live price confirms and volume stays active; use the displayed stop"
+                if bool(great_hot_leader.get(_idx, False)):
+                    return "Great leader, not buy now: wait for a 2-5 day reset/base, then buy only if support holds with volume"
+                if not bool(money_maturity_near.get(_idx, False)):
+                    return "Great stock but already moved: wait for a fresh base/reset before considering entry"
+                if not bool(great_room.get(_idx, False)):
+                    return "Wait until resistance room/R:R improves; no money trade yet"
+                if not bool(tradeable_buy.get(_idx, False)):
+                    return "Wait for Tradeable Buy / clean entry confirmation"
+                if not bool(great_confirmation.get(_idx, False)):
+                    return "Wait for volume/operator confirmation"
+                if bool(great_hard_avoid.get(_idx, False)):
+                    return "Avoid until trap/entry warning clears"
+                if bool(great_recently_extended.get(_idx, False)):
+                    return "Wait for pullback/reset; do not chase the current candle"
+            except Exception:
+                return "Needs manual review before entry"
+            return "Watch trigger: hold/reclaim support or break above pivot with volume"
+
+        if mode == "MONEY SETUP (5% / 2R)":
+            base_selected = money_exact_buy | money_near_miss
+            great_show = pd.Series([False] * len(df_long), index=df_long.index)
+            great_pool = great_candidate & ~base_selected
+            great_slots = max(0, 12 - int(base_selected.sum()))
+            if great_slots > 0 and bool(great_pool.any()):
+                great_show_idx = (
+                    great_score[great_pool]
+                    .sort_values(ascending=False, kind="stable")
+                    .head(great_slots)
+                    .index
+                )
+                great_show = pd.Series(df_long.index.isin(great_show_idx), index=df_long.index)
+
+            money_show_watch = ~(base_selected | great_show).any()
+            money_watch_show = pd.Series([False] * len(df_long), index=df_long.index)
+            if bool(money_show_watch) and bool(money_watch_candidate.any()):
+                money_watch_show = (
+                    money_score[money_watch_candidate]
+                    .sort_values(ascending=False, kind="stable")
+                    .head(12)
+                    .index
+                )
+                money_watch_show = df_long.index.isin(money_watch_show)
+                money_watch_show = pd.Series(money_watch_show, index=df_long.index)
+
+            df_long = df_long[base_selected | great_show | money_watch_show].copy()
+            if not df_long.empty:
+                exact_r = money_exact_buy.reindex(df_long.index).fillna(False)
+                near_r = money_near_miss.reindex(df_long.index).fillna(False)
+                great_r = great_show.reindex(df_long.index).fillna(False)
+                hot_r = great_hot_leader.reindex(df_long.index).fillna(False)
+                watch_r = money_watch_show.reindex(df_long.index).fillna(False)
+                score_r = money_score.reindex(df_long.index).fillna(0)
+                great_score_r = great_score.reindex(df_long.index).fillna(0)
+                price_r = price_scan.reindex(df_long.index).fillna(0.0)
+                rr_r = rr_scan.reindex(df_long.index).fillna(0.0)
+                room_r = upside_scan.reindex(df_long.index).fillna(0.0)
+                today_r = today_pct.reindex(df_long.index).fillna(0.0)
+                five_r = five_day_scan.reindex(df_long.index).fillna(0.0)
+                twenty_r = twenty_day_scan.reindex(df_long.index).fillna(0.0)
+                sixty_r = sixty_day_scan.reindex(df_long.index).fillna(0.0)
+                vol_r = vol_ratio.reindex(df_long.index).fillna(0.0)
+                target_5 = (price_r * 1.05).round(2)
+                fallback_stop = (price_r * 0.94).round(2)
+                stop_text = df_long.get("Best Stop", pd.Series([""] * len(df_long), index=df_long.index)).astype(str)
+                stop_blank = stop_text.str.upper().isin(["", "-", "NAN", "NONE", "UNAVAILABLE", "â€“"])
+                fallback_stop_text = fallback_stop.map(lambda x: "" if x <= 0 else f"${x:.2f}")
+                stop_text = stop_text.where(~stop_blank, fallback_stop_text)
+
+                df_long["Action"] = "WAIT - MONEY NEAR MISS"
+                df_long.loc[great_r, "Action"] = "WATCH - GREAT SETUP"
+                df_long.loc[great_r & hot_r, "Action"] = "HOT LEADER - WAIT RESET"
+                df_long.loc[watch_r, "Action"] = "WATCH - MONEY MONITOR ONLY"
+                df_long.loc[exact_r, "Action"] = "STRONG BUY - MONEY SETUP"
+                df_long["Great Score"] = great_score_r
+                df_long["Great Tier"] = "MONITOR ONLY"
+                df_long.loc[watch_r, "Great Tier"] = "MONITOR ONLY"
+                df_long.loc[great_r, "Great Tier"] = "GREAT WATCH - TRIGGER NEEDED"
+                df_long.loc[great_r & (great_score_r >= 72.0), "Great Tier"] = "GREAT WATCH - HIGH POTENTIAL"
+                df_long.loc[great_r & hot_r, "Great Tier"] = "HOT LEADER - WAIT RESET"
+                df_long.loc[near_r & (great_score_r >= 62.0), "Great Tier"] = "GREAT NEAR MISS - WAIT"
+                df_long.loc[exact_r, "Great Tier"] = "GREAT BUY - MONEY GATE"
+                df_long["Great Trigger"] = [
+                    _great_trigger_for_index(_idx, exact=bool(exact_r.get(_idx, False)))
+                    for _idx in df_long.index
+                ]
+                df_long["Great Why"] = (
+                    "Great=" + great_score_r.round(1).astype(str)
+                    + "; P=" + p.reindex(df_long.index).round(0).astype(int).astype(str)
+                    + "; Q=" + quality_score.reindex(df_long.index).round(0).astype(int).astype(str)
+                    + "; ND=" + nd_score.reindex(df_long.index).round(0).astype(int).astype(str)
+                    + "; RR=" + rr_r.round(1).astype(str)
+                    + "; Room=" + room_r.round(1).astype(str) + "%"
+                    + "; 20D=" + twenty_r.round(1).astype(str) + "%"
+                    + "; 60D=" + sixty_r.round(1).astype(str) + "%"
+                    + "; Vol=" + vol_r.round(2).astype(str) + "x"
+                )
+                df_long["Money Score"] = score_r
+                df_long["Money Gate"] = "WAIT - NEAR MISS"
+                df_long.loc[watch_r, "Money Gate"] = "WATCH - MONITOR ONLY"
+                df_long.loc[great_r, "Money Gate"] = "GREAT WATCH - WAIT TRIGGER"
+                df_long.loc[great_r & hot_r, "Money Gate"] = "HOT LEADER - WAIT RESET"
+                df_long.loc[exact_r, "Money Gate"] = "PASS - BUY"
+                df_long["Money Missing"] = [
+                    _money_missing_for_index(_idx, exact=True)
+                    for _idx in df_long.index
+                ]
+                df_long["Money Why"] = (
+                    "Score=" + score_r.round(1).astype(str)
+                    + "; RR=" + rr_r.round(1).astype(str)
+                    + "; Room=" + room_r.round(1).astype(str) + "%"
+                    + "; Today=" + today_r.round(1).astype(str) + "%"
+                    + "; 5D=" + five_r.round(1).astype(str) + "%"
+                    + "; 20D=" + twenty_r.round(1).astype(str) + "%"
+                    + "; 60D=" + sixty_r.round(1).astype(str) + "%"
+                    + "; Vol=" + vol_r.round(2).astype(str) + "x"
+                )
+                df_long["Target +5%"] = target_5.map(lambda x: "" if x <= 0 else f"${x:.2f}")
+                df_long["Stop Plan"] = stop_text
+                df_long["Risk/Reward Check"] = "RR " + rr_r.round(1).astype(str) + " / room " + room_r.round(1).astype(str) + "%"
+                df_long["Buy Plan"] = "Buy only on confirmation; target +5%; use displayed stop"
+                df_long.loc[near_r, "Buy Plan"] = "Do not buy yet; wait for missing gate(s)"
+                df_long.loc[great_r, "Buy Plan"] = "Great watch only; wait for Great Trigger before considering an entry"
+                df_long.loc[great_r & hot_r, "Buy Plan"] = "Great leader but too hot; wait for reset/base before any entry"
+                df_long.loc[watch_r, "Buy Plan"] = "Monitor only; not a money-quality setup yet"
+                df_long = (
+                    df_long.assign(
+                        _money_exact=exact_r.astype(int),
+                        _money_near=near_r.astype(int),
+                        _great_show=great_r.astype(int),
+                        _great_score=great_score_r,
+                        _money_score=score_r,
+                    )
+                    .sort_values(
+                        ["_money_exact", "_great_score", "_great_show", "_money_near", "_money_score"],
+                        ascending=[False, False, False, False, False],
+                        kind="stable",
+                    )
+                    .drop(columns=["_money_exact", "_money_near", "_great_show", "_great_score", "_money_score"], errors="ignore")
+                )
+
+        elif mode == "PRO 70 / 2.5R":
             pro_70_near_miss = pd.Series([False] * len(df_long), index=df_long.index)
             if not bool(pro_70_gate.any()):
                 pro_70_near_miss = (
@@ -2436,14 +2737,14 @@ def _apply_strategy_from_master(df_long_master, df_short_master, df_operator_mas
         # ── Emergency fallback: never show a completely blank long tab ─────────
         # If a non-Discovery mode filtered everything out, show the top Discovery
         # rows with a note so the user knows WHY results are limited.
-        if df_long.empty and not df_long_master.empty and mode not in ("DISCOVERY", "PRO 70 / 2.5R", "A+ PRECISION", "STRICT", "STAGE 2 BREAKOUT", "EARLY RALLY FINDER", "PSM STRATEGY"):
+        if df_long.empty and not df_long_master.empty and mode not in ("DISCOVERY", "MONEY SETUP (5% / 2R)", "PRO 70 / 2.5R", "A+ PRECISION", "STRICT", "STAGE 2 BREAKOUT", "EARLY RALLY FINDER", "PSM STRATEGY"):
             top_n = min(20, len(df_long_master))
             master_p = _pct_to_num(df_long_master["Rise Prob"], 0) if "Rise Prob" in df_long_master.columns else pd.Series([0.0] * len(df_long_master))
             df_long = df_long_master.sort_values(master_p.name if hasattr(master_p, "name") and master_p.name in df_long_master.columns else df_long_master.columns[0], ascending=False).head(top_n).copy()
             if "Action" in df_long.columns:
                 df_long["Action"] = f"WATCH – {mode} (no exact match – showing top Discovery)"
 
-    if not df_long.empty and mode not in ("STAGE 2 BREAKOUT", "EARLY RALLY FINDER") and ("Quality Score" in df_long.columns or "Next-Day Score" in df_long.columns):
+    if not df_long.empty and mode not in ("MONEY SETUP (5% / 2R)", "STAGE 2 BREAKOUT", "EARLY RALLY FINDER") and ("Quality Score" in df_long.columns or "Next-Day Score" in df_long.columns):
         try:
             df_long["_q_sort"] = pd.to_numeric(df_long.get("Quality Score", df_long.get("Next-Day Score", 0)), errors="coerce").fillna(0)
             df_long["_nds_sort"] = pd.to_numeric(df_long.get("Next-Day Score", 0), errors="coerce").fillna(0)

@@ -16,7 +16,14 @@ def _bind_runtime(ctx: dict) -> None:
 
 
 def _mode_banner(m: str) -> None:
-    if m == "SUPPORT ENTRY":
+    if m == "MONEY SETUP (5% / 2R)":
+        st.info(
+            "**Money Setup (5% / 2R)** - profit-focused default. "
+            "Exact buys need usable 5%+ room, estimated R:R >= 2, clean risk, "
+            "fresh/not-overextended movement, and a practical stop plan. "
+            "Near-miss rows are WAIT rows, not buy calls."
+        )
+    elif m == "SUPPORT ENTRY":
         st.info(
             "📍 **Support Entry mode** — only stocks AT a known support level are shown. "
             "Stocks already up >3% today are filtered out (extended, bad R/R). "
@@ -767,7 +774,13 @@ def render_long(ctx: dict) -> None:
             f"🧩 **{_n_opt_l}** options-confirmed · mode: **{swing_mode}**"
         )
 
-    if m == "SUPPORT ENTRY":
+    if m == "MONEY SETUP (5% / 2R)":
+        st.info(
+            "**Money Setup** - focus on trades that can plausibly make +5% before the stop. "
+            "PASS rows are the only buy-quality rows. Great Watch / Hot Leader rows are radar names, "
+            "not buys yet; use Great Trigger and Money Missing to decide what must happen first."
+        )
+    elif m == "SUPPORT ENTRY":
         st.info(
             "📐 **Support Entry** — Stop: just below support · "
             "Targets: TP1 +10% · TP2 +15% · TP3 +20%"
@@ -809,6 +822,16 @@ def render_long(ctx: dict) -> None:
 
     if df_long.empty:
         master_long = st.session_state.get("df_long_master", pd.DataFrame())
+        if m == "MONEY SETUP (5% / 2R)":
+            evaluated = len(master_long) if isinstance(master_long, pd.DataFrame) else 0
+            st.info(
+                f"No money-quality or great-watch long setup qualifies right now for **{last_market}**. "
+                f"The mode evaluated **{evaluated}** long rows and rejected rows that were "
+                "too extended, too close to resistance, below 2R, missing clean risk, "
+                "missing confirmation, already mature, or not strong enough for the Great Watch radar. "
+                "This is intentional: no trade is better than a weak trade."
+            )
+            return
         if m == "STAGE 2 BREAKOUT":
             _stage2_economics = {"Post-Pivot Room", "Stage 2 Risk%", "Stage 2 R:R"}
             _s2_debug = st.session_state.get("last_scan_debug", {}) or {}
@@ -877,7 +900,72 @@ def render_long(ctx: dict) -> None:
         df_long.get("Signals", pd.Series([""] * len(df_long))).astype(str)
     )
 
-    if m == "SUPPORT ENTRY":
+    if m == "MONEY SETUP (5% / 2R)":
+        money_gate = df_long.get("Money Gate", pd.Series([""] * len(df_long), index=df_long.index)).astype(str).str.upper()
+        money_action = df_long.get("Action", pd.Series([""] * len(df_long), index=df_long.index)).astype(str).str.upper()
+        great_tier = df_long.get("Great Tier", pd.Series([""] * len(df_long), index=df_long.index)).astype(str).str.upper()
+        exact_mask = money_gate.str.contains("PASS", na=False) | money_action.str.contains("STRONG BUY - MONEY", na=False)
+        near_mask = money_gate.str.contains("NEAR", na=False) | money_action.str.contains("NEAR MISS", na=False)
+        great_mask = (
+            great_tier.str.contains("GREAT WATCH|HOT LEADER", na=False, regex=True)
+            | money_action.str.contains("GREAT SETUP|HOT LEADER", na=False, regex=True)
+        ) & ~exact_mask & ~near_mask
+        watch_mask = (
+            money_gate.str.contains("MONITOR", na=False)
+            | money_action.str.contains("MONITOR ONLY", na=False)
+        ) & ~exact_mask & ~near_mask & ~great_mask
+        exact_df = df_long[exact_mask]
+        great_df = df_long[great_mask]
+        near_df = df_long[near_mask]
+        watch_df = df_long[watch_mask]
+
+        st.caption(
+            f"Buy-quality: {len(exact_df)} | Great watch: {len(great_df)} | "
+            f"Near-miss waitlist: {len(near_df)} | "
+            f"Monitor-only: {len(watch_df)} | "
+            f"Sectors: {df_long['Sector'].nunique() if 'Sector' in df_long.columns else '-'}"
+        )
+
+        if not exact_df.empty:
+            st.markdown(f"#### Buy-quality Money Setups - {len(exact_df)} stock{'s' if len(exact_df) != 1 else ''}")
+            st.caption(
+                "These passed the practical money gate: 5%+ runway, R:R >= 2, clean risk, "
+                "fresh entry range, and enough confirmation. Still confirm live price/volume before entry."
+            )
+            show_table(exact_df, "money_exact_buys", "Money Score")
+
+        if not great_df.empty:
+            with st.expander(f"Great watchlist - strong stocks, not buy yet ({len(great_df)})", expanded=exact_df.empty):
+                st.caption(
+                    "These are the interesting leaders/setups the old strict money gate hid. "
+                    "They are not buy calls yet. Use Great Trigger for the reset, support hold, "
+                    "or volume confirmation required before considering entry."
+                )
+                show_table(great_df, "money_great_watch", "Great Score")
+
+        if not near_df.empty:
+            with st.expander(f"Near-miss / waitlist - {len(near_df)} stock{'s' if len(near_df) != 1 else ''}", expanded=exact_df.empty and great_df.empty):
+                st.caption(
+                    "These are not buys yet. Read Money Missing and wait for the missing gate "
+                    "instead of chasing because the row looks strong."
+                )
+                show_table(near_df, "money_near_miss", "Money Score")
+
+        if not watch_df.empty:
+            with st.expander(f"Monitor only - closest weak-market candidates ({len(watch_df)})", expanded=exact_df.empty and great_df.empty and near_df.empty):
+                st.caption(
+                    "These are deliberately not buy rows. They are the closest SGX-style monitor candidates "
+                    "when the strict money gate finds no exact/near setup. Use Money Missing as the checklist."
+                )
+                show_table(watch_df, "money_monitor_only", "Money Score")
+
+        if exact_df.empty and great_df.empty and near_df.empty and watch_df.empty:
+            st.info("No rows survived the money gate. That is a no-trade result, not a display bug.")
+        else:
+            with st.expander(f"All Money Setup rows ({len(df_long)})", expanded=False):
+                show_table(df_long, "money_all", "Great Score")
+
+    elif m == "SUPPORT ENTRY":
         tier1 = df_long[label_s.str.contains(r"MA60 (?:DIP|SUPPORT)|STRONG BUY.*SUPPORT", na=False, regex=True)]
         tier2 = df_long[label_s.str.contains(r"MA20 (?:DIP|SUPPORT)", na=False, regex=True)]
         tier3 = df_long[label_s.str.contains(r"SWING LOW (?:BOUNCE|SUPPORT)", na=False, regex=True)]

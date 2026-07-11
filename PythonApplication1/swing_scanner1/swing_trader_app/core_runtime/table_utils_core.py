@@ -529,6 +529,33 @@ def show_table(df, label, prob_col="Rise Prob"):
     elif prob_col == "Early Rally Score" and "Early Rally Score" in df.columns:
         df["_prob_sort"] = _display_num(df["Early Rally Score"], 0)
         df = df.sort_values("_prob_sort", ascending=False)
+    elif prob_col in {"Great Score", "Money Score"} and prob_col in df.columns:
+        df["_prob_sort"] = _display_num(df[prob_col], 0)
+        if prob_col == "Great Score" and "Great Tier" in df.columns:
+            _tier_order = {
+                "GREAT BUY - MONEY GATE": 0,
+                "GREAT WATCH - HIGH POTENTIAL": 1,
+                "HOT LEADER - WAIT RESET": 2,
+                "GREAT WATCH - TRIGGER NEEDED": 3,
+                "GREAT NEAR MISS - WAIT": 4,
+                "MONITOR ONLY": 9,
+            }
+            df["_tier_sort"] = df["Great Tier"].astype(str).str.upper().map(_tier_order).fillna(5)
+            df = df.sort_values(["_tier_sort", "_prob_sort"], ascending=[True, False])
+            df = df.drop(columns="_tier_sort")
+        elif prob_col == "Money Score" and "Money Gate" in df.columns:
+            _gate_order = {
+                "PASS - BUY": 0,
+                "WAIT - NEAR MISS": 1,
+                "GREAT WATCH - WAIT TRIGGER": 2,
+                "HOT LEADER - WAIT RESET": 3,
+                "WATCH - MONITOR ONLY": 9,
+            }
+            df["_gate_sort"] = df["Money Gate"].astype(str).str.upper().map(_gate_order).fillna(5)
+            df = df.sort_values(["_gate_sort", "_prob_sort"], ascending=[True, False])
+            df = df.drop(columns="_gate_sort")
+        else:
+            df = df.sort_values("_prob_sort", ascending=False)
     elif "Quality Score" in df.columns or "Next-Day Score" in df.columns:
         df["_prob_sort"] = _display_num(df.get("Quality Score", df.get("Next-Day Score", 0)), 0)
         df["_nds_sort"] = _display_num(df.get("Next-Day Score", 0), 0)
@@ -645,6 +672,8 @@ def show_table(df, label, prob_col="Rise Prob"):
     else:
         wanted = [
             "Rank", "Ticker", "Action", "View", "Buy Condition",
+            "Great Score", "Great Tier", "Great Trigger", "Great Why",
+            "Money Score", "Money Gate", "Money Missing", "Money Why", "Buy Plan", "Target +5%", "Stop Plan", "Risk/Reward Check",
             "Entry Quality", "Tradeable Buy", "Trade Tier", "Early Rally Score", "Early Rally Phase", "Early Rally Gate", "Early Rally Buy?", "Early Rally Trigger", "Early Rally Missing", "Early Rally Why", "7-Star Score", "7-Star Tier", "7-Star Why", "Explosion Score", "Explosion Tier", "Explosion Why", "Pre-Mover Score", "Pre-Mover Tier", "Pre-Mover Why", "Quality Score", "Next-Day Score", "Next-Day Rating", "Next-Day Move", "7D Move Est", "Upside to Res", "RR Est", "Setup Type", "Today %", "5D %", "20D %", "60D %", "120D %", "Rise Prob", "Swing Rank Score", "Pro Pillars", "Pro Score", "Pro 70 Gate", "Pro Validation", "Pro Missing", "Pro Why", "PI Proxy", "Tier", "Why Buy",
             "Early Rally Pattern", "Reset Signal", "Prior Impulse 5D %", "Reset Days", "Reset From Peak %", "Reset Range 3D %", "Reset Volume Ratio", "Reset Trigger", "Reset Stop",
             "Stage 2 Rank Score", "Early Score", "Stage 2 Score", "Stage 2 Phase", "Base Weeks", "Base Range%",
@@ -669,6 +698,18 @@ def show_table(df, label, prob_col="Rise Prob"):
         "Rank":          st.column_config.NumberColumn("Rank",          width=55),
         "Ticker":        st.column_config.TextColumn("Ticker",        width=65),
         "Action":        st.column_config.TextColumn("Action",        width=220),  # wide — full label visible
+        "Great Score":   st.column_config.NumberColumn("Great",       width=70),
+        "Great Tier":    st.column_config.TextColumn("Great Tier",    width=170),
+        "Great Trigger": st.column_config.TextColumn("Great Trigger", width=300),
+        "Great Why":     st.column_config.TextColumn("Great Why",     width=280),
+        "Money Score":   st.column_config.NumberColumn("Money",        width=70),
+        "Money Gate":    st.column_config.TextColumn("Money Gate",    width=115),
+        "Money Missing": st.column_config.TextColumn("Missing",       width=220),
+        "Money Why":     st.column_config.TextColumn("Why",           width=260),
+        "Buy Plan":      st.column_config.TextColumn("Buy Plan",      width=240),
+        "Target +5%":    st.column_config.TextColumn("Target +5%",    width=85),
+        "Stop Plan":     st.column_config.TextColumn("Stop",          width=85),
+        "Risk/Reward Check": st.column_config.TextColumn("R/R",       width=135),
         "View":          st.column_config.TextColumn("View",          width=150),
         "Buy Condition": st.column_config.TextColumn("Buy Condition", width=300),
         "Entry Quality": st.column_config.TextColumn("Entry",         width=70),
