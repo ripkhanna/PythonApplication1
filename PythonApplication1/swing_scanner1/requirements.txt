@@ -2,7 +2,7 @@
 # The app is heavy on pandas/Arrow/yfinance. Unpinned installs can pull a newer
 # native stack than local Windows, which is a common cause of Cloud-only crashes.
 streamlit>=1.36,<1.48
-pyarrow>=15,<19
+pyarrow>=25,<26
 pandas>=2.2,<2.3
 numpy>=1.26,<2.0
 yfinance>=0.2.50,<0.3
