@@ -1,6 +1,17 @@
-yfinance
-pandas
-numpy
-streamlit
-plotly
-ta
+# Streamlit Community Cloud dependencies
+streamlit>=1.36,<1.48
+pyarrow>=15,<19
+pandas>=2.2,<2.3
+numpy>=1.26,<2.0
+yfinance>=0.2.50,<0.3
+requests>=2.32,<3
+openpyxl>=3.1,<4
+ta>=0.11,<0.12
+plotly>=5.22,<6
+streamlit-autorefresh>=1.0,<2
+
+# Optional/enrichment features
+financedatabase>=2.2,<3
+nsepython>=2.8,<3
+lightgbm>=4.3,<5
+scikit-learn>=1.4,<1.6

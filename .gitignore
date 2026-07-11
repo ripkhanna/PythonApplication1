@@ -208,6 +208,9 @@ PublishScripts/
 
 # Microsoft Azure Build Output
 csx/
+
+# Streamlit secrets
+.streamlit/secrets.toml
 *.build.csdef
 
 # Microsoft Azure Emulator
