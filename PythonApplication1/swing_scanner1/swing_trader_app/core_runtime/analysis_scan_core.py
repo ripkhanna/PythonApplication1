@@ -350,15 +350,28 @@ def summarize_traps(traps):
 @st.cache_data(ttl=4 * 3600, show_spinner=False)
 def _download_daily_history_chunk_cached(chunk_tuple):
     """Cache stable one-year daily bars; live intraday bars are overlaid later."""
-    chunk = list(chunk_tuple)
+    _normalizer = globals().get("_normalize_scan_symbol", lambda x: str(x or "").strip().upper())
+    chunk = _unique_keep_order([_normalizer(t) for t in list(chunk_tuple or [])])
     out = {}
     err = ""
+    if not chunk:
+        return out, "empty"
     try:
-        raw = yf.download(
-            chunk if len(chunk) > 1 else chunk[0],
-            period="1y", interval="1d",
-            progress=False, group_by="ticker", threads=True, auto_adjust=True,
-        )
+        _cloud_runtime = bool(globals().get("_is_streamlit_cloud_runtime", lambda: False)())
+        if _cloud_runtime:
+            import contextlib as _cl, io as _io
+            with _cl.redirect_stderr(_io.StringIO()), _cl.redirect_stdout(_io.StringIO()):
+                raw = yf.download(
+                    chunk if len(chunk) > 1 else chunk[0],
+                    period="1y", interval="1d",
+                    progress=False, group_by="ticker", threads=False, auto_adjust=True,
+                )
+        else:
+            raw = yf.download(
+                chunk if len(chunk) > 1 else chunk[0],
+                period="1y", interval="1d",
+                progress=False, group_by="ticker", threads=True, auto_adjust=True,
+            )
         if raw is None or getattr(raw, "empty", True):
             return out, "empty"
         for tkr in chunk:
@@ -404,10 +417,18 @@ def fetch_analysis(green_sectors, red_sectors, regime,
             if t not in all_tickers:
                 all_tickers.append(t)
 
+    _normalizer = globals().get("_normalize_scan_symbol", lambda x: str(x or "").strip().upper())
+    _raw_tickers = list(all_tickers)
+    all_tickers = _unique_keep_order([_normalizer(t) for t in _raw_tickers])
+    _dropped_tickers = [str(t) for t in _raw_tickers if not _normalizer(t)]
+
     total = len(all_tickers)
     scan_debug = {
         "started_at": datetime.now().isoformat(timespec="seconds"),
         "total_tickers": int(total),
+        "dropped_invalid_tickers": int(len(_dropped_tickers)),
+        "dropped_invalid_samples": _dropped_tickers[:12],
+        "streamlit_cloud_safe_mode": bool(globals().get("_is_streamlit_cloud_runtime", lambda: False)()),
         "strategy_mode": str(strategy_mode or "Balanced"),
         "batch_loaded": 0,
         "individual_loaded": 0,
@@ -638,7 +659,9 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 ))
             raw_intraday = yf.download(
                 _intraday_tickers, period="1d", interval="5m",
-                progress=False, group_by="ticker", threads=True, auto_adjust=True,
+                progress=False, group_by="ticker",
+                threads=not bool(globals().get("_is_streamlit_cloud_runtime", lambda: False)()),
+                auto_adjust=True,
                 prepost=True,
             )
             latest_bars = []
@@ -692,7 +715,10 @@ def fetch_analysis(green_sectors, red_sectors, regime,
     try:
         # Tune for Yahoo reliability: enough parallelism to avoid a 70s single
         # batch, but not so many connections that Yahoo starts throttling.
-        if total >= 900:
+        _cloud_runtime = bool(globals().get("_is_streamlit_cloud_runtime", lambda: False)())
+        if _cloud_runtime:
+            _chunk_size, _dl_workers = (90 if total >= 400 else max(total, 1)), 1
+        elif total >= 900:
             _chunk_size, _dl_workers = 225, 4
         elif total >= 700:
             _chunk_size, _dl_workers = 225, 4
@@ -701,7 +727,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
         else:
             _chunk_size, _dl_workers = max(total, 1), 1
 
-        if total >= 400:
+        if total >= 400 and not _cloud_runtime:
             # Stable buckets preserve daily-history cache hits even when a few
             # live mover symbols enter or leave the universe between refreshes.
             import zlib as _zlib
@@ -1040,7 +1066,9 @@ def fetch_analysis(green_sectors, red_sectors, regime,
     _meta_cache = {}          # ticker → {cal_days, float_shares, short_pct, pe, pm_chg, ...}
     _meta_lock  = _threading.Lock()
     _in_batch   = set(batch_cache.keys())   # only fetch meta for tickers with OHLCV
-    _WORKERS    = 5           # keep low — Yahoo crumb invalidates under heavy parallelism
+    _WORKERS    = 2 if bool(globals().get("_is_streamlit_cloud_runtime", lambda: False)()) else 5
+    # keep low — Yahoo crumb invalidates under heavy parallelism; Streamlit Cloud
+    # also has tighter memory/thread limits than a local desktop.
 
     _stable_meta_cache = globals().setdefault("_analysis_stable_meta_cache_v1", {})
     _stable_meta_ttl_s = 4 * 3600

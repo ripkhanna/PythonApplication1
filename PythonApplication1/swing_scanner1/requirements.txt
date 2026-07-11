@@ -1,13 +1,19 @@
-streamlit
-yfinance
-pandas
-openpyxl
-numpy
-ta
-financedatabase
-nsepython
-requests
-streamlit-autorefresh
-lightgbm
-scikit-learn
-plotly
+# Streamlit Cloud stability pins.
+# The app is heavy on pandas/Arrow/yfinance. Unpinned installs can pull a newer
+# native stack than local Windows, which is a common cause of Cloud-only crashes.
+streamlit>=1.36,<1.48
+pyarrow>=15,<19
+pandas>=2.2,<2.3
+numpy>=1.26,<2.0
+yfinance>=0.2.50,<0.3
+requests>=2.32,<3
+openpyxl>=3.1,<4
+ta>=0.11,<0.12
+streamlit-autorefresh>=1.0,<2
+plotly>=5.22,<6
+
+# Optional/enrichment features used when available.
+financedatabase>=2.2,<3
+nsepython>=2.8,<3
+lightgbm>=4.3,<5
+scikit-learn>=1.4,<1.6

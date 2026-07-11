@@ -27,11 +27,28 @@ from __future__ import annotations
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+_US_YAHOO_STALE_SYMBOLS: set[str] = {
+    "FI",     # Fiserv feed mismatch on some Yahoo/Cloud regions
+    "HES",    # acquired by Chevron
+    "HOLX",   # corporate-action / feed inconsistency
+    "IPG",    # acquired / stale S&P constituent in Yahoo feed
+    "K",      # acquired / stale feed symbol
+    "PARA",   # Paramount corporate action / stale feed symbol
+}
+
+
+def _clean_static_ticker(t: str) -> str:
+    t = str(t or "").strip().upper().lstrip("$")
+    if not t or t in _US_YAHOO_STALE_SYMBOLS:
+        return ""
+    return t
+
+
 def _dedup(lst: list[str]) -> list[str]:
     seen: set[str] = set()
     out:  list[str] = []
     for t in lst:
-        t = str(t or "").strip().upper()
+        t = _clean_static_ticker(t)
         if t and t not in seen:
             seen.add(t)
             out.append(t)

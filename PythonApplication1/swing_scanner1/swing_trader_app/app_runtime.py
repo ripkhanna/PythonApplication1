@@ -866,9 +866,9 @@ always_include_text = st.sidebar.text_area(
          "Example: UUUU, APP, NVDA, D05.SI, HIMS, NVTS",
 )
 always_include_tickers = [
-    t.strip().upper()
+    _normalize_scan_symbol(t)
     for t in always_include_text.replace("\n", ",").split(",")
-    if t.strip()
+    if t.strip() and _normalize_scan_symbol(t)
 ]
 # If the always-include list changed since the last scan, clear the CSV cache
 # key so the next rerun (or Scan click) triggers a fresh scan with the new tickers.
@@ -3473,6 +3473,7 @@ if run:
         if forced_tickers:
             active_tickers = _unique_keep_order(forced_tickers + active_tickers)
             universe_source = f"{universe_source} + always-include/extra tickers"
+        active_tickers = _unique_keep_order([_normalize_scan_symbol(t) for t in active_tickers])
 
         _show_top_status(
             f"Scanning <b>{len(active_tickers)} {market_sel} stocks</b> for signals · "

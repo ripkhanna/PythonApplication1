@@ -5,6 +5,7 @@ Loaded by app_runtime with exec(..., globals()) to preserve the original single-
 # universe_data is the single source of truth for all ticker lists.
 # Import configured lists for markets that retain static fallback coverage.
 import sys as _sys_uc, pathlib as _pl_uc
+import os as _os_uc, re as _re_uc
 _app_root = _pl_uc.Path(__file__).resolve().parent.parent
 if str(_app_root) not in _sys_uc.path if hasattr(_sys_uc, 'path') else True:
     _sys_uc.path.insert(0, str(_app_root))
@@ -22,11 +23,59 @@ except ImportError:
     _universe_data_available = False
 
 
+_YAHOO_STALE_SYMBOLS = {
+    "FI", "HES", "HOLX", "IPG", "K", "PARA",
+}
+
+
+def _is_streamlit_cloud_runtime() -> bool:
+    """Best-effort Streamlit Community Cloud detector."""
+    try:
+        home = str(_os_uc.environ.get("HOME", ""))
+        return bool(
+            _os_uc.environ.get("STREAMLIT_CLOUD")
+            or _os_uc.path.exists("/mount/src")
+            or _os_uc.path.exists("/app/scripts/run-streamlit.sh")
+            or home.startswith("/home/appuser")
+            or home.startswith("/home/adminuser")
+        )
+    except Exception:
+        return False
+
+
+def _normalize_scan_symbol(sym: str, suffix: str = "") -> str:
+    """Normalize a ticker before sending it to Yahoo/yfinance.
+
+    Handles user text such as "$PARA", class shares, and stale corporate-action
+    symbols that repeatedly fail on Streamlit Cloud.
+    """
+    if sym is None:
+        return ""
+    s = str(sym).strip().upper()
+    if not s or s in ("NAN", "NONE", "-", "–", "—"):
+        return ""
+    s = s.lstrip("$").replace(" ", "")
+    if not s:
+        return ""
+    if suffix and not s.endswith(suffix):
+        s = f"{s}{suffix}"
+    if not suffix and "." in s and not s.endswith((".SI", ".NS", ".HK")):
+        s = s.replace(".", "-")
+    if s in _YAHOO_STALE_SYMBOLS:
+        return ""
+    if any(x in s for x in ("-W", "-WT", "-WS", "-R", "-U", "^", "/")):
+        return ""
+    if not _re_uc.match(r"^[A-Z0-9][A-Z0-9.-]*$", s):
+        return ""
+    return s
+
+
 def _score_stocks_batch(symbols: list) -> dict:
     """
     ONE batch download → swing score for every symbol.
     Returns {sym: swing_score}
     """
+    symbols = _unique_keep_order([_normalize_scan_symbol(s) for s in list(symbols or [])])
     scored = {}
     if not symbols:
         return scored
@@ -34,7 +83,7 @@ def _score_stocks_batch(symbols: list) -> dict:
         batch = yf.download(
             symbols, period="1mo", interval="1d",
             progress=False, group_by="ticker",
-            threads=True, auto_adjust=True
+            threads=not _is_streamlit_cloud_runtime(), auto_adjust=True
         )
         for sym in symbols:
             try:
@@ -81,7 +130,7 @@ def fetch_active_from_universe(symbols_tuple, market_name: str = "", max_active:
     hand-picked watchlist. The caller still merges these with the full universe
     and user-added tickers before scanning.
     """
-    symbols = _unique_keep_order([str(s).strip().upper() for s in list(symbols_tuple or []) if str(s).strip()])
+    symbols = _unique_keep_order([_normalize_scan_symbol(s) for s in list(symbols_tuple or []) if str(s).strip()])
     if not symbols:
         return []
 
@@ -113,11 +162,20 @@ def fetch_active_from_universe(symbols_tuple, market_name: str = "", max_active:
     for start in range(0, len(symbols), 80):
         chunk = symbols[start:start + 80]
         try:
-            raw = yf.download(
-                chunk, period="3mo", interval="1d",
-                progress=False, group_by="ticker",
-                threads=True, auto_adjust=True,
-            )
+            if _is_streamlit_cloud_runtime():
+                import contextlib as _cl_uc2, io as _io_uc2
+                with _cl_uc2.redirect_stderr(_io_uc2.StringIO()), _cl_uc2.redirect_stdout(_io_uc2.StringIO()):
+                    raw = yf.download(
+                        chunk, period="3mo", interval="1d",
+                        progress=False, group_by="ticker",
+                        threads=False, auto_adjust=True,
+                    )
+            else:
+                raw = yf.download(
+                    chunk, period="3mo", interval="1d",
+                    progress=False, group_by="ticker",
+                    threads=True, auto_adjust=True,
+                )
             if raw is None or raw.empty:
                 continue
         except Exception:
@@ -173,7 +231,7 @@ def fetch_quote_activity_from_universe(symbols_tuple, market_name: str = "", max
     ticker is moving today, it should be promoted before max_symbols trimming
     even when it is deep in the curated/index universe.
     """
-    symbols = _unique_keep_order([str(s).strip().upper() for s in list(symbols_tuple or []) if str(s).strip()])
+    symbols = _unique_keep_order([_normalize_scan_symbol(s) for s in list(symbols_tuple or []) if str(s).strip()])
     if not symbols:
         return []
 
@@ -225,7 +283,7 @@ def fetch_quote_activity_from_universe(symbols_tuple, market_name: str = "", max
         except Exception:
             return None
 
-    with _fut_quote.ThreadPoolExecutor(max_workers=12) as ex:
+    with _fut_quote.ThreadPoolExecutor(max_workers=(4 if _is_streamlit_cloud_runtime() else 12)) as ex:
         for item in ex.map(_chart_score, symbols):
             if item:
                 scored.append(item)
@@ -406,6 +464,7 @@ def fetch_sector_constituents(target_per_sector: int = 25) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 def _clean_symbol(sym: str, suffix: str = "") -> str:
     """Normalise symbols for yfinance and drop obvious non-equity junk."""
+    return _normalize_scan_symbol(sym, suffix=suffix)
     if sym is None:
         return ""
     s = str(sym).strip().upper()
@@ -472,7 +531,7 @@ def fetch_yahoo_market_movers(max_per_screener: int = 250) -> list:
             except Exception:
                 return []
 
-        with _fut.ThreadPoolExecutor(max_workers=len(screen_names)) as ex:
+        with _fut.ThreadPoolExecutor(max_workers=(min(4, len(screen_names)) if _is_streamlit_cloud_runtime() else len(screen_names))) as ex:
             for batch in ex.map(_yf_screen, screen_names):
                 yf_tickers.extend(batch)
 
@@ -506,7 +565,7 @@ def fetch_yahoo_market_movers(max_per_screener: int = 250) -> list:
         return results
 
     try:
-        with _fut.ThreadPoolExecutor(max_workers=len(screen_names)) as ex:
+        with _fut.ThreadPoolExecutor(max_workers=(min(4, len(screen_names)) if _is_streamlit_cloud_runtime() else len(screen_names))) as ex:
             for batch in ex.map(_yahoo_screen, screen_names):
                 yahoo_tickers.extend(batch)
     except Exception:
@@ -553,7 +612,7 @@ def fetch_yahoo_region_movers(region: str, suffix: str = "", max_per_screener: i
 
     found = []
     try:
-        with _fut.ThreadPoolExecutor(max_workers=len(screen_names)) as ex:
+        with _fut.ThreadPoolExecutor(max_workers=(min(4, len(screen_names)) if _is_streamlit_cloud_runtime() else len(screen_names))) as ex:
             for batch in ex.map(_screen, screen_names):
                 found.extend(batch)
     except Exception:
@@ -910,7 +969,7 @@ def fetch_52w_high_breakouts(universe: list, min_vol_ratio: float = 1.5) -> list
             pass
         return None
 
-    workers = min(12, max(1, len(universe[:150])))
+    workers = min(4 if _is_streamlit_cloud_runtime() else 12, max(1, len(universe[:150])))
     with _fut.ThreadPoolExecutor(max_workers=workers) as ex:
         for result in ex.map(_check_one, universe[:150]):   # cap at 150 for speed
             if result:
@@ -992,7 +1051,7 @@ def fetch_earnings_universe(universe: list, window_ahead: int = 7) -> dict:
             except Exception:
                 return []
 
-        with _fut.ThreadPoolExecutor(max_workers=10) as ex:
+        with _fut.ThreadPoolExecutor(max_workers=(4 if _is_streamlit_cloud_runtime() else 10)) as ex:
             for hits in ex.map(_cal_job, us_universe[:100]):
                 for kind, sym in hits:
                     if kind == "upcoming":
@@ -1148,7 +1207,7 @@ def fetch_unusual_options_universe(
 
     unusual = []
     # 6 workers: enough parallelism without hammering Yahoo rate limits
-    with _fut.ThreadPoolExecutor(max_workers=6) as ex:
+    with _fut.ThreadPoolExecutor(max_workers=(3 if _is_streamlit_cloud_runtime() else 6)) as ex:
         for result in ex.map(_check_options, candidates):
             if result:
                 unusual.append(result)
@@ -1192,7 +1251,7 @@ def fetch_premarket_gappers(
         return None
 
     results = []
-    with _fut.ThreadPoolExecutor(max_workers=min(15, max(1, len(tickers)))) as ex:
+    with _fut.ThreadPoolExecutor(max_workers=min(5 if _is_streamlit_cloud_runtime() else 15, max(1, len(tickers)))) as ex:
         for r in ex.map(_check_gap, tickers):
             if r:
                 results.append(r)
@@ -1233,7 +1292,7 @@ def fetch_post_earnings_gappers(universe: list, min_gap_pct: float = 5.0, max_sc
         except Exception: pass
         return None
     results = []
-    with _fut.ThreadPoolExecutor(max_workers=8) as ex:
+    with _fut.ThreadPoolExecutor(max_workers=(4 if _is_streamlit_cloud_runtime() else 8)) as ex:
         for r in ex.map(_chk, candidates[:80]):
             if r: results.append(r)
     results.sort(key=lambda x: -x[1])
@@ -1386,7 +1445,7 @@ def fetch_live_market_universe(market_name: str, max_symbols: int = 350,
         tickers = _unique_keep_order(regional_movers + quote_active + active_from_universe + base_pool)
         source = "NSE live quote activity + active volume/volatility + live index constituents"
 
-    tickers = _unique_keep_order(tickers)[:max_symbols]
+    tickers = _unique_keep_order([_normalize_scan_symbol(t) for t in tickers])[:max_symbols]
     if len(tickers) < 10:
         return [], "live market universe unavailable"
     return tickers, source
