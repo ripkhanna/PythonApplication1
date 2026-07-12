@@ -1,13 +1,11 @@
-streamlit
-yfinance
-pandas
-openpyxl
-numpy
-ta
-financedatabase
-nsepython
-requests
-streamlit-autorefresh
-lightgbm
-scikit-learn
-plotly
+# Streamlit Cloud default-Python build.
+# Keep install surface small: avoid optional native/ML packages at startup.
+streamlit>=1.40,<2
+pandas>=2.2,<3
+numpy>=1.26,<3
+yfinance>=0.2.50,<0.3
+requests>=2.32,<3
+openpyxl>=3.1,<4
+ta==0.11.0
+plotly>=5.22,<7
+streamlit-autorefresh>=1.0,<2

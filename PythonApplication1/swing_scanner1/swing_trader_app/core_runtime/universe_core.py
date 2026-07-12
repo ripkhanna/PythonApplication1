@@ -34,7 +34,7 @@ def _score_stocks_batch(symbols: list) -> dict:
         batch = yf.download(
             symbols, period="1mo", interval="1d",
             progress=False, group_by="ticker",
-            threads=True, auto_adjust=True
+            threads=False, auto_adjust=True
         )
         for sym in symbols:
             try:
@@ -116,7 +116,7 @@ def fetch_active_from_universe(symbols_tuple, market_name: str = "", max_active:
             raw = yf.download(
                 chunk, period="3mo", interval="1d",
                 progress=False, group_by="ticker",
-                threads=True, auto_adjust=True,
+                threads=False, auto_adjust=True,
             )
             if raw is None or raw.empty:
                 continue

@@ -430,7 +430,7 @@ def _download_nonUS_movers_cached(tickers_tuple: tuple, market_key: str, max_tic
                 errors.append(f"{sym}: {e}")
                 return None
 
-        with _fut.ThreadPoolExecutor(max_workers=min(20, len(remaining))) as ex:
+        with _fut.ThreadPoolExecutor(max_workers=min(8, len(remaining))) as ex:
             for r in ex.map(_fi_one, remaining):
                 if r:
                     rows.append(r)
@@ -480,7 +480,7 @@ def _download_top_movers_cached(tickers_tuple: tuple[str, ...], market_key: str,
                 group_by="ticker",
                 auto_adjust=False,
                 prepost=bool(prepost),
-                threads=True,
+                threads=False,
                 progress=False,
             )
         except Exception as exc:

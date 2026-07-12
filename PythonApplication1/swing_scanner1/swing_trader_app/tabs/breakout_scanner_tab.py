@@ -378,7 +378,7 @@ def _run_scan(tickers_tuple, market_key, breakout_days, vol_mult, w52_within,
         try:
             raw = yf.download(chunk, period="1y", interval="1d",
                               group_by="ticker", auto_adjust=True,
-                              threads=True, progress=False)
+                              threads=False, progress=False)
         except Exception as exc:
             errors.append(f"batch {start}: {exc}")
             continue

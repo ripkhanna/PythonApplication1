@@ -357,7 +357,7 @@ def _download_daily_history_chunk_cached(chunk_tuple):
         raw = yf.download(
             chunk if len(chunk) > 1 else chunk[0],
             period="1y", interval="1d",
-            progress=False, group_by="ticker", threads=True, auto_adjust=True,
+            progress=False, group_by="ticker", threads=False, auto_adjust=True,
         )
         if raw is None or getattr(raw, "empty", True):
             return out, "empty"
@@ -638,7 +638,7 @@ def fetch_analysis(green_sectors, red_sectors, regime,
                 ))
             raw_intraday = yf.download(
                 _intraday_tickers, period="1d", interval="5m",
-                progress=False, group_by="ticker", threads=True, auto_adjust=True,
+                progress=False, group_by="ticker", threads=False, auto_adjust=True,
                 prepost=True,
             )
             latest_bars = []

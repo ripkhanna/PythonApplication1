@@ -17,7 +17,8 @@ def render_strategy_lab(ctx: dict) -> None:
         "The live scanner remains Bayesian ensemble first. Use ML only if it beats the baseline on chronological test data."
     )
     backend = "LightGBM" if _lgbm_available else "sklearn fallback" if _sklearn_strategy_available else "not installed"
-    st.caption(f"ML backend: **{backend}** · Preferred install: `pip install lightgbm scikit-learn`")
+    st.caption("Cloud-safe package excludes LightGBM/sklearn by default; the Bayesian scanner still works without ML.")
+    st.caption(f"ML backend: **{backend}**")
 
     sl1, sl2, sl3, sl4 = st.columns([2, 1, 1, 1])
     with sl1:
@@ -33,7 +34,10 @@ def render_strategy_lab(ctx: dict) -> None:
         lab_max_tickers = st.slider("Max tickers", 5, 80, 30, step=5, key="strategy_lab_max_tickers")
 
     if not (_lgbm_available or _sklearn_strategy_available):
-        st.warning("Install `lightgbm` or `scikit-learn` to train the Strategy Lab model.")
+        st.warning(
+            "Strategy Lab ML is disabled in the Cloud-safe package to avoid native-package segfaults. "
+            "Use the Bayesian scanner, or add `scikit-learn` later after the app is stable."
+        )
 
     _sl_click_cb = globals().get("_set_top_status_for_next_run")
     _sl_btn_kwargs = {}
@@ -101,4 +105,3 @@ def render_strategy_lab(ctx: dict) -> None:
     if isinstance(latest_ml, pd.DataFrame) and not latest_ml.empty:
         show_cols = [c for c in ["Ticker", "Swing Verdict", "ML Trade Quality", "ML Failure Risk", "Suggested Size", "Final Swing Score", "Bayes Score", "Operator Score", "Trap Risk", "Why"] if c in latest_ml.columns]
         st.dataframe(latest_ml[show_cols], width="stretch", hide_index=True)
-

@@ -24,6 +24,43 @@ Install:
 from __future__ import annotations
 
 import streamlit as st
+
+
+def _install_streamlit_width_compat() -> None:
+    """Let one source run on old and new Streamlit width APIs."""
+
+    def _wrap(fn):
+        if getattr(fn, "_swing_width_compat_wrapped", False):
+            return fn
+
+        def _wrapped(*args, **kwargs):
+            if "width" not in kwargs:
+                return fn(*args, **kwargs)
+            try:
+                return fn(*args, **kwargs)
+            except TypeError as exc:
+                msg = str(exc)
+                if "width" not in msg or "unexpected keyword" not in msg:
+                    raise
+                retry_kwargs = dict(kwargs)
+                width_value = retry_kwargs.pop("width", None)
+                if width_value == "stretch":
+                    retry_kwargs.setdefault("use_container_width", True)
+                elif width_value == "content":
+                    retry_kwargs.setdefault("use_container_width", False)
+                return fn(*args, **retry_kwargs)
+
+        _wrapped._swing_width_compat_wrapped = True
+        return _wrapped
+
+    for _name in ("button", "dataframe", "plotly_chart"):
+        try:
+            setattr(st, _name, _wrap(getattr(st, _name)))
+        except Exception:
+            pass
+
+
+_install_streamlit_width_compat()
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -621,7 +658,7 @@ with st.sidebar.expander("⚙️ UI settings · save & reset", expanded=False):
                  help="Reverts all sidebar controls to factory defaults AND "
                       "deletes the saved ui_state.json from disk. Does not "
                       "affect ML models, calibrated weights, or scan results.",
-                 width="stretch"):
+                 use_container_width=True):
         for _k, _v in _SIDEBAR_DEFAULTS.items():
             st.session_state[_k] = _v
         # v13.31: also delete the on-disk file, otherwise the next rerun
@@ -3181,7 +3218,7 @@ def _quick_yahoo_latest_bar_for_market(market: str, meta: dict, sample_size: int
             interval="5m",
             group_by="ticker",
             progress=False,
-            threads=True,
+            threads=False,
             auto_adjust=True,
             prepost=True,
         )

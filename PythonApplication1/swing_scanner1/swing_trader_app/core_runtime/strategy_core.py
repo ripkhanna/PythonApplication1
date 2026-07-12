@@ -82,6 +82,43 @@ def _strategy_feature_row(long_sig, raw):
     }
 
 
+def _strategy_load_ml_backend():
+    """Import optional ML libraries only when Strategy Lab actually trains."""
+    backend = {
+        "lgbm_available": False,
+        "sklearn_available": False,
+        "LGBMClassifier": None,
+        "HistGradientBoostingClassifier": None,
+        "roc_auc_score": None,
+        "accuracy_score": None,
+        "precision_score": None,
+        "brier_score_loss": None,
+    }
+    try:
+        from lightgbm import LGBMClassifier as _LGBMClassifier
+        backend["LGBMClassifier"] = _LGBMClassifier
+        backend["lgbm_available"] = True
+    except Exception:
+        pass
+    try:
+        from sklearn.ensemble import HistGradientBoostingClassifier as _HistGradientBoostingClassifier
+        from sklearn.metrics import (
+            roc_auc_score as _roc_auc_score,
+            accuracy_score as _accuracy_score,
+            precision_score as _precision_score,
+            brier_score_loss as _brier_score_loss,
+        )
+        backend["HistGradientBoostingClassifier"] = _HistGradientBoostingClassifier
+        backend["roc_auc_score"] = _roc_auc_score
+        backend["accuracy_score"] = _accuracy_score
+        backend["precision_score"] = _precision_score
+        backend["brier_score_loss"] = _brier_score_loss
+        backend["sklearn_available"] = True
+    except Exception:
+        pass
+    return backend
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def _strategy_build_dataset(tickers_tuple, period="2y", horizon=10, tp_pct=6.0, sl_pct=4.0, step=3):
     rows = []
@@ -132,14 +169,15 @@ def _strategy_train_model(data: pd.DataFrame, feature_cols):
         return None, {"Error": "Not enough class diversity after chronological split."}
     X_train, X_test = X.iloc[:split], X.iloc[split:]
     y_train, y_test = y.iloc[:split], y.iloc[split:]
-    if _lgbm_available:
-        model = LGBMClassifier(n_estimators=250, learning_rate=0.035, max_depth=3, num_leaves=15, min_child_samples=25, subsample=0.85, colsample_bytree=0.85, reg_lambda=2.0, random_state=42, verbose=-1)
+    ml_backend = _strategy_load_ml_backend()
+    if ml_backend["lgbm_available"]:
+        model = ml_backend["LGBMClassifier"](n_estimators=250, learning_rate=0.035, max_depth=3, num_leaves=15, min_child_samples=25, subsample=0.85, colsample_bytree=0.85, reg_lambda=2.0, random_state=42, verbose=-1)
         model_name = "LightGBM Classifier"
-    elif _sklearn_strategy_available:
-        model = HistGradientBoostingClassifier(max_iter=180, learning_rate=0.05, max_leaf_nodes=15, l2_regularization=1.0, random_state=42)
+    elif ml_backend["sklearn_available"]:
+        model = ml_backend["HistGradientBoostingClassifier"](max_iter=180, learning_rate=0.05, max_leaf_nodes=15, l2_regularization=1.0, random_state=42)
         model_name = "sklearn HistGradientBoosting fallback"
     else:
-        return None, {"Error": "Install lightgbm or scikit-learn to use Strategy Lab ML."}
+        return None, {"Error": "Install scikit-learn to use Strategy Lab ML."}
     try:
         model.fit(X_train, y_train)
         proba = model.predict_proba(X_test)[:, 1]
@@ -147,13 +185,13 @@ def _strategy_train_model(data: pd.DataFrame, feature_cols):
         pred = (proba >= 0.50).astype(int)
         base_pred = (baseline >= np.nanpercentile(baseline, 60)).astype(int)
         y_arr = y_test.to_numpy()
-        if _sklearn_strategy_available:
-            auc_ml = roc_auc_score(y_test, proba) if len(np.unique(y_test)) > 1 else None
-            auc_base = roc_auc_score(y_test, baseline) if len(np.unique(y_test)) > 1 else None
-            acc_ml = accuracy_score(y_test, pred)
-            acc_base = accuracy_score(y_test, base_pred)
-            prec_ml = precision_score(y_test, pred, zero_division=0)
-            brier = brier_score_loss(y_test, proba)
+        if ml_backend["sklearn_available"]:
+            auc_ml = ml_backend["roc_auc_score"](y_test, proba) if len(np.unique(y_test)) > 1 else None
+            auc_base = ml_backend["roc_auc_score"](y_test, baseline) if len(np.unique(y_test)) > 1 else None
+            acc_ml = ml_backend["accuracy_score"](y_test, pred)
+            acc_base = ml_backend["accuracy_score"](y_test, base_pred)
+            prec_ml = ml_backend["precision_score"](y_test, pred, zero_division=0)
+            brier = ml_backend["brier_score_loss"](y_test, proba)
         else:
             auc_ml = _strategy_auc(y_arr, proba)
             auc_base = _strategy_auc(y_arr, baseline)
@@ -226,5 +264,4 @@ def _strategy_apply_to_current(model_bundle, df_current: pd.DataFrame):
         return out
     except Exception:
         return df_current
-
 

@@ -245,18 +245,19 @@ except Exception:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Strategy Lab ML backends (optional)
-# Install preferred backend: pip install lightgbm scikit-learn
+# Cloud hardening: do not import native ML libraries at app startup. A bad
+# native wheel can segfault before Python can show a traceback. We only detect
+# availability here; strategy_core imports the backend lazily when the user
+# clicks "Train Strategy Lab model".
 # ─────────────────────────────────────────────────────────────────────────────
 try:
-    from lightgbm import LGBMClassifier
-    _lgbm_available = True
+    import importlib.util as _importlib_util
+    _lgbm_available = _importlib_util.find_spec("lightgbm") is not None
 except Exception:
     _lgbm_available = False
 
 try:
-    from sklearn.ensemble import HistGradientBoostingClassifier
-    from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, brier_score_loss
-    _sklearn_strategy_available = True
+    _sklearn_strategy_available = _importlib_util.find_spec("sklearn") is not None
 except Exception:
     _sklearn_strategy_available = False
 

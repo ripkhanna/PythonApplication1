@@ -1,8 +1,25 @@
 from __future__ import annotations
 
+import faulthandler
+import os
 import runpy
 import traceback
 from pathlib import Path
+
+for _name in (
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+):
+    os.environ.setdefault(_name, "1")
+os.environ.setdefault("STREAMLIT_SERVER_FILE_WATCHER_TYPE", "none")
+
+try:
+    faulthandler.enable(all_threads=True)
+except Exception:
+    pass
 
 import streamlit as st
 

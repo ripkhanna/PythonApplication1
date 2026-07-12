@@ -230,7 +230,7 @@ def _fetch_intraday_prepost_rows(tickers: list[str], min_gap_pct: float) -> list
                     progress=False,
                     auto_adjust=False,
                     group_by="ticker",
-                    threads=True,
+                    threads=False,
                 )
         except Exception:
             continue
@@ -441,7 +441,7 @@ def _fetch_premarket_data(tickers_tuple: tuple, min_gap_pct: float, market_label
         except Exception:
             return None
 
-    workers = min(25, max(1, len(fallback_tickers)))
+    workers = min(8, max(1, len(fallback_tickers)))
     with _fut.ThreadPoolExecutor(max_workers=workers) as ex:
         for r in ex.map(_one, fallback_tickers):
             if r:
