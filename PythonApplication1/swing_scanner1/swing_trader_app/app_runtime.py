@@ -2951,10 +2951,10 @@ if st.session_state.get("scan_cache_warning"):
 # Professional workflow layout v17.4
 # Daily workflow is kept compact; detailed/source/QA views are nested.
 st.caption(
-    "Workflow: Market Activity -> Catalyst Shock -> Big Money -> Momentum Runner -> Pre-Movers -> Best 7-10% -> Long Setups -> Short Setups -> Trade Tools -> Stock Analysis -> Advanced"
+    "Workflow: Market Activity -> Catalyst Shock -> Big Money -> Momentum Runner -> Pre-Movers -> Best 7-10% -> Long Setups -> Short Setups -> Trade Tools -> Stock Analysis -> Market Buckets -> Advanced"
 )
 
-tab_sectors, tab_market_activity, tab_momentum_runner, tab_pre_movers, tab_best_710, tab_long, tab_short, tab_trade_tools, tab_stock, tab_events, tab_long_term, tab_advanced, tab_help = st.tabs([
+tab_sectors, tab_market_activity, tab_momentum_runner, tab_pre_movers, tab_best_710, tab_long, tab_short, tab_trade_tools, tab_stock, tab_buckets, tab_events, tab_long_term, tab_advanced, tab_help = st.tabs([
     "1 Market Map",
     "2 Market Activity",
     "3 Momentum Runner",
@@ -2964,10 +2964,11 @@ tab_sectors, tab_market_activity, tab_momentum_runner, tab_pre_movers, tab_best_
     "7 Short Setups",
     "8 Trade Tools",
     "9 Stock Analysis",
-    "10 Events",
-    "11 Long Term / ETF",
-    "12 Advanced",
-    "13 Help",
+    "10 Market Buckets",
+    "11 Events",
+    "12 Long Term / ETF",
+    "13 Advanced",
+    "14 Help",
 ])
 
 with tab_market_activity:
@@ -3038,6 +3039,7 @@ from swing_trader_app.tabs.stock_analysis_tab import render_stock_analysis
 from swing_trader_app.tabs.strategy_lab_tab import render_strategy_lab
 from swing_trader_app.tabs.test_cases_tab import render_test_cases
 from swing_trader_app.tabs.performance_tracker_tab import render_performance_tracker
+from swing_trader_app.tabs.market_buckets_tab import render_market_buckets
 from swing_trader_app.tabs.swing_710_tab import render_swing_710
 from swing_trader_app.tabs.best_710_tab import render_best_710
 from swing_trader_app.tabs.swing_picks_tab import render_swing_picks
@@ -3838,6 +3840,9 @@ with tab_etf:
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_stock:
     _safe_render_tab('stock', render_stock_analysis)
+
+with tab_buckets:
+    _safe_render_tab('market_buckets', render_market_buckets)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
