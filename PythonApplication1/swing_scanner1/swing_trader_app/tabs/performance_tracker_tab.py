@@ -188,15 +188,52 @@ def _current_market() -> str:
     )
 
 
-def _num_value(value, default: float = 0.0) -> float:
+def _dedupe_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(df, pd.DataFrame) or not df.columns.has_duplicates:
+        return df
+    return df.loc[:, ~pd.Index(df.columns).duplicated(keep="first")].copy()
+
+
+def _scalar_value(value, default=""):
     try:
+        if isinstance(value, pd.DataFrame):
+            if value.empty:
+                return default
+            return _scalar_value(value.iloc[0, 0], default)
+        if isinstance(value, pd.Series):
+            if value.empty:
+                return default
+            nonblank = value.dropna()
+            if not nonblank.empty:
+                return _scalar_value(nonblank.iloc[0], default)
+            return _scalar_value(value.iloc[0], default)
+        if isinstance(value, np.ndarray):
+            if value.size == 0:
+                return default
+            if value.ndim == 0:
+                return value.item()
+            return _scalar_value(value.flat[0], default)
+        if isinstance(value, (list, tuple)):
+            if not value:
+                return default
+            return _scalar_value(value[0], default)
+    except Exception:
+        return default
+    return value
+
+
+def _num_value(value, default: float = 0.0) -> float:
+    value = _scalar_value(value, default)
+    try:
+        if pd.isna(value):
+            return float(default)
         text = str(value)
         text = (
-            text.replace("%", "")
-            .replace("+", "")
-            .replace("$", "")
-            .replace("HK$", "")
+            text.replace("HK$", "")
             .replace("S$", "")
+            .replace("$", "")
+            .replace("%", "")
+            .replace("+", "")
             .replace("x", "")
             .replace(",", "")
             .strip()
@@ -214,13 +251,16 @@ def _num_value(value, default: float = 0.0) -> float:
 def _num_series(df: pd.DataFrame, col: str, default: float = 0.0) -> pd.Series:
     if col not in df.columns:
         return pd.Series([default] * len(df), index=df.index, dtype="float64")
+    values = df[col]
+    if isinstance(values, pd.DataFrame):
+        values = values.iloc[:, 0]
     return pd.to_numeric(
-        df[col].astype(str)
+        values.astype(str)
         .str.replace("%", "", regex=False)
         .str.replace("+", "", regex=False)
-        .str.replace("$", "", regex=False)
         .str.replace("HK$", "", regex=False)
         .str.replace("S$", "", regex=False)
+        .str.replace("$", "", regex=False)
         .str.replace("x", "", regex=False)
         .str.replace(",", "", regex=False)
         .str.extract(r"(-?\d+(?:\.\d+)?)")[0],
@@ -231,7 +271,10 @@ def _num_series(df: pd.DataFrame, col: str, default: float = 0.0) -> pd.Series:
 def _text_series(df: pd.DataFrame, col: str, default: str = "") -> pd.Series:
     if col not in df.columns:
         return pd.Series([default] * len(df), index=df.index)
-    return df[col].astype(str).fillna(default)
+    values = df[col]
+    if isinstance(values, pd.DataFrame):
+        values = values.iloc[:, 0]
+    return values.astype(str).fillna(default)
 
 
 def _parse_date(value) -> pd.Timestamp | None:
@@ -280,7 +323,7 @@ def _source_frame() -> pd.DataFrame:
     ]
     for df in sources:
         if isinstance(df, pd.DataFrame) and not df.empty:
-            out = df.copy()
+            out = _dedupe_columns(df.copy())
             if "Ticker" not in out.columns:
                 out.insert(0, "Ticker", out.index.astype(str))
             out["Ticker"] = out["Ticker"].astype(str).str.upper().str.strip()
@@ -290,7 +333,7 @@ def _source_frame() -> pd.DataFrame:
     path = cache_dir / f"{_market_key(_current_market())}_long_setups.csv"
     if path.exists() and path.stat().st_size > 0:
         try:
-            out = pd.read_csv(path, keep_default_na=False)
+            out = _dedupe_columns(pd.read_csv(path, keep_default_na=False))
             if "Ticker" not in out.columns:
                 out.insert(0, "Ticker", out.index.astype(str))
             out["Ticker"] = out["Ticker"].astype(str).str.upper().str.strip()
@@ -378,9 +421,10 @@ def _split_manual_tickers(value: str, market: str) -> list[str]:
 
 def _fmt_price(value: float) -> str:
     try:
-        if float(value) <= 0:
+        price = _num_value(value, 0.0)
+        if price <= 0:
             return ""
-        return f"{float(value):.4f}".rstrip("0").rstrip(".")
+        return f"{price:.4f}".rstrip("0").rstrip(".")
     except Exception:
         return ""
 
@@ -777,6 +821,7 @@ def _history_for_ticker(ticker: str, start_date: pd.Timestamp) -> pd.DataFrame:
         return pd.DataFrame()
     if isinstance(raw.columns, pd.MultiIndex):
         raw.columns = raw.columns.get_level_values(0)
+    raw = _dedupe_columns(raw)
     cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in raw.columns]
     out = raw[cols].copy()
     out.index = pd.to_datetime(out.index).tz_localize(None).normalize()
@@ -786,7 +831,7 @@ def _history_for_ticker(ticker: str, start_date: pd.Timestamp) -> pd.DataFrame:
 def _first_hit_day(bars: pd.DataFrame, entry: float, threshold_pct: float) -> int | None:
     target = entry * (1.0 + threshold_pct / 100.0)
     for i, (_, bar) in enumerate(bars.iterrows(), start=1):
-        if float(bar["High"]) >= target:
+        if _num_value(bar.get("High", np.nan), np.nan) >= target:
             return i
     return None
 
@@ -795,7 +840,7 @@ def _first_stop_day(bars: pd.DataFrame, stop: float) -> int | None:
     if stop <= 0:
         return None
     for i, (_, bar) in enumerate(bars.iterrows(), start=1):
-        if float(bar["Low"]) <= stop:
+        if _num_value(bar.get("Low", np.nan), np.nan) <= stop:
             return i
     return None
 
@@ -804,28 +849,32 @@ def _max_gain(bars: pd.DataFrame, entry: float, days: int) -> float:
     view = bars.head(days)
     if view.empty or entry <= 0:
         return np.nan
-    return (float(view["High"].max()) / entry - 1.0) * 100.0
+    high = _num_value(view["High"].max(), np.nan)
+    return (high / entry - 1.0) * 100.0 if not pd.isna(high) else np.nan
 
 
 def _max_drawdown(bars: pd.DataFrame, entry: float, days: int) -> float:
     view = bars.head(days)
     if view.empty or entry <= 0:
         return np.nan
-    return (float(view["Low"].min()) / entry - 1.0) * 100.0
+    low = _num_value(view["Low"].min(), np.nan)
+    return (low / entry - 1.0) * 100.0 if not pd.isna(low) else np.nan
 
 
 def _close_return(bars: pd.DataFrame, entry: float, days: int) -> float:
     view = bars.head(days)
     if view.empty or entry <= 0:
         return np.nan
-    return (float(view["Close"].iloc[-1]) / entry - 1.0) * 100.0
+    close = _num_value(view["Close"].iloc[-1], np.nan)
+    return (close / entry - 1.0) * 100.0 if not pd.isna(close) else np.nan
 
 
 def _fmt_pct(value) -> str:
     try:
-        if pd.isna(value):
+        pct = _num_value(value, np.nan)
+        if pd.isna(pct):
             return ""
-        return f"{float(value):+.2f}%"
+        return f"{pct:+.2f}%"
     except Exception:
         return ""
 
